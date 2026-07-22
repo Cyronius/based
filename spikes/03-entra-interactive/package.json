@@ -1,0 +1,12 @@
+{
+  "name": "spike-03-entra-interactive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run spike.mjs"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.10.0",
+    "mssql": "^11.0.1"
+  }
+}

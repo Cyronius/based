@@ -1,0 +1,11 @@
+{
+  "name": "spike-01-electrobun-hello",
+  "private": true,
+  "scripts": {
+    "start": "electrobun dev",
+    "dev": "electrobun dev --watch"
+  },
+  "dependencies": {
+    "electrobun": "1.18.1"
+  }
+}

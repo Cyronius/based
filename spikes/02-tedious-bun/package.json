@@ -1,0 +1,13 @@
+{
+  "name": "spike-02-tedious-bun",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bun-run": "bun run spike.mjs",
+    "node-run": "node spike.mjs"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.10.0",
+    "mssql": "^11.0.1"
+  }
+}

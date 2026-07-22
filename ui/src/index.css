@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+/* Streamdown ships compiled Tailwind classes; scan its dist so those utilities are generated. */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+
+/* shadcn-style tokens Streamdown's components read — tuned to the dark Ledger palette. */
+:root {
+  --background: #15181d;
+  --foreground: #e9e6de;
+  --card: #1a1e24;
+  --card-foreground: #e9e6de;
+  --popover: #1a1e24;
+  --popover-foreground: #e9e6de;
+  --muted: #20252c;
+  --muted-foreground: #8d929c;
+  --secondary: #20252c;
+  --secondary-foreground: #e9e6de;
+  --accent: #20252c;
+  --accent-foreground: #e9e6de;
+  --border: #272d36;
+  --input: #272d36;
+  --ring: #d2a24c;
+  --primary: #d2a24c;
+  --primary-foreground: #101216;
+  --radius: 8px;
+}
+
+@theme {
+  --color-ink-950: #101216;
+  --color-ink-900: #15181d;
+  --color-ink-850: #1a1e24;
+  --color-ink-800: #20252c;
+  --color-line: #272d36;
+  --color-line-soft: #1f242c;
+  --color-paper: #e9e6de;
+  --color-paper-dim: #c9c6bd;
+  --color-muted: #8d929c;
+  --color-faint: #5a606a;
+  --color-brass: #d2a24c;
+  --color-brass-soft: #a67f39;
+  --color-ok: #6fb47c;
+  --color-err: #e0705f;
+  --color-info: #7fa8c9;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c333d;
+  border-radius: 5px;
+  border: 2px solid var(--color-ink-950);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a424e;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+select,
+input[type="text"],
+input[type="password"] {
+  color-scheme: dark;
+}
+
+/* Ledger section label: small caps, letterspaced */
+.ledger-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* Resizable pane handles */
+.pane-handle {
+  position: relative;
+  height: 5px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.pane-handle::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 1px;
+  background: var(--color-line);
+}
+.pane-handle:hover,
+.pane-handle[data-resize-handle-state="drag"] {
+  background: color-mix(in srgb, var(--color-brass) 25%, transparent);
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 300ms ease both;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 1.4s ease-in-out infinite;
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@based/specs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test ."
+  },
+  "dependencies": {
+    "@based/core": "workspace:*",
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0"
+  }
+}

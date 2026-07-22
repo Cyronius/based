@@ -1,0 +1,17 @@
+{
+  "name": "spike-04-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.ts"
+  },
+  "dependencies": {
+    "@ag-ui/client": "^0.0.57",
+    "@ag-ui/core": "^0.0.57",
+    "@ag-ui/encoder": "^0.0.57",
+    "@ag-ui/mastra": "^1.1.1",
+    "@mastra/core": "^1.51.0",
+    "ai": "^7.0.34",
+    "zod": "^3.25.0"
+  }
+}

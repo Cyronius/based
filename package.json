@@ -1,0 +1,21 @@
+{
+  "name": "based",
+  "private": true,
+  "workspaces": [
+    "core",
+    "ui",
+    "shell",
+    "specs"
+  ],
+  "scripts": {
+    "dev:core": "bun run --cwd core dev",
+    "dev:ui": "bun run --cwd ui dev",
+    "build:ui": "bun run --cwd ui build",
+    "shell": "bun run --cwd shell start",
+    "test": "bun run --cwd specs test",
+    "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell typecheck"
+  },
+  "overrides": {
+    "zod": "3.25.76"
+  }
+}
