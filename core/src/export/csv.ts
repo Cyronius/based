@@ -3,7 +3,9 @@ import type { ColumnInfo, WireValue } from "../db/types";
 
 export function cellText(v: WireValue): string {
   if (v === null) return "";
-  if (typeof v === "object") return `<binary ${v.len} bytes>`;
+  if (typeof v === "object") {
+    return v.$ === "vec" ? `<vector ${v.dim}>` : `<binary ${v.len} bytes>`;
+  }
   return String(v);
 }
 

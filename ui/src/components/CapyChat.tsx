@@ -1,5 +1,5 @@
 // Traces: BASED-CHAT-UI
-// The Margin Chat conversation surface. Renders the lm-ag-ui thread with Streamdown, extracts SQL
+// The Capy chat conversation surface. Renders the lm-ag-ui thread with Streamdown, extracts SQL
 // blocks into Insert/Run affordances, and hosts the run_mutation approval card via the tool renderer.
 import { useState, type ReactNode } from "react";
 import { useAgentContext } from "@itkennel/lm-ag-ui";
@@ -52,7 +52,7 @@ function SqlActions({ text }: { text: string }) {
   );
 }
 
-export function MarginChat() {
+export function CapyChat() {
   const {
     messages,
     currentMessage,
@@ -82,10 +82,10 @@ export function MarginChat() {
   };
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col">
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
+    <div className="flex flex-1 min-h-0 min-w-0 flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pl-3 pr-4 py-2 space-y-3">
         {messages.length === 0 && !isStreaming && (
-          <p className="text-[12px] text-muted leading-relaxed">
+          <p className="text-[12px] text-muted leading-relaxed break-words">
             Ask about your schema, generate SQL, or request a change. Answers stream here; SQL blocks
             get <span className="text-brass">Insert</span> / <span className="text-brass">Run</span> actions.
           </p>
@@ -106,7 +106,7 @@ export function MarginChat() {
               return (
                 <div key={tc.id} className="fade-up">
                   {typeof m.content === "string" && m.content && (
-                    <div className="text-[13px] leading-relaxed">
+                    <div className="text-[13px] leading-relaxed break-words">
                       <Markdown text={m.content} />
                     </div>
                   )}
@@ -119,7 +119,7 @@ export function MarginChat() {
           if (m.role === "user") {
             return (
               <div key={m.id} className="text-right">
-                <span className="inline-block rounded-md bg-ink-800 px-2.5 py-1.5 text-[12px] text-paper-dim">
+                <span className="inline-block max-w-full rounded-md bg-ink-800 px-2.5 py-1.5 text-[12px] text-paper-dim break-words">
                   {typeof m.content === "string" ? m.content : "[attachment]"}
                 </span>
               </div>
@@ -127,22 +127,22 @@ export function MarginChat() {
           }
           const content = typeof m.content === "string" ? m.content : "";
           return (
-            <div key={m.id} className="fade-up text-[13px] leading-relaxed">
+            <div key={m.id} className="fade-up text-[13px] leading-relaxed break-words">
               <Markdown text={content} />
               <SqlActions text={content} />
             </div>
           );
         })}
         {isStreaming && currentMessage && (
-          <div className="text-[13px] leading-relaxed">
+          <div className="text-[13px] leading-relaxed break-words">
             <Markdown text={currentMessage} streaming />
           </div>
         )}
       </div>
-      <div className="border-t border-line-soft p-2">
+      <div className="border-t border-line-soft pl-2 pr-3 py-2">
         <div className="flex items-end gap-2">
           <textarea
-            className="flex-1 resize-none rounded-md border border-line bg-ink-950 px-2 py-1.5 text-[13px] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
+            className="flex-1 min-w-0 resize-none rounded-md border border-line bg-ink-950 px-2 py-1.5 text-[13px] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
             rows={2}
             placeholder="Ask about the database…"
             value={input}

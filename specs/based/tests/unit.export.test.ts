@@ -48,4 +48,18 @@ describe("BASED-EXPORT-XLSX: XLSX export", () => {
     expect(ws.getCell("A3").value).toBeNull();
     expect(ws.getCell("B3").value).toBe(3.5);
   });
+
+  test("strips XML-illegal chars so the file reads back without repair", async () => {
+    const path = join(tmpdir(), `based-spec-xlsx-ctrl-${process.pid}-${Math.random().toString(36).slice(2)}.xlsx`);
+    const cols: ColumnInfo[] = [{ name: "s", type: "varchar" }];
+    // Between "a" and "b": NUL, a lone high surrogate, and U+FFFF — all XML-1.0-illegal.
+    // Without sanitization ExcelJS writes these raw and even its own reader throws on the file.
+    await writeXlsx(path, cols, [["a\x00\uD83D￿b"], ["ok 😀 emoji"]]);
+
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path); // must not throw
+    const ws = wb.getWorksheet("Results")!;
+    expect(ws.getCell("A2").value).toBe("ab");
+    expect(ws.getCell("A3").value).toBe("ok 😀 emoji"); // valid surrogate pairs survive
+  });
 });

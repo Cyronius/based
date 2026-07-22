@@ -15,6 +15,7 @@
     "@ag-ui/mastra": "^1.1.1",
     "@ai-sdk/openai-compatible": "^3.0.14",
     "@azure/identity": "^4.10.0",
+    "@lancedb/lancedb": "^0.24.0",
     "@mastra/core": "^1.51.0",
     "@mastra/libsql": "^1.16.0",
     "@mastra/memory": "^1.23.0",

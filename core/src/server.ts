@@ -7,19 +7,31 @@ import { MastraAgent } from "@ag-ui/mastra";
 import { openDb } from "./storage/db";
 import { ConnectionStore } from "./storage/connections";
 import { TabStore } from "./storage/tabs";
+import { WindowStateStore } from "./storage/windowState";
 import { HistoryStore } from "./storage/history";
+import { SettingsStore, type AppSettings } from "./storage/settings";
 import { getSecret, setSecret, deleteSecret, getAiKey, setAiKey, deleteAiKey } from "./secrets";
-import { MssqlAdapter, testConnection } from "./db/mssqlAdapter";
-import { filterFor, openWithDefaultApp, saveFileDialog } from "./dialogs";
+import { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
+import { buildEditCommands, type TableChangeSet } from "./db/tableEdit";
+import { filterFor, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
 import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, type AiConfig } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
 import { buildAgent, AGENT_ID } from "./agent/agent";
+import { AgentInstructionsStore } from "./agent/instructionsStore";
 import { collectQuery } from "./agent/runSql";
 import { isReadOnly } from "./db/classify";
-import type { ColumnInfo, ConnectionInput, ConnectionStatus, QueryExecution, WireValue } from "./db/types";
+import type {
+  ColumnInfo,
+  ConnectionInput,
+  ConnectionStatus,
+  DatabaseAdapter,
+  ExecuteOptions,
+  QueryExecution,
+  WireValue,
+} from "./db/types";
 
 export interface ServerOptions {
   port?: number;
@@ -38,7 +50,7 @@ export interface RunningServer {
 }
 
 interface SessionState {
-  adapter: MssqlAdapter | null;
+  adapter: DatabaseAdapter | null;
   connectionId: string | null;
   database: string | null;
   status: ConnectionStatus;
@@ -55,53 +67,70 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const db: Database = openDb(opts.dbPath);
   const connections = new ConnectionStore(db);
   const tabs = new TabStore(db);
+  const windowState = new WindowStateStore(db);
   const history = new HistoryStore(db);
   const aiConfig = new AiConfigStore(db);
+  const settings = new SettingsStore(db);
+  const agentInstructions = new AgentInstructionsStore(db);
   const audit = new AuditStore(db);
   const agentMemory = createAgentMemory(opts.agentDbPath);
 
-  const session: SessionState = { adapter: null, connectionId: null, database: null, status: "disconnected" };
+  const sessions = new Map<string, SessionState>();
   const executions = new Map<string, QueryExecution>();
-  const sseClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const sseClients = new Set<{ sid: string; controller: ReadableStreamDefaultController<Uint8Array> }>();
 
-  function broadcast(event: Record<string, unknown>): void {
+  function getSession(sid: string): SessionState {
+    let s = sessions.get(sid);
+    if (!s) {
+      s = { adapter: null, connectionId: null, database: null, status: "disconnected" };
+      sessions.set(sid, s);
+    }
+    return s;
+  }
+
+  function broadcast(sid: string, event: Record<string, unknown>): void {
     const payload = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
-    for (const c of sseClients) {
+    for (const client of sseClients) {
+      if (client.sid !== sid) continue;
       try {
-        c.enqueue(payload);
+        client.controller.enqueue(payload);
       } catch {
-        sseClients.delete(c);
+        sseClients.delete(client);
       }
     }
   }
 
-  function setStatus(status: ConnectionStatus, detail?: string): void {
+  function setStatus(sid: string, status: ConnectionStatus, detail?: string): void {
+    const session = getSession(sid);
     session.status = status;
-    broadcast({ type: "connection-status", status, detail: detail ?? null, connectionId: session.connectionId, database: session.database });
+    broadcast(sid, { type: "connection-status", status, detail: detail ?? null, connectionId: session.connectionId, database: session.database });
   }
 
-  async function connectSession(connectionId: string, database?: string): Promise<void> {
+  async function connectSession(sid: string, connectionId: string, database?: string): Promise<void> {
+    const session = getSession(sid);
     const cfg = connections.get(connectionId);
     if (!cfg) throw new Error(`Unknown connection: ${connectionId}`);
     if (session.adapter) await session.adapter.disconnect().catch(() => {});
     session.connectionId = connectionId;
     session.database = database ?? cfg.database;
-    setStatus("connecting");
-    const adapter = new MssqlAdapter(cfg, getSecret, { database: session.database });
-    adapter.onStatus((status, detail) => setStatus(status, detail));
+    setStatus(sid, "connecting");
+    const adapter = createAdapter(cfg, getSecret, { database: session.database });
+    adapter.onStatus((status, detail) => setStatus(sid, status, detail));
     session.adapter = adapter;
     try {
       await adapter.connect();
     } catch (err) {
       session.adapter = null;
-      setStatus("disconnected");
+      setStatus(sid, "disconnected");
       throw err;
     }
+    windowState.save(sid, { connectionId });
   }
 
-  function requireAdapter(): MssqlAdapter {
-    if (!session.adapter) throw new Error("Not connected");
-    return session.adapter;
+  function requireAdapter(sid: string): DatabaseAdapter {
+    const adapter = getSession(sid).adapter;
+    if (!adapter) throw new Error("Not connected");
+    return adapter;
   }
 
   // Traces: BASED-API-AUTH
@@ -132,6 +161,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
   async function route(req: Request, url: URL, path: string): Promise<Response> {
     const method = req.method;
+    const sid = url.searchParams.get("sid") ?? "default";
 
     if (path === "/api/health") return json({ ok: true });
 
@@ -158,45 +188,99 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (connMatch && method === "DELETE") {
       connections.delete(connMatch[1]!);
       deleteSecret(connMatch[1]!);
+      windowState.deleteByConnection(connMatch[1]!);
       return json({ ok: true });
     }
 
     // --- session ---
     if (path === "/api/session/state") {
+      const session = getSession(sid);
       return json({ connectionId: session.connectionId, database: session.database, status: session.status });
     }
     if (path === "/api/session/connect" && method === "POST") {
       const body = (await req.json()) as { connectionId: string; database?: string };
-      await connectSession(body.connectionId, body.database);
-      const adapter = requireAdapter();
+      await connectSession(sid, body.connectionId, body.database);
+      const adapter = requireAdapter(sid);
       const [databases, schemas, objects] = await Promise.all([
         adapter.listDatabases(),
         adapter.listSchemas(),
         adapter.listObjects(),
       ]);
+      const session = getSession(sid);
       return json({ connectionId: session.connectionId, database: session.database, databases, schemas, objects });
     }
     if (path === "/api/session/disconnect" && method === "POST") {
+      const session = getSession(sid);
       if (session.adapter) await session.adapter.disconnect().catch(() => {});
       session.adapter = null;
       session.connectionId = null;
       session.database = null;
-      setStatus("disconnected");
+      setStatus(sid, "disconnected");
+      return json({ ok: true });
+    }
+    // Called on window close so a long-running multi-window session doesn't leak adapters/SSE registrations.
+    // Also drops this window's persisted state — a cleanly closed window isn't reopened on next launch.
+    if (path === "/api/session/close" && method === "POST") {
+      const session = sessions.get(sid);
+      if (session?.adapter) await session.adapter.disconnect().catch(() => {});
+      sessions.delete(sid);
+      windowState.delete(sid);
+      for (const client of sseClients) {
+        if (client.sid !== sid) continue;
+        try {
+          client.controller.close();
+        } catch {
+          // already closed
+        }
+        sseClients.delete(client);
+      }
       return json({ ok: true });
     }
     if (path === "/api/session/objects") {
-      const adapter = requireAdapter();
+      const adapter = requireAdapter(sid);
       const [schemas, objects] = await Promise.all([adapter.listSchemas(), adapter.listObjects()]);
       return json({ schemas, objects });
     }
     if (path === "/api/session/columns") {
       const schema = url.searchParams.get("schema") ?? "dbo";
       const table = url.searchParams.get("table") ?? "";
-      return json(await requireAdapter().getTableColumns(schema, table));
+      return json(await requireAdapter(sid).getTableColumns(schema, table));
+    }
+    // Traces: BASED-VIEW-DEFINITION, BASED-ROUTINE-DETAILS — SQL definition text for a view/procedure/function.
+    if (path === "/api/session/definition") {
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const name = url.searchParams.get("name") ?? "";
+      const definition = (await requireAdapter(sid).getObjectDefinition?.(schema, name)) ?? null;
+      return json({ definition });
+    }
+    // Traces: BASED-ROUTINE-DETAILS — stored procedure / function parameter list.
+    if (path === "/api/session/parameters") {
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const name = url.searchParams.get("name") ?? "";
+      const parameters = (await requireAdapter(sid).getRoutineParameters?.(schema, name)) ?? [];
+      return json(parameters);
     }
     if (path === "/api/session/query" && method === "POST") {
-      const body = (await req.json()) as { sql: string };
-      return streamQuery(body.sql);
+      const body = (await req.json()) as { sql: string; capturePlan?: boolean; captureStats?: boolean; rowCap?: number };
+      return streamQuery(sid, body.sql, {
+        capturePlan: !!body.capturePlan,
+        captureStats: !!body.captureStats,
+        rowCap: body.rowCap,
+      });
+    }
+    // Traces: BASED-TABLE-BROWSE — paginated table data read for the Data view.
+    if (path === "/api/session/table-data") {
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const table = url.searchParams.get("table") ?? "";
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "100");
+      return json(await requireAdapter(sid).readTablePage(schema, table, { offset, limit }));
+    }
+    // Traces: BASED-TABLE-DML, BASED-TABLE-COMMIT — build the parameterized commands and (unless
+    // previewing) run them in one transaction, recording a history row.
+    if (path === "/api/session/table-edit" && method === "POST") {
+      const body = (await req.json()) as TableChangeSet & { preview?: boolean };
+      return tableEdit(sid, body);
     }
     if (path === "/api/session/cancel" && method === "POST") {
       const body = (await req.json()) as { queryId: string };
@@ -210,7 +294,16 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
     if (path === "/api/tabs" && method === "POST") {
       const body = (await req.json()) as {
-        tabs: Array<{ id: string; connectionId: string; title: string; content: string; filePath: string | null; position: number }>;
+        tabs: Array<{
+          id: string;
+          connectionId: string;
+          title: string;
+          content: string;
+          filePath: string | null;
+          position: number;
+          kind: "query" | "table" | "routine";
+          meta: unknown | null;
+        }>;
       };
       return json(body.tabs.map((t) => tabs.upsert(t)));
     }
@@ -220,9 +313,30 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json({ ok: true });
     }
 
+    // --- window state (per-window restore across restarts, BASED-WINDOW-RESTORE) ---
+    if (path === "/api/windows" && method === "GET") {
+      return json(windowState.list());
+    }
+    if (path === "/api/window-state" && method === "GET") {
+      return json(windowState.get(sid) ?? { sid, connectionId: null, activeTabId: null, schemaFilter: "" });
+    }
+    if (path === "/api/window-state" && method === "POST") {
+      const body = (await req.json()) as Partial<{ activeTabId: string | null; schemaFilter: string }>;
+      return json(windowState.save(sid, body));
+    }
+
     // --- history ---
     if (path === "/api/history" && method === "GET") {
       return json(history.list(url.searchParams.get("connectionId") ?? ""));
+    }
+
+    // --- app settings (theme, etc.) ---
+    if (path === "/api/settings" && method === "GET") {
+      return json(settings.get());
+    }
+    if (path === "/api/settings" && method === "POST") {
+      const body = (await req.json()) as Partial<AppSettings>;
+      return json(settings.save(body));
     }
 
     // --- AI provider config ---
@@ -240,6 +354,35 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json(aiConfig.save({ ...cfg, hasKey }));
     }
 
+    // Traces: BASED-AGENT-INSTRUCTIONS — named, user-editable instruction sets; "default" is virtual/locked.
+    if (path === "/api/agent/instructions" && method === "GET") {
+      return json(agentInstructions.list());
+    }
+    if (path === "/api/agent/instructions" && method === "POST") {
+      const body = (await req.json()) as { id?: string; name: string; core: string; mssqlPersona: string; lancePersona: string };
+      try {
+        return json(agentInstructions.saveSet(body));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+    if (path === "/api/agent/instructions/active" && method === "POST") {
+      const { id } = (await req.json()) as { id: string };
+      try {
+        return json(agentInstructions.setActive(id));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+    const instructionsMatch = path.match(/^\/api\/agent\/instructions\/([^/]+)$/);
+    if (instructionsMatch && method === "DELETE") {
+      try {
+        return json(agentInstructions.deleteSet(instructionsMatch[1]!));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+
     // --- agent ---
     if (path === "/api/agent/audit" && method === "GET") {
       return json(audit.list(url.searchParams.get("connectionId") ?? ""));
@@ -248,10 +391,18 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/agent/mutation" && method === "POST") {
       const body = (await req.json()) as { sql: string; approved?: boolean };
       if (body.approved !== true) return json({ error: "Mutation not approved" }, 400);
-      return runMutation(body.sql);
+      return runMutation(sid, body.sql);
     }
     const agentMatch = path.match(/^\/api\/agent\/([^/]+)$/);
-    if (agentMatch && method === "POST") return agentStream(agentMatch[1]!, req);
+    if (agentMatch && method === "POST") return agentStream(sid, agentMatch[1]!, req);
+
+    // --- dialogs ---
+    // Traces: BASED-LANCE-FOLDER-BROWSE
+    if (path === "/api/dialog/folder" && method === "POST") {
+      const body = (await req.json()) as { startingFolder?: string };
+      const path_ = await openFolderDialog(body.startingFolder);
+      return json({ path: path_ });
+    }
 
     // --- files / export ---
     if (path === "/api/file/save-sql" && method === "POST") {
@@ -284,11 +435,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
     // --- SSE ---
     if (path === "/api/events") {
-      let controllerRef: ReadableStreamDefaultController<Uint8Array>;
+      let clientRef: { sid: string; controller: ReadableStreamDefaultController<Uint8Array> };
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          controllerRef = controller;
-          sseClients.add(controller);
+          clientRef = { sid, controller };
+          sseClients.add(clientRef);
+          const session = getSession(sid);
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({ type: "connection-status", status: session.status, connectionId: session.connectionId, database: session.database, detail: null })}\n\n`,
@@ -296,7 +448,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           );
         },
         cancel() {
-          sseClients.delete(controllerRef);
+          sseClients.delete(clientRef);
         },
       });
       return new Response(stream, {
@@ -307,10 +459,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     return json({ error: "Not found" }, 404);
   }
 
-  function streamQuery(sqlText: string): Response {
-    const adapter = requireAdapter();
+  function streamQuery(sid: string, sqlText: string, opts: ExecuteOptions): Response {
+    const adapter = requireAdapter(sid);
+    if (!adapter.capabilities.sql) {
+      return json({ error: "This connection does not support raw SQL queries." }, 400);
+    }
     const queryId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
+    const session = getSession(sid);
     const connectionId = session.connectionId!;
     const database = session.database!;
     let closed = false;
@@ -327,10 +483,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           }
         };
         send({ type: "start", queryId });
-        const exec = adapter.execute(sqlText, (chunk) => {
-          if (chunk.type === "error" && !firstError) firstError = chunk.message;
-          send(chunk);
-        });
+        const exec = adapter.execute(
+          sqlText,
+          (chunk) => {
+            if (chunk.type === "error" && !firstError) firstError = chunk.message;
+            send(chunk);
+          },
+          opts,
+        );
         executions.set(queryId, exec);
         exec.completion
           .then(({ status, durationMs }) => {
@@ -360,12 +520,47 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     });
   }
 
+  // Traces: BASED-TABLE-DML, BASED-TABLE-COMMIT — builds parameterized commands from a change set,
+  // previews them or commits them in one transaction, and records a history row for a commit.
+  async function tableEdit(sid: string, body: TableChangeSet & { preview?: boolean }): Promise<Response> {
+    const adapter = requireAdapter(sid);
+    if (!adapter.capabilities.write) {
+      return json({ error: "This connection is read-only; row edits are not supported." }, 400);
+    }
+    let commands;
+    try {
+      commands = buildEditCommands(body);
+    } catch (err) {
+      // A build failure (no PK for update/delete, invalid identifier) is a client error, not a 500.
+      return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    if (body.preview) return json({ commands });
+
+    const startedAt = new Date().toISOString();
+    const t0 = performance.now();
+    const result = await adapter.runCommands(commands);
+    const durationMs = Math.round(performance.now() - t0);
+    const status = result.error ? "error" : "ok";
+    const session = getSession(sid);
+    history.add({
+      connectionId: session.connectionId!,
+      database: session.database!,
+      sql: commands.map((c) => c.sql).join(";\n"),
+      startedAt,
+      durationMs,
+      status,
+      error: result.error,
+    });
+    return json({ status, rowsAffected: result.rowsAffected, error: result.error, durationMs });
+  }
+
   // Traces: BASED-AGENT-MUTATION-GATE, BASED-AGENT-AUDIT — runs an approved mutation and audits it.
-  async function runMutation(sqlText: string): Promise<Response> {
-    const adapter = requireAdapter();
+  async function runMutation(sid: string, sqlText: string): Promise<Response> {
+    const adapter = requireAdapter(sid);
     const startedAt = new Date().toISOString();
     const result = await collectQuery(adapter, sqlText);
     const status = result.status === "ok" ? "ok" : "error";
+    const session = getSession(sid);
     audit.add({
       connectionId: session.connectionId!,
       database: session.database!,
@@ -387,8 +582,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   }
 
   // Traces: BASED-AGENT-ENDPOINT — expose the Mastra agent as an AG-UI SSE stream.
-  async function agentStream(agentId: string, req: Request): Promise<Response> {
+  async function agentStream(sid: string, agentId: string, req: Request): Promise<Response> {
     if (agentId !== AGENT_ID) return json({ error: "Unknown agent" }, 404);
+    const session = getSession(sid);
     if (!session.adapter) return json({ error: "Connect to a database first" }, 409);
 
     let model;
@@ -401,13 +597,19 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
     const input = RunAgentInputSchema.parse(await req.json());
     const connectionId = session.connectionId!;
+    const connCfg = connections.get(connectionId);
+    const engine = connCfg ? engineOf(connCfg) : "mssql";
+    const active = agentInstructions.resolveActive(engine);
     const agent = buildAgent({
       model,
       memory: agentMemory,
+      engine,
+      core: active.core,
+      persona: active.persona,
       toolDeps: {
-        getAdapter: requireAdapter,
-        connectionId: () => session.connectionId!,
-        database: () => session.database!,
+        getAdapter: () => requireAdapter(sid),
+        connectionId: () => getSession(sid).connectionId!,
+        database: () => getSession(sid).database!,
         audit,
       },
     });
@@ -489,7 +691,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     url: `http://127.0.0.1:${port}`,
     stop: async () => {
       for (const exec of executions.values()) exec.cancel();
-      if (session.adapter) await session.adapter.disconnect().catch(() => {});
+      for (const session of sessions.values()) {
+        if (session.adapter) await session.adapter.disconnect().catch(() => {});
+      }
       await server.stop(true);
       db.close();
     },

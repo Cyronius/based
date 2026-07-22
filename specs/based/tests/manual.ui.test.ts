@@ -55,3 +55,33 @@ describe.skip("BASED-AUTH-SQLLOGIN: manual verification", () => {
 describe.skip("BASED-AUTH-SP: manual verification", () => {
   it.todo("see spec.md procedure");
 });
+
+// Traces: BASED-AGENT-INSTRUCTIONS-UI (canonical spec: specs/based/spec.md)
+// Verification: manual — gear panel next to Ask Capy exposes the instruction-set picker + three
+// collapsible boxes; Default is read-only; duplicate/edit/save/delete/switch all persist.
+describe.skip("BASED-AGENT-INSTRUCTIONS-UI: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-WINDOW-RESTORE (canonical spec: specs/based/spec.md)
+// Verification: manual — open 2 windows (Ctrl+N) on different connections with tabs open, quit
+// (both cleanly and via kill) and relaunch → both windows reopen with connection/tabs/active
+// tab/schema filter intact; a cleanly-closed window does not come back.
+describe.skip("BASED-WINDOW-RESTORE: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-CONN-SWITCH-CACHE (canonical spec: specs/based/spec.md)
+// Verification: manual — switching between connections already visited this session is instant
+// and lossless (tabs/active tab/schema filter restored, no refetch); an edit typed within 700ms of
+// switching is not dropped.
+describe.skip("BASED-CONN-SWITCH-CACHE: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-LANCE-FOLDER-BROWSE (canonical spec: specs/based/spec.md)
+// Verification: manual — Browse button next to the LanceDB Local directory-path field opens a native
+// folder picker and fills the field; the button is absent in Cloud mode.
+describe.skip("BASED-LANCE-FOLDER-BROWSE: manual verification", () => {
+  it.todo("see spec.md procedure");
+});

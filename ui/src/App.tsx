@@ -1,10 +1,13 @@
 import { useEffect } from "react";
 import { openEvents } from "./api/client";
 import { activeQueryTab, useStore } from "./store";
+import monaco from "./monacoSetup";
+import { syncMonacoTheme } from "./theme";
 import { LeftRail } from "./components/LeftRail";
 import { TabStrip } from "./components/TabStrip";
 import { QueryTabView } from "./components/QueryTabView";
 import { TableDetailsView } from "./components/TableDetailsView";
+import { RoutineDetailsView } from "./components/RoutineDetailsView";
 import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
@@ -26,7 +29,7 @@ function EmptyState() {
               to begin.
             </>
           ) : (
-            "Pick a connection in the ledger rail to begin."
+            "Pick a connection to begin."
           )}
         </div>
       </div>
@@ -36,6 +39,9 @@ function EmptyState() {
 
 export function App() {
   const loadConnections = useStore((s) => s.loadConnections);
+  const loadSettings = useStore((s) => s.loadSettings);
+  const restoreWindow = useStore((s) => s.restoreWindow);
+  const theme = useStore((s) => s.theme);
   const setStatus = useStore((s) => s.setStatus);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
@@ -45,7 +51,9 @@ export function App() {
   const setBanner = useStore((s) => s.setBanner);
 
   useEffect(() => {
-    void loadConnections();
+    void loadSettings();
+    // BASED-WINDOW-RESTORE: reconnect to whatever this window last showed, once connections are loaded.
+    void loadConnections().then(() => void restoreWindow());
     const es = openEvents((event) => {
       if (event.type === "connection-status") {
         const { activeConnectionId: current, status } = useStore.getState();
@@ -56,7 +64,12 @@ export function App() {
       }
     });
     return () => es.close();
-  }, [loadConnections, setStatus]);
+  }, [loadConnections, loadSettings, restoreWindow, setStatus]);
+
+  // Keep Monaco's global "based" theme in sync even when no editor is mounted.
+  useEffect(() => {
+    syncMonacoTheme(monaco);
+  }, [theme]);
 
   // Global keybindings (Monaco registers its own when focused)
   useEffect(() => {
@@ -98,6 +111,7 @@ export function App() {
               <TabStrip />
               {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
               {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
+              {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
               {!activeTab && <div className="flex-1" />}
             </>
           ) : (

@@ -1,3 +1,4 @@
+// Traces: BASED-UI-EXPLORER (manual)
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
@@ -13,6 +14,7 @@ export function ObjectExplorer() {
   const objects = useStore((s) => s.objects);
   const schemaFilter = useStore((s) => s.schemaFilter);
   const openTableTab = useStore((s) => s.openTableTab);
+  const openRoutineTab = useStore((s) => s.openRoutineTab);
   const status = useStore((s) => s.status);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -47,16 +49,14 @@ export function ObjectExplorer() {
             </button>
             {!isCollapsed &&
               items.map((o) => {
-                const openable = o.type === "table" || o.type === "view";
                 return (
                   <div
                     key={`${o.schema}.${o.name}`}
-                    className={`flex items-center gap-2 pl-8 pr-3 py-[3px] text-[12px] text-paper-dim hover:bg-ink-900 hover:text-paper select-none ${
-                      openable ? "cursor-pointer" : "cursor-default"
-                    }`}
-                    title={openable ? `${o.schema}.${o.name} — double-click for details` : `${o.schema}.${o.name}`}
+                    className="flex items-center gap-2 pl-8 pr-3 py-[3px] text-[12px] text-paper-dim hover:bg-ink-900 hover:text-paper select-none cursor-pointer"
+                    title={`${o.schema}.${o.name} — double-click for details`}
                     onDoubleClick={() => {
-                      if (openable) void openTableTab(o.schema, o.name, o.type as "table" | "view");
+                      if (o.type === "table" || o.type === "view") void openTableTab(o.schema, o.name, o.type);
+                      else void openRoutineTab(o.schema, o.name, o.type);
                     }}
                   >
                     <span className="text-faint text-[11px] w-3 text-center">{g.glyph}</span>

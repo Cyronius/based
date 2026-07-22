@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { openDb, ConnectionStore, TabStore, HistoryStore } from "@based/core";
+import { openDb, ConnectionStore, TabStore, WindowStateStore, HistoryStore } from "@based/core";
 import type { ConnectionInput } from "@based/core";
 
 function tempDbPath(): string {
@@ -61,9 +61,18 @@ describe("BASED-TABSTORE: tab persistence", () => {
     let db = openDb(path);
     let tabs = new TabStore(db);
 
-    tabs.upsert({ id: "t1", connectionId: "c1", title: "Query 1", content: "SELECT 1", filePath: null, position: 0 });
-    tabs.upsert({ id: "t2", connectionId: "c1", title: "Query 2", content: "SELECT 2", filePath: "c:\\x\\a.sql", position: 1 });
-    tabs.upsert({ id: "t3", connectionId: "c2", title: "Other", content: "SELECT 3", filePath: null, position: 0 });
+    tabs.upsert({ id: "t1", connectionId: "c1", title: "Query 1", content: "SELECT 1", filePath: null, position: 0, kind: "query", meta: null });
+    tabs.upsert({
+      id: "t2",
+      connectionId: "c1",
+      title: "Query 2",
+      content: "SELECT 2",
+      filePath: "c:\\x\\a.sql",
+      position: 1,
+      kind: "query",
+      meta: null,
+    });
+    tabs.upsert({ id: "t3", connectionId: "c2", title: "Other", content: "SELECT 3", filePath: null, position: 0, kind: "query", meta: null });
 
     db.close();
     db = openDb(path);
@@ -77,6 +86,86 @@ describe("BASED-TABSTORE: tab persistence", () => {
 
     tabs.delete("t1");
     expect(tabs.list("c1").map((t) => t.id)).toEqual(["t2"]);
+    db.close();
+  });
+
+  test("table and routine tabs round-trip their kind and meta", () => {
+    const path = tempDbPath();
+    let db = openDb(path);
+    let tabs = new TabStore(db);
+
+    tabs.upsert({
+      id: "tbl1",
+      connectionId: "c1",
+      title: "dbo.Orders",
+      content: "",
+      filePath: null,
+      position: 0,
+      kind: "table",
+      meta: { schema: "dbo", table: "Orders", objectType: "table", view: "data" },
+    });
+    tabs.upsert({
+      id: "rt1",
+      connectionId: "c1",
+      title: "dbo.GetOrders",
+      content: "",
+      filePath: null,
+      position: 1,
+      kind: "routine",
+      meta: { schema: "dbo", name: "GetOrders", routineType: "procedure" },
+    });
+
+    db.close();
+    db = openDb(path);
+    tabs = new TabStore(db);
+
+    const list = tabs.list("c1");
+    const tbl = list.find((t) => t.id === "tbl1")!;
+    const rt = list.find((t) => t.id === "rt1")!;
+    expect(tbl.kind).toBe("table");
+    expect(tbl.meta).toEqual({ schema: "dbo", table: "Orders", objectType: "table", view: "data" });
+    expect(rt.kind).toBe("routine");
+    expect(rt.meta).toEqual({ schema: "dbo", name: "GetOrders", routineType: "procedure" });
+    db.close();
+  });
+});
+
+describe("BASED-WINDOW-RESTORE: window state persistence", () => {
+  test("save/get round-trip, list, delete, survives reopen", () => {
+    const path = tempDbPath();
+    let db = openDb(path);
+    let windows = new WindowStateStore(db);
+
+    windows.save("sid1", { connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo" });
+    windows.save("sid2", { connectionId: "c2" });
+
+    db.close();
+    db = openDb(path);
+    windows = new WindowStateStore(db);
+
+    expect(windows.get("sid1")).toMatchObject({ sid: "sid1", connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo" });
+    expect(windows.list().map((w) => w.sid).sort()).toEqual(["sid1", "sid2"]);
+
+    // partial patch merges over the existing row
+    windows.save("sid1", { activeTabId: "t2" });
+    expect(windows.get("sid1")).toMatchObject({ connectionId: "c1", activeTabId: "t2", schemaFilter: "dbo" });
+
+    windows.delete("sid2");
+    expect(windows.get("sid2")).toBeNull();
+    expect(windows.list().map((w) => w.sid)).toEqual(["sid1"]);
+    db.close();
+  });
+
+  test("deleting a connection cascades to remove its window_state rows", () => {
+    const db = openDb(tempDbPath());
+    const windows = new WindowStateStore(db);
+    windows.save("sidA", { connectionId: "c1" });
+    windows.save("sidB", { connectionId: "c1" });
+    windows.save("sidC", { connectionId: "c2" });
+
+    windows.deleteByConnection("c1");
+
+    expect(windows.list().map((w) => w.sid)).toEqual(["sidC"]);
     db.close();
   });
 });

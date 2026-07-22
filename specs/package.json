@@ -10,6 +10,7 @@
     "exceljs": "^4.4.0"
   },
   "devDependencies": {
+    "@lancedb/lancedb": "^0.24.0",
     "@types/bun": "^1.2.0"
   }
 }

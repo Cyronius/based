@@ -6,33 +6,11 @@ import {
   type GridColumn,
   type GridSelection,
   type Item,
-  type Theme,
 } from "@glideapps/glide-data-grid";
 import type { ResultSetData } from "../store";
-import { cellText } from "../api/types";
-
-const ledgerGridTheme: Partial<Theme> = {
-  accentColor: "#d2a24c",
-  accentLight: "#d2a24c22",
-  bgCell: "#15181d",
-  bgCellMedium: "#1a1e24",
-  bgHeader: "#1a1e24",
-  bgHeaderHasFocus: "#20252c",
-  bgHeaderHovered: "#20252c",
-  textDark: "#e9e6de",
-  textMedium: "#8d929c",
-  textLight: "#5a606a",
-  textHeader: "#8d929c",
-  borderColor: "#272d36",
-  horizontalBorderColor: "#1f242c",
-  drilldownBorder: "#272d36",
-  linkColor: "#7fa8c9",
-  cellHorizontalPadding: 8,
-  cellVerticalPadding: 3,
-  headerFontStyle: "600 11px",
-  baseFontStyle: "12px",
-  fontFamily: "IBM Plex Mono, monospace",
-};
+import { useStore } from "../store";
+import { cellText, type WireValue } from "../api/types";
+import { gridThemeFromCss, gridCellOverrides } from "../theme";
 
 const NUMERIC_TYPES = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney)$/;
 
@@ -47,6 +25,9 @@ export function ResultGrid({
 }) {
   const [widths, setWidths] = useState<Record<number, number>>({});
   const [selection, setSelection] = useState<GridSelection | undefined>(undefined);
+  const themeId = useStore((s) => s.theme);
+  const gridTheme = useMemo(() => gridThemeFromCss(), [themeId]);
+  const nullText = useMemo(() => gridCellOverrides().nullText, [themeId]);
 
   const columns = useMemo<GridColumn[]>(
     () =>
@@ -67,7 +48,7 @@ export function ResultGrid({
           data: "",
           displayData: "NULL",
           allowOverlay: false,
-          themeOverride: { textDark: "#5a606a", baseFontStyle: "italic 12px" },
+          themeOverride: { textDark: nullText, baseFontStyle: "italic 12px" },
         };
       }
       if (typeof v === "number" && NUMERIC_TYPES.test(rs.columns[col]?.type ?? "")) {
@@ -77,22 +58,38 @@ export function ResultGrid({
       return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rs, version],
+    [rs, version, nullText],
   );
 
   const selectionToText = useCallback(() => {
+    const fmt = (v: WireValue) => (v === null ? "NULL" : typeof v === "object" ? cellText(v) : String(v));
+    const rowText = (r: number, cols: number[]) => cols.map((c) => fmt(rs.rows[r]?.[c] ?? null)).join("\t");
+    const allCols = rs.columns.map((_, i) => i);
+
+    // Whole rows selected → every column of each selected row (no header, like a range copy).
+    const rows = selection?.rows;
+    if (rows && rows.length > 0) return rows.toArray().map((r) => rowText(r, allCols)).join("\r\n");
+
+    // Whole columns selected → those columns (with their names) across every row.
+    const cols = selection?.columns;
+    if (cols && cols.length > 0) {
+      const idx = cols.toArray();
+      const header = idx.map((c) => rs.columns[c]!.name).join("\t");
+      return [header, ...rs.rows.map((_, r) => rowText(r, idx))].join("\r\n");
+    }
+
+    // Cell range → the selected rectangle.
     const range = selection?.current?.range;
-    const tsvRow = (r: number, x0: number, x1: number) =>
-      rs.rows[r]!.slice(x0, x1)
-        .map((v) => (v === null ? "NULL" : typeof v === "object" ? cellText(v) : String(v)))
-        .join("\t");
     if (range) {
+      const rangeCols = Array.from({ length: range.width }, (_, i) => range.x + i);
       const lines: string[] = [];
-      for (let r = range.y; r < range.y + range.height; r++) lines.push(tsvRow(r, range.x, range.x + range.width));
+      for (let r = range.y; r < range.y + range.height; r++) lines.push(rowText(r, rangeCols));
       return lines.join("\r\n");
     }
+
+    // Nothing selected → the whole result set with a header row.
     const header = rs.columns.map((c) => c.name).join("\t");
-    return [header, ...rs.rows.map((_, r) => tsvRow(r, 0, rs.columns.length))].join("\r\n");
+    return [header, ...rs.rows.map((_, r) => rowText(r, allCols))].join("\r\n");
   }, [selection, rs]);
 
   onSelectionData(selectionToText);
@@ -103,12 +100,13 @@ export function ResultGrid({
       rows={rs.rows.length}
       getCellContent={getCellContent}
       getCellsForSelection={true}
-      rowMarkers="number"
+      rowMarkers="clickable-number"
       smoothScrollX
       smoothScrollY
       width="100%"
       height="100%"
-      theme={ledgerGridTheme}
+      theme={gridTheme}
+      key={themeId}
       gridSelection={selection}
       onGridSelectionChange={setSelection}
       onColumnResize={(_c, newSize, colIndex) => setWidths((w) => ({ ...w, [colIndex]: newSize }))}

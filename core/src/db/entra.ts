@@ -35,6 +35,9 @@ export function createCredential(cfg: ConnectionConfig, getSecret: SecretProvide
       return new ClientSecretCredential(cfg.tenantId, cfg.clientId, secret);
     }
     case "sql-login":
+    // LanceDB auth types never reach the MSSQL credential path.
+    case "lancedb-cloud":
+    case "lancedb-local":
       return null;
   }
 }

@@ -1,10 +1,11 @@
 // Traces: BASED-AUTH-AZCLI, BASED-CONN-TEST, BASED-MSSQL-OBJECTS, BASED-MSSQL-COLUMNS,
-//         BASED-MULTI-RESULTSET, BASED-CANCEL, BASED-ERROR-TEXT
-// Runs against the Phase 0 dev DB (read-only queries only) via AzureCliCredential.
-// Self-skips when no az login / network is available.
+//         BASED-MULTI-RESULTSET, BASED-CANCEL, BASED-ERROR-TEXT, BASED-TABLE-BROWSE, BASED-TABLE-COMMIT,
+//         BASED-VIEW-DEFINITION, BASED-ROUTINE-DETAILS
+// Runs against the Phase 0 dev DB via AzureCliCredential. Read-only suites need only connect; the
+// table-edit suite additionally needs CREATE/DROP TABLE and self-skips when that permission is absent.
 import { describe, expect, test } from "bun:test";
-import { MssqlAdapter, testConnection } from "@based/core";
-import type { ConnectionConfig, QueryChunk } from "@based/core";
+import { buildEditCommands, MssqlAdapter, testConnection } from "@based/core";
+import type { ConnectionConfig, ExecuteOptions, QueryChunk } from "@based/core";
 
 const cfg: ConnectionConfig = {
   id: "spec-dev",
@@ -29,9 +30,13 @@ let availError = "";
 const d = available ? describe : describe.skip;
 if (!available) console.warn(`[integration.mssql] dev DB unavailable, skipping: ${availError}`);
 
-function collect(adapter: MssqlAdapter, sql: string): Promise<{ chunks: QueryChunk[]; status: string }> {
+function collect(
+  adapter: MssqlAdapter,
+  sql: string,
+  opts?: ExecuteOptions,
+): Promise<{ chunks: QueryChunk[]; status: string }> {
   const chunks: QueryChunk[] = [];
-  const exec = adapter.execute(sql, (c) => chunks.push(c));
+  const exec = adapter.execute(sql, (c) => chunks.push(c), opts);
   return exec.completion.then(({ status }) => ({ chunks, status }));
 }
 
@@ -171,6 +176,250 @@ d("mssql adapter against dev DB", () => {
       expect(sets.length).toBe(1);
       expect(sets[0]!.rows[0]).toEqual([42]);
     } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-VIEW-DEFINITION: an existing view's CREATE VIEW body is returned", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      const view = (await adapter.listObjects()).find((o) => o.type === "view");
+      expect(view).toBeDefined();
+      const definition = await adapter.getObjectDefinition!(view!.schema, view!.name);
+      expect(definition).not.toBeNull();
+      expect(definition).toMatch(/create\s+view/i);
+      expect(definition!.toLowerCase()).toContain(view!.name.toLowerCase());
+
+      const missing = await adapter.getObjectDefinition!("dbo", `based_spec_no_such_object_${Date.now()}`);
+      expect(missing).toBeNull();
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-ROUTINE-DETAILS: procedure definition + declaration-ordered parameter list", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      const objects = await adapter.listObjects();
+      const proc = objects.find((o) => o.type === "procedure");
+      expect(proc).toBeDefined();
+      const definition = await adapter.getObjectDefinition!(proc!.schema, proc!.name);
+      expect(definition).not.toBeNull();
+      expect(definition).toMatch(/create\s+proc(edure)?/i);
+
+      // find a procedure with at least one parameter to assert shape meaningfully
+      let params: Awaited<ReturnType<MssqlAdapter["getRoutineParameters"]>> = [];
+      for (const p of objects.filter((o) => o.type === "procedure")) {
+        params = await adapter.getRoutineParameters!(p.schema, p.name);
+        if (params.length > 0) break;
+      }
+      expect(params.length).toBeGreaterThan(0);
+      for (const p of params) {
+        expect(p.name.length).toBeGreaterThan(0);
+        expect(p.type.length).toBeGreaterThan(0);
+        expect(["in", "out", "inout"]).toContain(p.mode);
+      }
+      const ordinals = params.map((p) => p.ordinal);
+      expect(ordinals).toEqual([...ordinals].sort((a, b) => a - b));
+
+      const fn = objects.find((o) => o.type === "function");
+      if (fn) {
+        const fnDef = await adapter.getObjectDefinition!(fn.schema, fn.name);
+        expect(fnDef).toMatch(/create\s+function/i);
+      }
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-EXEC-PLAN: capturePlan captures actual plan XML with no spurious resultset", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      const { chunks, status } = await collect(adapter, "SELECT 1 AS a", { capturePlan: true });
+      expect(status).toBe("ok");
+      const plans = chunks.filter((c) => c.type === "plan") as Array<{ type: "plan"; xml: string }>;
+      expect(plans.length).toBe(1);
+      expect(plans[0]!.xml).toMatch(/<ShowPlanXML/);
+      const sets = resultSets(chunks);
+      expect(sets.length).toBe(1);
+      expect(sets[0]!.columns).toEqual(["a"]);
+      expect(sets[0]!.rows[0]).toEqual([1]);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-EXEC-PLAN: multi-statement batch yields one plan chunk per statement", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      const { chunks, status } = await collect(adapter, "SELECT 1 AS a; SELECT 2 AS b", {
+        capturePlan: true,
+        captureStats: true,
+      });
+      expect(status).toBe("ok");
+      expect(chunks.filter((c) => c.type === "plan").length).toBe(2);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-CLIENT-STATS: captureStats surfaces STATISTICS IO/TIME text as messages", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      const { chunks, status } = await collect(adapter, "SELECT TOP 1 * FROM sys.objects", { captureStats: true });
+      expect(status).toBe("ok");
+      const messages = chunks
+        .filter((c) => c.type === "message")
+        .map((c) => (c as { text: string }).text)
+        .join("\n");
+      expect(messages).toMatch(/logical reads|CPU time/i);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+
+  test("BASED-EXEC-PLAN: cancelling a capture-enabled run doesn't leak SET state to the next query", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    try {
+      await adapter.connect();
+      const chunks: QueryChunk[] = [];
+      const exec = adapter.execute("WAITFOR DELAY '00:00:30'", (c) => chunks.push(c), {
+        capturePlan: true,
+        captureStats: true,
+      });
+      setTimeout(() => exec.cancel(), 500);
+      const { status } = await exec.completion;
+      expect(status).toBe("cancelled");
+
+      // Regression test for the pooled-connection leak: a cancelled capture-enabled batch skips its
+      // trailing SET ... OFF (TRY/CATCH doesn't run on a TDS ATTENTION abort) — the next unrelated
+      // query on this same adapter must still come back clean.
+      const after = await collect(adapter, "SELECT 1 AS ok");
+      expect(after.status).toBe("ok");
+      expect(after.chunks.some((c) => c.type === "plan")).toBe(false);
+      const afterMessages = after.chunks
+        .filter((c) => c.type === "message")
+        .map((c) => (c as { text: string }).text)
+        .join("\n");
+      expect(afterMessages).not.toMatch(/logical reads|CPU time/i);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 60_000);
+});
+
+// --- table browse + edit: needs CREATE/DROP TABLE; probes once and self-skips otherwise ---
+let canWrite = false;
+if (available) {
+  const probe = new MssqlAdapter(cfg, noSecret);
+  const name = `based_spec_probe_${Date.now()}`;
+  try {
+    const c = await collect(probe, `CREATE TABLE dbo.[${name}] (id int PRIMARY KEY); DROP TABLE dbo.[${name}]`);
+    canWrite = c.status === "ok";
+  } catch {
+    canWrite = false;
+  } finally {
+    await probe.disconnect().catch(() => {});
+  }
+  if (!canWrite) console.warn("[integration.mssql] no CREATE TABLE permission on dev DB, skipping table-edit suite");
+}
+const dw = canWrite ? describe : describe.skip;
+
+dw("table browse + transactional edit against a scratch table", () => {
+  const editCols = [
+    { name: "id", isPrimaryKey: true },
+    { name: "name", isPrimaryKey: false },
+    { name: "qty", isPrimaryKey: false },
+  ];
+
+  test("BASED-TABLE-BROWSE: paginated read ordered by PK, PK-flagged columns", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const tbl = `based_spec_browse_${Date.now()}`;
+    try {
+      const create = await collect(adapter, `CREATE TABLE dbo.[${tbl}] (id int PRIMARY KEY, name nvarchar(50))`);
+      expect(create.status).toBe("ok");
+      await collect(adapter, `INSERT INTO dbo.[${tbl}] (id,name) VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')`);
+
+      const p1 = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 2 });
+      expect(p1.rows.length).toBe(2);
+      expect(p1.orderBy).toEqual(["id"]);
+      expect(p1.columns.find((c) => c.name === "id")?.isPrimaryKey).toBe(true);
+
+      const p2 = await adapter.readTablePage("dbo", tbl, { offset: 2, limit: 2 });
+      expect(p2.rows.map((r) => r[0])).not.toEqual(p1.rows.map((r) => r[0]));
+
+      // deterministic across repeated page reads
+      const p1again = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 2 });
+      expect(p1again.rows).toEqual(p1.rows);
+    } finally {
+      await collect(adapter, `DROP TABLE dbo.[${tbl}]`).catch(() => {});
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
+  test("BASED-TABLE-COMMIT: insert+update+delete apply together; a failing batch rolls back", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const tbl = `based_spec_edit_${Date.now()}`;
+    try {
+      await collect(adapter, `CREATE TABLE dbo.[${tbl}] (id int PRIMARY KEY, name nvarchar(50), qty int)`);
+      await collect(adapter, `INSERT INTO dbo.[${tbl}] (id,name,qty) VALUES (1,'a',10),(2,'b',20),(3,'c',30)`);
+
+      // all-or-nothing commit: insert 4, update 1, delete 2
+      const cmds = buildEditCommands({
+        schema: "dbo",
+        table: tbl,
+        columns: editCols,
+        inserts: [{ id: 4, name: "d", qty: 40 }],
+        updates: [{ key: { id: 1 }, set: { name: "A" } }],
+        deletes: [{ id: 2 }],
+      });
+      const ok = await adapter.runCommands(cmds);
+      expect(ok.error).toBeNull();
+
+      const page = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 100 });
+      const byId = new Map(page.rows.map((r) => [r[0], r]));
+      expect(byId.has(2)).toBe(false); // deleted
+      expect(byId.get(1)?.[1]).toBe("A"); // updated
+      expect(byId.get(4)?.[1]).toBe("d"); // inserted
+
+      // failing batch: insert 5 (valid) then insert 3 (duplicate PK) → whole batch rolls back
+      const bad = buildEditCommands({
+        schema: "dbo",
+        table: tbl,
+        columns: editCols,
+        inserts: [
+          { id: 5, name: "e", qty: 50 },
+          { id: 3, name: "dup", qty: 0 },
+        ],
+      });
+      const rolled = await adapter.runCommands(bad);
+      expect(rolled.error).toBeTruthy();
+      const after = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 100 });
+      expect(after.rows.some((r) => r[0] === 5)).toBe(false); // rolled back — no partial write
+    } finally {
+      await collect(adapter, `DROP TABLE dbo.[${tbl}]`).catch(() => {});
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
+  test("BASED-EXEC-PLAN: capture is skipped (not broken) for a CREATE-first batch", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const proc = `based_spec_proc_${Date.now()}`;
+    try {
+      const { chunks, status } = await collect(
+        adapter,
+        `CREATE PROCEDURE dbo.[${proc}] AS BEGIN SELECT 1 AS ok END`,
+        { capturePlan: true, captureStats: true },
+      );
+      expect(status).toBe("ok");
+      expect(chunks.filter((c) => c.type === "plan").length).toBe(0);
+      const messages = chunks
+        .filter((c) => c.type === "message")
+        .map((c) => (c as { text: string }).text)
+        .join("\n");
+      expect(messages).toMatch(/capture skipped/i);
+    } finally {
+      await collect(adapter, `DROP PROCEDURE dbo.[${proc}]`).catch(() => {});
       await adapter.disconnect();
     }
   }, 60_000);

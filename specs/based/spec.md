@@ -58,7 +58,7 @@ Auth type `azure-cli` shall acquire an Entra token via AzureCliCredential and co
 
 Auth type `entra-interactive` shall launch the system browser, capture the redirect on a local loopback listener (`InteractiveBrowserCredential`), and connect with the resulting token.
 
-**Verification procedure:** create a connection with auth type "Entra ID (interactive)", Test Connection → browser opens → sign in → dialog reports success. (Spike 3 script `spikes/03-entra-interactive/spike.mjs` is the standalone equivalent.)
+**Verification procedure:** create a connection with auth type "Entra ID (interactive)", Test Connection → browser opens → sign in → dialog reports success. **Result: PASS** (verified 2026-07-22 against the dev DB; the only issue hit was the target DB being restricted to SQL auth, a database-config constraint, not a code defect).
 
 ### BASED-AUTH-SQLLOGIN: SQL login auth
 **Applies to:** based (core)
@@ -202,11 +202,63 @@ Every user-initiated execution shall append a history row (connection, database,
 **Applies to:** based (core)
 **Test category:** integration
 
-SQL tabs (connection id, title, content, optional file path, order) shall persist automatically so a restart restores each connection's tab set.
+Tabs of every kind — query (content, optional file path), table/view (schema, table, object type, current sub-view), and routine (schema, name, routine type) — shall persist automatically, scoped by connection id and kind-specific metadata, so a restart restores each connection's full tab set.
 
 **Acceptance criteria:**
-- Upsert 2 tabs for a connection → list for that connection returns both in order with content intact after store reopen
+- Upsert one tab of each kind (query, table, routine) for a connection, each with its kind-specific `meta` → list for that connection returns all three in order with `kind` and `meta` intact after store reopen
 - Delete removes a tab; tabs are scoped per connection id
+
+### BASED-WINDOW-RESTORE: Per-window session restore
+**Applies to:** based (core, ui, shell)
+**Test category:** manual
+
+On launch, the app shall reopen one native window per window that was still open when it last exited (cleanly or via kill), each reconnecting to its last connection and restoring its active tab and schema filter. A window that was closed cleanly before the app exited shall not be reopened. Each window's state (connection id, active tab id, schema filter) is keyed by the same per-window session id (`sid`) the backend already uses to give each window an independent DB session — the shell reuses a window's prior `sid` across restarts instead of minting a fresh one, so window state and DB session share one durable key.
+
+**Acceptance criteria (`WindowStateStore`, integration-tested):**
+- Save connection/active-tab/schema-filter for a sid → get returns it; `list()` returns all rows; survives store reopen
+- Deleting a sid's row removes it from `list()`; deleting a connection cascades to remove every window_state row referencing it
+
+**Manual verification (multi-window relaunch):**
+1. Open 2 windows (Ctrl+N), connect each to a different connection, open a few tabs in each
+2. Quit the app (test both a clean quit and killing the process) and relaunch → both windows reopen with their respective connection, tabs, active tab, and schema filter intact
+3. Close one window cleanly, quit, relaunch → only the still-open window comes back
+
+### BASED-CONN-SWITCH-CACHE: Instant in-session connection switching
+**Applies to:** based (ui)
+**Test category:** manual
+
+Within one window's session, switching to a connection already visited restores its tabs, active tab, and schema filter instantly from an in-memory cache — without a server refetch and without discarding unsaved edits in the connection being left.
+
+**Manual verification:**
+1. In one window, open mixed query/table/routine tabs on connection A, switch to connection B, switch back to A → all tabs and the active tab are exactly as left
+2. Type in a query tab and switch connections within 700ms → the edit is not lost (flushed before the switch, not discarded)
+
+---
+
+## Settings / Appearance
+
+### BASED-SETTINGS: App settings persistence
+**Applies to:** based (core)
+**Test category:** integration
+
+App-wide user preferences (the active theme id, and the Data view's rows-per-page) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
+
+**Acceptance criteria:**
+- Fresh store → `GET /api/settings` returns `{ theme: "ledger", rowPageSize: 500 }`
+- `POST { theme: "chillwave" }` → returns `{ theme: "chillwave", rowPageSize: 500 }`; a subsequent `GET` (after store reopen) still returns `chillwave`
+- `POST { rowPageSize: 1000 }` → returns `rowPageSize: 1000` with `theme` unchanged; persists across store reopen
+- A partial patch merges over existing settings rather than replacing the row
+
+### BASED-THEME: Theme switching
+**Applies to:** based (ui)
+**Test category:** manual
+
+The UI shall offer a theme picker (LeftRail header) listing all themes grouped dark/light. Selecting a theme applies it immediately by writing CSS custom properties onto `<html>` — retinting the Tailwind-driven chrome, the Monaco editor (`based` theme rebuilt from the live variables), and both Glide result grids — and persists the choice via `POST /api/settings`. On launch the theme is painted from a localStorage hint before React mounts (no flash), then reconciled to the server value. Themes carry their own display/body/mono fonts (full swap).
+
+**Acceptance criteria:**
+- Picking a light theme (e.g. Cozy Reading Room) recolors the rails, editor, grids, and native controls with no reload; the wordmark/body/editor fonts change to that theme's fonts
+- The choice survives an app restart (loaded from `/api/settings`)
+- Result grid header/cells, NULL cells, and the editable grid's dirty/new row tints all match the active palette
 
 ---
 
@@ -226,15 +278,106 @@ A result set shall export to RFC-4180-style CSV: header row from column names, q
 **Applies to:** based (core)
 **Test category:** unit
 
-A result set shall export to a valid `.xlsx` (header row + data rows) that round-trips through a reader with values intact; "Open in Excel" writes to a temp file and shell-opens it.
+A result set shall export to a valid `.xlsx` (header row + data rows) that round-trips through a reader with values intact; string cells are stripped of XML-1.0-illegal characters (C0 controls except tab/LF/CR, lone surrogates, U+FFFE/FFFF) so Excel never reports a `sharedStrings.xml` repair. The Excel export writes to a temp file and shell-opens it with the OS default handler.
 
 **Acceptance criteria:**
 - Export 2×2 result → reading the file back yields the same header and cell values
 - NULL cells are empty; numbers stay numeric
+- A cell containing a lone surrogate or U+FFFF reads back with those characters removed (file opens without repair); valid surrogate pairs (emoji) survive
 
 ---
 
-## Agent / AI (Phase 2 — Margin Chat)
+## Table data (browse + edit) — Phase 3
+
+### BASED-TABLE-BROWSE: Paginated table data read
+**Applies to:** based (core)
+**Test category:** integration
+
+The adapter shall read a page of a table's rows ordered by a stable key, capped by the row cap, returning columns (with PK flags) and the page rows.
+
+**Acceptance criteria:**
+- A known table returns ≤ pageSize rows for `{offset:0, limit:N}`; a second page (`offset:N`) returns different rows
+- Ordering is deterministic across page calls (PK if present, else first column)
+- Column metadata marks the PK column(s)
+
+### BASED-TABLE-DML: Pure edit→SQL builder
+**Applies to:** based (core)
+**Test category:** unit
+
+A pure function shall turn a change set (row updates keyed by PK, inserts, deletes keyed by PK) into **parameterized** T-SQL commands with bracket-quoted, identifier-validated names. Cell values ride as parameters, never string-interpolated.
+
+**Acceptance criteria:**
+- Update of one column → `UPDATE [s].[t] SET [c]=@p0 WHERE [pk]=@k0`, value carried as a param, not interpolated
+- Insert → `INSERT INTO [s].[t] ([a],[b]) VALUES (@p0,@p1)`
+- Delete → `DELETE FROM [s].[t] WHERE [pk]=@k0`
+- Composite PK → all key columns in the WHERE
+- Update/delete with **no PK column** → throws/refuses (no command emitted)
+- An invalid identifier (`;`, brackets, quotes) is rejected without emitting SQL
+
+### BASED-TABLE-COMMIT: Transactional edit commit
+**Applies to:** based (core)
+**Test category:** integration
+
+`POST /api/session/table-edit` shall build the commands (`buildEditCommands`) and, unless `preview: true`, execute them via `runCommands` in one transaction (all-or-nothing) and record a history row. A build failure (no PK, invalid identifier) returns 400; a runtime failure returns the server message and nothing partially commits.
+
+**Acceptance criteria:**
+- Committing an insert+update+delete on a scratch table applies all three; a subsequent read reflects them *(test creates/drops its own scratch table; self-skips without CREATE TABLE permission)*
+- A failing command rolls the whole batch back (no partial write) and returns the error text
+- A history row is recorded for the commit
+- `preview: true` returns the built commands without executing; a no-PK edit returns 400
+
+### BASED-VIEW-DEFINITION: View/routine SQL definition text
+**Applies to:** based (core)
+**Test category:** integration
+
+The adapter shall expose the CREATE VIEW/PROCEDURE/FUNCTION body of a schema object via `getObjectDefinition(schema, name)` (backed by `sys.sql_modules`), reachable at `GET /api/session/definition`. Unknown objects return `null` rather than throwing. Optional on `DatabaseAdapter` — absent on engines without SQL definitions (e.g. LanceDB).
+
+**Acceptance criteria:**
+- A known view's definition contains `CREATE VIEW` and the view's own name (case-insensitive)
+- A known function's definition contains `CREATE FUNCTION`
+- An unknown schema/name pair returns `null`, not an error
+
+### BASED-ROUTINE-DETAILS: Stored procedure / function parameter introspection
+**Applies to:** based (core)
+**Test category:** integration
+
+The adapter shall list a stored procedure or function's parameters (name, SQL type, in/out mode, declaration ordinal) via `getRoutineParameters(schema, name)` (backed by `sys.parameters`/`sys.types`), reachable at `GET /api/session/parameters`. Optional on `DatabaseAdapter`, same gating as BASED-VIEW-DEFINITION.
+
+**Acceptance criteria:**
+- A known procedure with parameters returns them in declaration order (ordinals ascending from 1), each with a non-empty name/type and `mode` ∈ {in, out, inout}
+- A parameterless function returns an empty list, not an error
+
+### BASED-UI-TABLE-EDIT: Editable data grid
+**Applies to:** based (ui)
+**Test category:** manual
+
+The table/view tab's header tabs (Details / Edit Data / SQL — see BASED-TABLE-SQL-VIEW) sit at the left of the header, before the object title. Edit Data shows an editable grid (glide-data-grid edit mode) with page controls (Prev/Next plus a rows-per-page picker, backed by the `rowPageSize` app setting from BASED-SETTINGS, default 500), add-row and delete-row affordances, a **pending changes** indicator, a **Review SQL** peek, and **Commit**/**Discard**. Details additionally shows a view's SQL definition text (BASED-VIEW-DEFINITION) below its columns. No PK → read-only with a notice.
+
+**Verification procedure:**
+1. Double-click a table → Details view, tabs at the left of the header; toggle to Edit Data → rows list; Prev/Next paging works
+2. Change the rows-per-page picker → grid reloads from page 1 at the new page size, and the choice persists across reopening the tab/app
+3. Edit a cell → cell marked dirty; Review SQL shows a parameterized `UPDATE`
+4. Add a row and delete a row → Commit → grid refreshes with the changes; History shows the commit
+5. Open a view → Details shows both columns and its CREATE VIEW text; Edit Data grid works the same as for a table
+6. A table with no PK → grid is read-only with a notice
+7. Break a value (bad type) → Commit shows the server error; grid still reflects pre-commit (uncommitted) state
+
+### BASED-TABLE-SQL-VIEW: Prepopulated, autorun, cached SQL tab
+**Applies to:** based (ui)
+**Test category:** manual
+
+A table/view tab's "SQL" tab (mssql connections only) is a full query-tab experience (editor + results + output, run/cancel/save) backed by a hidden query tab prepopulated with `SELECT * FROM [schema].[table]`. The query runs automatically the first time the tab is opened; navigating to Details/Edit Data and back re-renders the same cached results rather than re-running. Editing the SQL and rerunning behaves exactly like an ordinary query tab. Closing the table/view tab disposes the hidden tab too; it is not persisted across app restarts.
+
+**Verification procedure:**
+1. Open a table → click SQL → `SELECT * FROM` the table runs automatically and results appear
+2. Click Details, then click SQL again → previous results still shown, no new query fires (no new row in the status bar's duration / no query log entry)
+3. Edit the SQL and press F5 → reruns with the new results, same as any query tab
+4. Close the table tab → reopen it → SQL tab starts fresh (autoruns again)
+5. Connect to a LanceDB connection → no SQL tab is shown
+
+---
+
+## Agent / AI (Phase 2 — Ask Capy)
 
 ### BASED-AI-PROVIDER: AI provider configuration & model resolution
 **Applies to:** based (core)
@@ -325,6 +468,88 @@ Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), keyed 
 
 **Verification (this pass):** memory is wired and its store initialises to `agent.db`; multi-turn recall across restart is documented for manual confirmation once a healthy model backend is available (see plan).
 
+### BASED-SKILL-REGISTRY: Skill registry & prompt catalog
+**Applies to:** based (core)
+**Test category:** unit
+
+Developer-authored capability modules (TS modules, not runtime-loaded files — bundler-safe for the shell) register in a registry. `catalog(engines?)` yields each skill's name + description (never the body) for the system prompt, filtered to the active engine: a skill with no `engines` tag is universal; a tagged skill (e.g. `lance-search` → `["lancedb"]`) is advertised only when its engine is active. `get(name)` returns the full skill or undefined.
+
+**Acceptance criteria:**
+- `catalog(allEngines)` contains every registered skill's name and description and none of the body text
+- A universal skill (`diagrams`) appears in every catalog; an engine-tagged skill appears only for its engine
+- `get(known)` returns the body; `get(unknown)` returns undefined
+- At least the `diagrams` skill is registered
+
+### BASED-SKILL-LOAD: `load_skill` tool (progressive disclosure)
+**Applies to:** based (core)
+**Test category:** integration
+
+The agent has a `load_skill({ name })` tool returning the skill body; an unknown name returns the valid-name list (no throw). The system prompt advertises the catalog and instructs the agent to load a matching skill before acting on it.
+
+**Acceptance criteria:**
+- `load_skill({ name: "diagrams" })` returns the diagrams body
+- An unknown name returns the list of valid names, not an error
+- The built agent's instructions include the skill catalog and the load-a-skill-first protocol
+
+### BASED-AGENT-INSTRUCTIONS: Editable, named agent instruction sets
+**Applies to:** based (core)
+**Test category:** integration
+
+The agent's system prompt (the shared core + each engine's persona — SQL Server, LanceDB) is
+user-editable and persisted as named instruction sets. A single virtual `"default"` set always
+mirrors the built-in `GENERIC_CORE`/`MSSQL_PERSONA`/`LANCE_PERSONA` constants — it is never persisted
+and can be neither edited nor deleted, so it can't drift from the code. `GET /api/agent/instructions`
+returns the active id plus every set (default first); `POST /api/agent/instructions` creates
+(no `id`) or updates (matching `id`) a custom set; `POST /api/agent/instructions/active` switches the
+active set; `DELETE /api/agent/instructions/:id` removes a custom set. All four reject `id: "default"`
+(create/update/delete) or an unknown id (activate) with a 400.
+
+**Acceptance criteria:**
+- Fresh store → `GET` returns exactly one set, `{ id: "default", editable: false, core: GENERIC_CORE, mssqlPersona: MSSQL_PERSONA, lancePersona: LANCE_PERSONA }`
+- `POST` with no `id` creates a custom set (`editable: true`); a subsequent `GET` (after store reopen) still returns it
+- `POST` with a matching `id` updates that set in place rather than duplicating it
+- `POST`/`DELETE` targeting `id: "default"` → 400, no change
+- Activating a set persists across a `GET`; deleting the active custom set falls back `activeId` to `"default"`
+- Activating an unknown id → 400
+
+### BASED-AGENT-INSTRUCTIONS-COMPOSE: Instruction-set override wiring
+**Applies to:** based (core)
+**Test category:** unit
+
+`buildAgent` accepts optional `core`/`persona` overrides; when supplied they replace `GENERIC_CORE`
+and the engine surface's persona in the composed system prompt (`agentInstructions`). Omitting them
+reproduces today's hardcoded per-engine output exactly — a regression guard as this becomes
+settings-driven.
+
+**Acceptance criteria:**
+- `buildAgent` with no `core`/`persona` → instructions equal `agentInstructions(GENERIC_CORE, <engine persona>)` for both `mssql` and `lancedb`
+- `buildAgent` with `core`/`persona` overrides → the built agent's instructions contain the override text and omit the built-in `GENERIC_CORE`/persona text
+
+### BASED-AGENT-INSTRUCTIONS-UI: Agent instructions editor
+**Applies to:** based (ui)
+**Test category:** manual
+
+The gear icon next to Ask Capy opens, alongside the AI-provider fields, an "Agent instructions"
+section: a set picker (Default + any custom sets) and three collapsible boxes — Core (shared), SQL
+Server persona, LanceDB persona — editable only when the selected set isn't Default. Duplicate clones
+the selected set into a new editable one; Save persists edits; Delete removes a custom set.
+
+**Acceptance criteria:**
+- Default's three boxes render read-only with a note explaining why; Duplicate creates an editable copy
+- Editing a custom set's boxes and clicking Save persists the change across a reload
+- Switching the active set persists; deleting a custom set falls back the selection to Default
+- A chat turn's behavior reflects whichever set is currently active
+
+### BASED-DIAGRAM-RENDER: Mermaid rendering in the rail
+**Applies to:** based (ui)
+**Test category:** manual
+
+Assistant ` ```mermaid ` blocks render in the Capy rail (Streamdown mermaid plugin, already wired). The `diagrams` skill body covers ER (schema shape), FK graph (reference questions), sequence/flow (proc logic), `pie` (small categorical distribution), `xychart-beta` bar/line (trend/comparison, noting the beta limits), and "aggregate to a small group set and use `run_query`'s real numbers before charting."
+
+**Verification procedure (needs a healthy model backend):**
+1. "pie of orders by status" → agent runs an aggregate, emits a mermaid `pie` with the real counts, chart renders
+2. "show the schema of X and what references it" → ER / FK diagram renders
+
 ---
 
 ## UI (manual verification — procedures are the artifact)
@@ -333,9 +558,9 @@ Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), keyed 
 **Applies to:** based (ui)
 **Test category:** manual
 
-Three-region workbench: left rail (connection selector, database selector, schema dropdown, object explorer), center tabbed work area, right rail hosting Margin Chat (Phase 2; a "connect to chat" placeholder until a connection is active).
+Three-region workbench: left rail (connection selector, database selector, schema dropdown, object explorer), center tabbed work area, right rail hosting Ask Capy (Phase 2; a "connect to chat" placeholder until a connection is active).
 
-**Verification procedure:** launch app → left rail and center area render; right rail toggle exists and expands/collapses; with a connection active the rail shows Margin Chat.
+**Verification procedure:** launch app → left rail and center area render; right rail toggle exists and expands/collapses; with a connection active the rail shows Ask Capy.
 
 ### BASED-UI-CONNECTIONS: Connection management UI
 **Applies to:** based (ui)
@@ -353,9 +578,9 @@ Single active connection. "+ New connection" opens a form (name, server, auth ty
 **Applies to:** based (ui)
 **Test category:** manual
 
-Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Functions — each header showing a count; collapsed groups hide members. Double-clicking a table/view opens a table-details tab (Name, Data Type, Size/Precision/Scale, Nullable, Key) sourced from the same introspection endpoint as everything else.
+Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Functions — each header showing a count; collapsed groups hide members. Double-clicking a table/view opens a table-details tab (Name, Data Type, Size/Precision/Scale, Nullable, Key) sourced from the same introspection endpoint as everything else. Double-clicking a stored procedure/function opens a routine tab showing its parameter list (BASED-ROUTINE-DETAILS) and SQL definition text (BASED-VIEW-DEFINITION) — no Edit Data/SQL tabs, since a routine has no natural row set.
 
-**Verification procedure:** connect to dev DB → four groups with counts; collapse/expand works; double-click a table → details tab shows its columns with PK marked.
+**Verification procedure:** connect to dev DB → four groups with counts; collapse/expand works; double-click a table → details tab shows its columns with PK marked; double-click a stored procedure or function → routine tab shows its parameters and definition text (previously not double-clickable at all).
 
 ### BASED-UI-TABS: SQL tabs
 **Applies to:** based (ui)
@@ -373,13 +598,13 @@ Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save
 **Applies to:** based (ui)
 **Test category:** manual
 
-Sub-tabs per result set for multi-statement batches. Toolbar: Excel-style grid / plain-text toggle; row-count + execution-time stats; copy cell/row/selection; export CSV/XLSX; "Open in Excel". Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap.
+Sub-tabs per result set for multi-statement batches. Toolbar: Excel-style grid / plain-text toggle; row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap.
 
 **Verification procedure:**
 1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 sub-tabs, each with stats
 2. Toggle grid/text views
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
-4. Copy a cell and a row-range → clipboard contents match; export CSV and XLSX → files open; "Open in Excel" launches Excel
+4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
 5. Row-cap notice appears for a >50k-row query
 
 ### BASED-UI-OUTPUT: Output pane & connection state
@@ -393,16 +618,135 @@ Errors (syntax, permissions, timeout) appear as readable text in the Output pane
 2. Run `SELECT 1/0` → divide-by-zero message
 3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
 
-### BASED-CHAT-UI: Margin Chat panel
+### BASED-CHAT-UI: Ask Capy panel
 **Applies to:** based (ui)
 **Test category:** manual
 
 The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**; `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail; a ⚙ panel edits base URL / model / key.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
-1. Connect to a DB → open the margin rail → ask "what tables are there?" → answer streams
+1. Connect to a DB → open the Capy rail → ask "what tables are there?" → answer streams
 2. Ask for SQL → a highlighted SQL block appears with Insert / Run → Run opens a results tab
 3. Ask for an update → approval card renders; Reject = nothing runs; Approve = runs via the endpoint and an audit row appears
 4. Kill the app mid-thread, reopen, same connection → prior turns still shown
 
 **Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host.
+
+---
+
+## LanceDB engine (Phase 3 — workstream D)
+
+A second database engine behind the `DatabaseAdapter` interface: LanceDB, both **cloud** (`db://slug` + API key + region) and **file-based** (a local directory). The engine is a property of the connection: each adapter declares its `capabilities` and exposes its own agent toolset + persona — the SQL Server and LanceDB toolsets deliberately do not match. `@lancedb/lancedb` is a napi module; loading it under Bun is the go/no-go gate (`BASED-LANCE-SPIKE`).
+
+### BASED-LANCE-SPIKE: napi go/no-go under Bun
+**Applies to:** based (core)
+**Test category:** manual
+
+`@lancedb/lancedb` shall load and run under Bun on Windows: open a table, create a fixed-size vector column, run a vector search and a full-text search. Failure blocks the whole workstream (fallback: a Node sidecar).
+
+**Verification procedure:** create a table, vector-search, filter, under `bun run` on Windows. **Result: PASS under bun 1.3.14** (NAPI_LOAD_OK, CREATE_TABLE_OK, VECTOR_SEARCH_OK, FILTER_QUERY_OK); FTS + hybrid + Arrow schema introspection separately verified. The Electrobun pinned-Bun packaged load remains a later manual check under workstream E's shell gate.
+
+### BASED-LANCE-ENGINE: Engine discriminator + adapter factory
+**Applies to:** based (core)
+**Test category:** integration
+
+`ConnectionConfig` carries an optional `engine` discriminator; `engineOf(cfg)` defaults an absent value to `"mssql"` so every legacy config stays valid with no migration. `createAdapter(cfg, getSecret, opts)` returns a `DatabaseAdapter` chosen by engine; `testConnection` is engine-agnostic (builds the adapter, runs its `probe()`). Session/tool code holds the interface, not a concrete class.
+
+**Acceptance criteria:**
+- A config with no `engine` resolves to the MSSQL adapter; the full existing suite stays green (behaviour-preserving)
+- A config with `engine: "lancedb"` resolves to the LanceDB adapter
+
+### BASED-LANCE-CONNECT: Cloud + local connect and probe
+**Applies to:** based (core)
+**Test category:** integration
+
+The LanceDB adapter shall connect file-based (uri = a directory) and cloud (`db://slug` + API key from the secret channel + region), and `probe()` reports ok with a LanceDB server string or an error.
+
+**Acceptance criteria:**
+- A local dir probe returns `ok: true` with a `serverVersion` matching `/LanceDB/`
+- Cloud connect (opt-in, env-gated `BASED_LANCE_CLOUD_URI`/`_KEY`; self-skips otherwise) connects and lists tables
+
+### BASED-LANCE-BROWSE: List tables, columns (incl. vectors), page rows
+**Applies to:** based (core)
+**Test category:** integration
+
+The adapter shall list tables (flat, no schemas), map the Arrow schema to `TableColumn` — flagging a `FixedSizeList` column as a vector with its dimension and element type, and every column `isPrimaryKey: false` — and read a page of rows (offset/limit, `orderBy: []` since LanceDB is unordered).
+
+**Acceptance criteria:**
+- `listObjects()` returns the seeded table with `type: "table"`; `listSchemas()` is empty
+- `getTableColumns` marks the vector column `isVector` with the right `vectorDimension`; no column is a PK
+- `readTablePage` returns ≤ pageSize rows; a second page differs
+
+### BASED-LANCE-WIRE: Vector wire summary + column metadata
+**Applies to:** based (core)
+**Test category:** unit
+
+A vector cell serializes to `{$:"vec", dim, preview}` (a short leading slice) rather than a full embedding, keeping rows small for the grid and the model. `TableColumn` gains optional `isVector`/`vectorDimension`/`vectorMetric`/`elementType`; MSSQL never sets them and its wire format is unchanged.
+
+**Acceptance criteria:**
+- A vector value (array, TypedArray, or Arrow `Vector`) → `{$:"vec"}` with `dim` = length and a bounded `preview`
+- A scalar value serializes exactly as before
+
+### BASED-LANCE-VECTOR-SEARCH / BASED-LANCE-FTS / BASED-LANCE-HYBRID: Search
+**Applies to:** based (core)
+**Test category:** integration
+
+The adapter shall support nearest-neighbour vector search (`.nearestTo`/`.vectorSearch`, raw vector or a text query when the table has a registered embedding function), full-text search over an FTS index (`.fullTextSearch`), and hybrid search (both, reranked with reciprocal rank fusion). Score columns (`_distance`/`_relevance_score`) come back as ordinary numeric columns.
+
+**Acceptance criteria:**
+- Vector search for a row's own vector returns that row first, with a distance column
+- Text search returns rows containing the keyword
+- Hybrid search returns reranked rows with a relevance/score column
+
+### BASED-LANCE-AGENT-SURFACE: Per-engine agent tools + persona + skills
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+The agent surface is a property of the engine. `agentSurfaceFor(engine, deps)` returns the engine's tools, persona fragment, and skill tags. SQL Server exposes `get_schema`/`sample_rows`/`run_query`; LanceDB exposes `get_schema`/`sample_rows`/`vector_search`/`text_search`/`hybrid_search`. The system prompt is a generic core + the engine persona + the engine-filtered skill catalog. `buildAgent` selects the surface by the session connection's engine.
+
+**Acceptance criteria:**
+- The MSSQL surface contains `run_query` and no `vector_search`; the LanceDB surface contains `vector_search`/`text_search`/`hybrid_search` and no `run_query` — the two toolsets do not match
+- The LanceDB surface carries `skillTags: ["lancedb"]`; `lance-search` appears only in a LanceDB catalog
+- The `vector_search` tool runs end-to-end against a live LanceDB table
+
+### BASED-LANCE-UI: Engine selector, vector display, read-only browse, SQL gating
+**Applies to:** based (ui)
+**Test category:** manual
+
+The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB shows a Cloud/Local mode with URI/region/API-key or a directory path (SQL fields hidden). Vector columns render as `vector[dim] type`; vector cells render as `vec[dim] [v0, v1, …]`. LanceDB tables (no PK) browse read-only, and the SQL editor / new-query affordance is hidden for LanceDB connections.
+
+**Verification procedure:**
+1. New connection → Engine: LanceDB → Local → set a directory with a LanceDB table → Test → ok → Save
+2. Connect → object tree lists tables (no schemas/procs) → open one → the vector column shows `vector[dim]`; the grid is read-only; cells show `vec[dim] […]`
+3. The "+" new-query button is absent for the LanceDB connection
+4. Open the Capy rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` and renders results (needs a healthy model backend)
+
+### BASED-LANCE-FOLDER-BROWSE: native folder picker for the local directory path
+**Applies to:** based
+**Test category:** manual
+
+The LanceDB connection dialog's Local-mode directory-path field has a Browse button that opens a native OS folder picker and fills the field with the chosen path, instead of requiring the path to be typed by hand. Not shown in Cloud mode (the field there is a `db://slug` URI, not a filesystem path).
+
+**Verification procedure:**
+1. New connection → Engine: LanceDB → Mode: Local → click Browse next to the directory-path field
+2. A native folder-picker dialog opens; selecting a folder fills the directory-path field with its full path
+3. Switch Mode to Cloud → the Browse button is gone; the field is a plain URI text input
+
+### BASED-LANCE-BASEFOLDER: base-folder auto-detect, flattened into the explorer
+**Applies to:** based (core)
+**Test category:** integration
+
+On a local connect, if the target directory has no LanceDB tables directly but contains subdirectories that are themselves valid LanceDB databases (each opens successfully and has at least one table), `based` treats it as a base folder: every such subdirectory is opened, and their tables are flattened into `listObjects()` with `schema` set to the owning subfolder's name — reusing the existing schema field/filter rather than adding a new UI concept. `listSchemas()` lists the subfolder names, so the Object Explorer's existing schema filter selects one folder's tables. If neither the directory itself nor any subdirectory is a valid LanceDB database, `connect()` throws a descriptive error.
+
+**Acceptance criteria:**
+- A directory with tables at its top level behaves exactly as before (single database); `listSchemas()` returns `[]`.
+- A directory with 2 subfolders, each a valid LanceDB directory with one table, connects successfully; `listSchemas()` returns both subfolder names; `listObjects()` returns both tables with `schema` set to their owning subfolder.
+- `getTableColumns`/`readTablePage` given a `schema` route to that subfolder's table.
+- `vectorSearch`/`textSearch`/`hybridSearch` given a table name that's unique across subfolders resolve it automatically; a name present in zero subfolders throws a "not found" error; a name present in more than one subfolder throws an "ambiguous" error naming the conflicting folders.
+- A directory with no LanceDB tables anywhere (not at the top level, not in any subfolder) makes `connect()` throw a descriptive error rather than silently connecting to nothing.
+
+### BASED-LANCE-EMBED-COMPUTE: based-side embeddings (future work — not built)
+**Applies to:** based (core)
+**Test category:** manual
+
+When a table lacks a registered embedding function, `based` could embed a text query itself via the configured `@ai-sdk/openai-compatible` provider and pass the raw vector to search. Deferred to keep v1 free of AI-provider coupling; text→vector currently relies on LanceDB's registered embedding functions or a caller-supplied vector.

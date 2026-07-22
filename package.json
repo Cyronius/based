@@ -8,6 +8,7 @@
     "specs"
   ],
   "scripts": {
+    "dev": "bun run scripts/dev.ts",
     "dev:core": "bun run --cwd core dev",
     "dev:ui": "bun run --cwd ui dev",
     "build:ui": "bun run --cwd ui build",

@@ -29,6 +29,39 @@ const fixNapiKeyringCreateRequire = {
   },
 };
 
+// libsql (via @mastra/libsql) loads its native binding with a runtime-computed
+// `require(`@libsql/${target}`)` (index.js:26) that Bun's bundler can't follow,
+// so the platform .node is never copied beside the bundle → "Cannot find module
+// '@libsql/win32-x64-msvc'" at startup. Rewrite it to a static literal require
+// for the build host's target so Bun resolves & copies index.node, the same way
+// keyring/lancedb already work.
+const LIBSQL_NEON_TARGETS: Record<string, string> = {
+  "win32-x64": "win32-x64-msvc",
+  "darwin-arm64": "darwin-arm64",
+  "darwin-x64": "darwin-x64",
+  "linux-x64": "linux-x64-gnu",
+  "linux-arm64": "linux-arm64-gnu",
+};
+const fixLibsqlNativeRequire = {
+  name: "fix-libsql-native-require",
+  setup(build: import("bun").PluginBuilder) {
+    const target =
+      LIBSQL_NEON_TARGETS[`${process.platform}-${process.arch}`] ??
+      "win32-x64-msvc";
+    build.onLoad(
+      { filter: /[\\/]libsql[\\/]index\.js$/ },
+      async (args: { path: string }) => {
+        const source = await readFile(args.path, "utf8");
+        const contents = source.replace(
+          /return require\(`@libsql\/\$\{target\}`\);/,
+          `return require("@libsql/${target}");`,
+        );
+        return { contents, loader: "js" as const };
+      },
+    );
+  },
+};
+
 export default {
   app: {
     name: "based",
@@ -38,7 +71,7 @@ export default {
   build: {
     bun: {
       entrypoint: "src/bun/index.ts",
-      plugins: [fixNapiKeyringCreateRequire],
+      plugins: [fixNapiKeyringCreateRequire, fixLibsqlNativeRequire],
     },
     views: {
       mainview: {

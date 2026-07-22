@@ -1,9 +1,10 @@
-// Traces: BASED-API-AUTH, BASED-HISTORY, BASED-CONN-TEST (endpoint), BASED-SECRET-STORE (delete via API)
+// Traces: BASED-API-AUTH, BASED-HISTORY, BASED-CONN-TEST (endpoint), BASED-SECRET-STORE (delete via API),
+//         BASED-TABLE-COMMIT (endpoint + history row)
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, getSecret, testConnection } from "@based/core";
+import { startServer, getSecret, testConnection, MssqlAdapter } from "@based/core";
 import type { ConnectionInput, ConnectionConfig } from "@based/core";
 
 const TOKEN = "spec-token";
@@ -72,8 +73,8 @@ describe("connections API (BASED-CONN-STORE + BASED-SECRET-STORE via API)", () =
 describe("tabs API (BASED-TABSTORE via API)", () => {
   test("bulk upsert + list + delete", async () => {
     const tabs = [
-      { id: "st1", connectionId: "conn-a", title: "Q1", content: "SELECT 1", filePath: null, position: 0 },
-      { id: "st2", connectionId: "conn-a", title: "Q2", content: "SELECT 2", filePath: null, position: 1 },
+      { id: "st1", connectionId: "conn-a", title: "Q1", content: "SELECT 1", filePath: null, position: 0, kind: "query", meta: null },
+      { id: "st2", connectionId: "conn-a", title: "Q2", content: "SELECT 2", filePath: null, position: 1, kind: "query", meta: null },
     ];
     await api("/api/tabs", { method: "POST", body: JSON.stringify({ tabs }) });
     const listed = (await (await api("/api/tabs?connectionId=conn-a")).json()) as Array<{ id: string }>;
@@ -133,6 +134,97 @@ d("BASED-HISTORY: query history via API", () => {
     expect(hist[1]!.status).toBe("ok");
     expect(hist[1]!.durationMs).toBeGreaterThanOrEqual(0);
 
+    await api("/api/session/disconnect", { method: "POST" });
+  }, 120_000);
+});
+
+// --- table-edit endpoint: needs CREATE/DROP TABLE; probes once and self-skips otherwise ---
+let canWrite = false;
+if (probe.ok) {
+  const a = new MssqlAdapter(devCfg, () => null);
+  const name = `based_spec_srv_probe_${Date.now()}`;
+  try {
+    const r = await a.runCommands([{ sql: `CREATE TABLE dbo.[${name}] (id int PRIMARY KEY)` }]);
+    canWrite = r.error === null;
+    await a.runCommands([{ sql: `DROP TABLE dbo.[${name}]` }]);
+  } catch {
+    canWrite = false;
+  } finally {
+    await a.disconnect().catch(() => {});
+  }
+  if (!canWrite) console.warn("[integration.server] no CREATE TABLE permission, skipping table-edit endpoint test");
+}
+const dw = canWrite ? describe : describe.skip;
+
+dw("BASED-TABLE-COMMIT: table-edit endpoint applies changes and records history", () => {
+  test("commit an insert+update+delete via the endpoint; a history row is recorded", async () => {
+    const { id: _i, createdAt: _c, updatedAt: _u, ...input } = devCfg;
+    const created = (await (await api("/api/connections", { method: "POST", body: JSON.stringify(input) })).json()) as ConnectionConfig;
+    await api("/api/session/connect", { method: "POST", body: JSON.stringify({ connectionId: created.id }) });
+
+    const tbl = `based_spec_srv_edit_${Date.now()}`;
+    const create = await api("/api/session/query", {
+      method: "POST",
+      body: JSON.stringify({ sql: `CREATE TABLE dbo.[${tbl}] (id int PRIMARY KEY, name nvarchar(50))` }),
+    });
+    await create.text();
+    const seed = await api("/api/session/query", {
+      method: "POST",
+      body: JSON.stringify({ sql: `INSERT INTO dbo.[${tbl}] (id,name) VALUES (1,'a'),(2,'b')` }),
+    });
+    await seed.text();
+
+    const columns = [
+      { name: "id", isPrimaryKey: true },
+      { name: "name", isPrimaryKey: false },
+    ];
+    const change = {
+      schema: "dbo",
+      table: tbl,
+      columns,
+      inserts: [{ id: 3, name: "c" }],
+      updates: [{ key: { id: 1 }, set: { name: "A" } }],
+      deletes: [{ id: 2 }],
+    };
+
+    const res = await api("/api/session/table-edit", { method: "POST", body: JSON.stringify(change) });
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { status: string; error: string | null };
+    expect(out.status).toBe("ok");
+    expect(out.error).toBeNull();
+
+    // A subsequent read reflects all three changes.
+    const dataRes = await api(`/api/session/table-data?schema=dbo&table=${tbl}&offset=0&limit=100`);
+    const page = (await dataRes.json()) as { rows: unknown[][] };
+    const ids = page.rows.map((r) => r[0]);
+    expect(ids).toContain(3);
+    expect(ids).not.toContain(2);
+    const row1 = page.rows.find((r) => r[0] === 1);
+    expect(row1?.[1]).toBe("A");
+
+    // BASED-TABLE-COMMIT: a history row is recorded for the commit.
+    const hist = (await (await api(`/api/history?connectionId=${created.id}`)).json()) as Array<{ sql: string }>;
+    expect(hist.some((h) => /UPDATE|INSERT|DELETE/.test(h.sql))).toBe(true);
+
+    // preview does not execute
+    const preview = await api("/api/session/table-edit", {
+      method: "POST",
+      body: JSON.stringify({ ...change, deletes: [], inserts: [{ id: 9, name: "z" }], updates: [], preview: true }),
+    });
+    const previewOut = (await preview.json()) as { commands: Array<{ sql: string }> };
+    expect(previewOut.commands[0]!.sql).toContain("INSERT INTO [dbo]");
+    const afterPreview = await api(`/api/session/table-data?schema=dbo&table=${tbl}&offset=0&limit=100`);
+    const afterRows = (await afterPreview.json()) as { rows: unknown[][] };
+    expect(afterRows.rows.some((r) => r[0] === 9)).toBe(false); // preview didn't insert
+
+    // no-PK edit is rejected as a 400 (build failure), not a 500
+    const noPk = await api("/api/session/table-edit", {
+      method: "POST",
+      body: JSON.stringify({ schema: "dbo", table: tbl, columns: [{ name: "name", isPrimaryKey: false }], deletes: [{ name: "a" }] }),
+    });
+    expect(noPk.status).toBe(400);
+
+    await api("/api/session/query", { method: "POST", body: JSON.stringify({ sql: `DROP TABLE dbo.[${tbl}]` }) }).then((r) => r.text());
     await api("/api/session/disconnect", { method: "POST" });
   }, 120_000);
 });

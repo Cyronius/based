@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store";
+import { browseFolder } from "../api/client";
 import type { AuthType, ConnectionInput, TestResult } from "../api/types";
 
 const AUTH_OPTIONS: Array<{ value: AuthType; label: string }> = [
@@ -13,6 +14,7 @@ export function ConnectionDialog() {
   const dialog = useStore((s) => s.dialog);
   const setDialog = useStore((s) => s.setDialog);
   const saveConnection = useStore((s) => s.saveConnection);
+  const connect = useStore((s) => s.connect);
   const deleteConnection = useStore((s) => s.deleteConnection);
   const testConnection = useStore((s) => s.testConnection);
 
@@ -35,14 +37,47 @@ export function ConnectionDialog() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
 
-  const needsSecret = form.authType === "sql-login" || form.authType === "service-principal";
-  const secretLabel = form.authType === "sql-login" ? "Password" : "Client secret";
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDialog({ mode: "closed" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setDialog]);
+
+  const engine = form.engine ?? "mssql";
+  const isLance = engine === "lancedb";
+  const isLanceCloud = form.authType === "lancedb-cloud";
+  const needsSecret = form.authType === "sql-login" || form.authType === "service-principal" || isLanceCloud;
+  const secretLabel = isLanceCloud ? "API key" : form.authType === "sql-login" ? "Password" : "Client secret";
+
+  /** Switch the whole form between engines, resetting engine-specific fields to sane defaults. */
+  function selectEngine(next: "mssql" | "lancedb") {
+    setTestResult(null);
+    if (next === "lancedb") {
+      setForm({ ...form, engine: "lancedb", authType: "lancedb-local", encrypt: false, trustServerCertificate: false });
+    } else {
+      setForm({ ...form, engine: "mssql", authType: "entra-interactive" });
+    }
+  }
 
   function payload(): ConnectionInput {
     const p = { ...form };
     if (!p.secret) delete p.secret; // blank on edit = keep the stored secret
     return p;
+  }
+
+  async function onBrowseFolder() {
+    setBrowsing(true);
+    try {
+      const { path } = await browseFolder(form.uri);
+      if (path) setForm({ ...form, uri: path });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setBrowsing(false);
   }
 
   async function onTest() {
@@ -58,15 +93,24 @@ export function ConnectionDialog() {
   }
 
   async function onSave() {
-    if (!form.name.trim() || !form.server.trim() || !form.database.trim()) {
+    if (isLance) {
+      if (!form.name.trim() || !(form.uri ?? "").trim()) {
+        setError(isLanceCloud ? "Name and database URI (db://…) are required." : "Name and directory path are required.");
+        return;
+      }
+    } else if (!form.name.trim() || !form.server.trim() || !form.database.trim()) {
       setError("Name, server, and database are required.");
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      await saveConnection(payload());
+      // LanceDB has no SQL server/database; persist placeholders so the wire shape stays uniform.
+      const p = isLance ? { ...payload(), server: "", database: form.database || "lancedb" } : payload();
+      const saved = await saveConnection(p);
       setDialog({ mode: "closed" });
+      // Creating a connection selects it: connect so the new one becomes the active session.
+      if (!editing) void connect(saved.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSaving(false);
@@ -88,13 +132,83 @@ export function ConnectionDialog() {
 
         <div className="px-5 py-4 space-y-3">
           <div>
-            <label className={label}>Name</label>
-            <input className={field} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Production ledger" />
+            <label className={label}>Engine</label>
+            <select className={field} value={engine} onChange={(e) => selectEngine(e.target.value as "mssql" | "lancedb")}>
+              <option value="mssql">SQL Server</option>
+              <option value="lancedb">LanceDB</option>
+            </select>
+            {isLance && (
+              <p className="mt-1 text-[11px] text-faint leading-snug">
+                LanceDB has no SQL. Browse tables in the left rail and query them with vector, full-text, or hybrid search
+                through Ask Capy.
+              </p>
+            )}
           </div>
+
+          <div>
+            <label className={label}>Name</label>
+            <input className={field} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Production DB" />
+          </div>
+
+          {isLance && (
+            <>
+              <div>
+                <label className={label}>Mode</label>
+                <select
+                  className={field}
+                  value={form.authType}
+                  onChange={(e) => {
+                    setForm({ ...form, authType: e.target.value as AuthType });
+                    setTestResult(null);
+                  }}
+                >
+                  <option value="lancedb-local">Local (file-based)</option>
+                  <option value="lancedb-cloud">Cloud</option>
+                </select>
+              </div>
+              <div>
+                <label className={label}>{isLanceCloud ? "Database URI" : "Directory path"}</label>
+                <div className="flex gap-2">
+                  <input
+                    className={field}
+                    value={form.uri ?? ""}
+                    onChange={(e) => setForm({ ...form, uri: e.target.value })}
+                    placeholder={isLanceCloud ? "db://my-database" : "C:\\data\\my-lancedb"}
+                  />
+                  {!isLanceCloud && (
+                    <button
+                      type="button"
+                      className="shrink-0 px-2.5 py-1.5 text-[12px] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
+                      disabled={browsing}
+                      onClick={() => void onBrowseFolder()}
+                    >
+                      {browsing ? "…" : "Browse…"}
+                    </button>
+                  )}
+                </div>
+                {!isLanceCloud && (
+                  <p className="mt-1 text-[11px] text-faint leading-snug">
+                    Point this at a single LanceDB directory, or at a folder containing several — subfolders holding
+                    their own LanceDB tables are auto-detected and their tables appear flattened in the explorer.
+                  </p>
+                )}
+              </div>
+              {isLanceCloud && (
+                <div>
+                  <label className={label}>Region</label>
+                  <input className={field} value={form.region ?? ""} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east-1" />
+                </div>
+              )}
+            </>
+          )}
+
+          {!isLance && (
           <div>
             <label className={label}>Server</label>
             <input className={field} value={form.server} onChange={(e) => setForm({ ...form, server: e.target.value })} placeholder="myserver.database.windows.net" />
           </div>
+          )}
+          {!isLance && (
           <div className="flex gap-3">
             <div className="flex-1">
               <label className={label}>Initial database</label>
@@ -118,6 +232,7 @@ export function ConnectionDialog() {
               </select>
             </div>
           </div>
+          )}
 
           {form.authType === "sql-login" && (
             <div>
@@ -147,6 +262,7 @@ export function ConnectionDialog() {
             </div>
           )}
 
+          {!isLance && (
           <div className="flex gap-4 pt-1 text-[12px] text-muted">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={form.encrypt} onChange={(e) => setForm({ ...form, encrypt: e.target.checked })} className="accent-(--color-brass)" />
@@ -162,6 +278,7 @@ export function ConnectionDialog() {
               Trust server certificate
             </label>
           </div>
+          )}
 
           {testResult && (
             <div className={`px-3 py-2 rounded border text-[12px] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}>

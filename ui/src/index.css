@@ -49,6 +49,11 @@
   --font-mono: "IBM Plex Mono", Consolas, monospace;
 }
 
+/* Default color-scheme for pre-JS paint; applyTheme() overrides per theme on <html>. */
+:root {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -72,21 +77,15 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2c333d;
+  background: var(--color-ink-800);
   border-radius: 5px;
   border: 2px solid var(--color-ink-950);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a424e;
+  background: var(--color-line);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
-}
-
-select,
-input[type="text"],
-input[type="password"] {
-  color-scheme: dark;
 }
 
 /* Ledger section label: small caps, letterspaced */

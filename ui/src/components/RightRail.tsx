@@ -1,13 +1,33 @@
 // Traces: BASED-UI-LAYOUT, BASED-CHAT-UI
-// The right-hand margin rail now hosts Margin Chat (Phase 2). The agent provider stays mounted
+// The right-hand rail now hosts Ask Capy (Phase 2). The agent provider stays mounted
 // while a connection is active so the thread survives collapse/expand.
 import { useEffect, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
-import { token, AGENT_BASE_URL, aiGetConfig, aiSaveConfig } from "../api/client";
-import type { AiConfig } from "../api/types";
-import { marginTools } from "../agent/marginTools";
-import { MarginChat } from "./MarginChat";
+import {
+  token,
+  sessionId,
+  AGENT_BASE_URL,
+  aiGetConfig,
+  aiSaveConfig,
+  getAgentInstructions,
+  saveAgentInstructionSet,
+  setActiveAgentInstructionSet,
+  deleteAgentInstructionSet,
+} from "../api/client";
+import type { AiConfig, AgentInstructionsConfig, InstructionSet } from "../api/types";
+import { capyTools } from "../agent/capyTools";
+import { CapyChat } from "./CapyChat";
+
+const WIDTH_KEY = "based:rightRailWidth";
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 720;
+const DEFAULT_WIDTH = 384;
+
+function loadWidth(): number {
+  const stored = Number(localStorage.getItem(WIDTH_KEY));
+  return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
+}
 
 function ConfigPanel({ onClose }: { onClose: () => void }) {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
@@ -27,7 +47,7 @@ function ConfigPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="border-b border-line-soft bg-ink-900 p-3 text-[12px] space-y-2 fade-up">
+    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[12px] space-y-2 fade-up">
       <div className="ledger-label">AI provider</div>
       <label className="block">
         <span className="text-faint">Base URL</span>
@@ -67,37 +87,196 @@ function ConfigPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function MarginRail() {
+/** A collapsible textarea box — Core/SQL Server persona/LanceDB persona can each be large, so they
+ *  start collapsed rather than filling the panel (BASED-AGENT-INSTRUCTIONS-UI). */
+function InstructionsField({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  disabled: boolean;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <details className="rounded border border-line">
+      <summary className="cursor-pointer select-none px-2 py-1 text-faint">{label}</summary>
+      <textarea
+        className="w-full resize-y rounded-b border-t border-line bg-ink-950 px-2 py-1 text-paper disabled:opacity-60"
+        rows={6}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </details>
+  );
+}
+
+function InstructionsPanel() {
+  const [cfg, setCfg] = useState<AgentInstructionsConfig | null>(null);
+  const [selectedId, setSelectedId] = useState<string>("default");
+  const [draft, setDraft] = useState<InstructionSet | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const applyConfig = (next: AgentInstructionsConfig, preferId?: string) => {
+    setCfg(next);
+    setSelectedId(preferId ?? next.activeId);
+  };
+
+  useEffect(() => {
+    void getAgentInstructions().then((c) => applyConfig(c));
+  }, []);
+
+  useEffect(() => {
+    const selected = cfg?.sets.find((s) => s.id === selectedId);
+    if (selected) setDraft(selected);
+  }, [cfg, selectedId]);
+
+  if (!cfg || !draft) return null;
+  const selected = cfg.sets.find((s) => s.id === selectedId)!;
+
+  const selectSet = async (id: string) => {
+    setBusy(true);
+    const next = await setActiveAgentInstructionSet(id).catch(() => cfg);
+    applyConfig(next, id);
+    setBusy(false);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    const next = await saveAgentInstructionSet({
+      id: selected.id,
+      name: draft.name,
+      core: draft.core,
+      mssqlPersona: draft.mssqlPersona,
+      lancePersona: draft.lancePersona,
+    }).catch(() => cfg);
+    applyConfig(next, selectedId);
+    setBusy(false);
+  };
+
+  const duplicate = async () => {
+    setBusy(true);
+    const next = await saveAgentInstructionSet({
+      name: `${selected.name} copy`,
+      core: selected.core,
+      mssqlPersona: selected.mssqlPersona,
+      lancePersona: selected.lancePersona,
+    }).catch(() => cfg);
+    const created = next.sets.find((s) => s.editable && !cfg.sets.some((existing) => existing.id === s.id));
+    applyConfig(next, created?.id ?? next.activeId);
+    setBusy(false);
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    const next = await deleteAgentInstructionSet(selected.id).catch(() => cfg);
+    applyConfig(next);
+    setBusy(false);
+  };
+
+  return (
+    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[12px] space-y-2 fade-up">
+      <div className="ledger-label">Agent instructions</div>
+      <label className="block">
+        <span className="text-faint">Set</span>
+        <select
+          className="mt-0.5 w-full rounded border border-line bg-ink-950 px-2 py-1 text-paper"
+          value={selectedId}
+          onChange={(e) => void selectSet(e.target.value)}
+          disabled={busy}
+        >
+          {cfg.sets.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {!selected.editable && <p className="text-faint italic">Default instructions are read-only — duplicate to customize.</p>}
+      <InstructionsField
+        label="Core (shared)"
+        value={draft.core}
+        disabled={!selected.editable}
+        onChange={(v) => setDraft({ ...draft, core: v })}
+      />
+      <InstructionsField
+        label="SQL Server persona"
+        value={draft.mssqlPersona}
+        disabled={!selected.editable}
+        onChange={(v) => setDraft({ ...draft, mssqlPersona: v })}
+      />
+      <InstructionsField
+        label="LanceDB persona"
+        value={draft.lancePersona}
+        disabled={!selected.editable}
+        onChange={(v) => setDraft({ ...draft, lancePersona: v })}
+      />
+      <div className="flex flex-wrap gap-2 pt-1">
+        {selected.editable && (
+          <button
+            className="rounded bg-brass px-3 py-1 text-ink-950 disabled:opacity-40"
+            onClick={() => void save()}
+            disabled={busy}
+          >
+            Save
+          </button>
+        )}
+        <button className="rounded border border-line px-3 py-1 text-muted hover:text-paper disabled:opacity-40" onClick={() => void duplicate()} disabled={busy}>
+          Duplicate as new set
+        </button>
+        {selected.editable && (
+          <button className="rounded border border-err/50 px-3 py-1 text-err hover:bg-err/10 disabled:opacity-40" onClick={() => void remove()} disabled={busy}>
+            Delete
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CapyRail() {
   const [err, setErr] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
-    agentId: "margin",
-    tools: marginTools,
+    agentId: "capy",
+    tools: capyTools,
     tokenProvider: async () => token,
     sendFullHistory: false,
+    configParams: { sid: sessionId },
     onError: (e) => setErr(e.message),
   });
 
   return (
     <AgentProvider value={agent}>
-      <div className="flex flex-1 min-h-0 flex-col">
-        <header className="flex items-center justify-between border-b border-line-soft px-3 py-2">
-          <span className="ledger-label">Margin Chat</span>
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col">
+        <header className="flex items-center justify-between border-b border-line-soft pl-3 pr-4 py-2">
+          <span className="flex items-center gap-1.5 ledger-label">
+            <img src="/capy.png" alt="" className="h-4 w-4 rounded-full object-cover" />
+            Ask Capy
+          </span>
           <button className="text-faint hover:text-brass text-[13px]" title="AI provider settings" onClick={() => setShowConfig((v) => !v)}>
             ⚙
           </button>
         </header>
-        {showConfig && <ConfigPanel onClose={() => setShowConfig(false)} />}
+        {showConfig && (
+          <>
+            <ConfigPanel onClose={() => setShowConfig(false)} />
+            <InstructionsPanel />
+          </>
+        )}
         {err && (
-          <div className="flex items-start gap-2 border-b border-err/30 bg-err/10 px-3 py-2 text-[11px] text-err">
-            <span className="flex-1 font-mono">{err}</span>
+          <div className="flex items-start gap-2 border-b border-err/30 bg-err/10 pl-3 pr-4 py-2 text-[11px] text-err">
+            <span className="flex-1 font-mono break-words">{err}</span>
             <button className="text-muted hover:text-paper" onClick={() => setErr(null)}>
               ✕
             </button>
           </div>
         )}
-        <MarginChat />
+        <CapyChat />
       </div>
     </AgentProvider>
   );
@@ -107,31 +286,63 @@ export function RightRail() {
   const open = useStore((s) => s.rightRailOpen);
   const toggle = useStore((s) => s.toggleRightRail);
   const connected = useStore((s) => s.activeConnectionId);
+  const [width, setWidth] = useState(loadWidth);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
+      setWidth(next);
+      localStorage.setItem(WIDTH_KEY, String(next));
+    };
+    const onUp = () => setDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragging]);
 
   return (
-    <aside className={`shrink-0 flex border-l border-line-soft bg-ink-950 transition-all ${open ? "w-96" : "w-8"}`}>
+    <aside
+      className={`relative shrink-0 flex border-l border-line-soft bg-ink-950 ${dragging ? "" : "transition-[width]"}`}
+      style={{ width: open ? width : 32 }}
+    >
+      {open && (
+        <div
+          className="absolute left-0 top-0 z-10 h-full w-1 -translate-x-1/2 cursor-ew-resize hover:bg-brass/40 active:bg-brass/50"
+          title="Drag to resize"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+        />
+      )}
       <button
         className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-        title={open ? "Collapse margin" : "Expand margin"}
+        title={open ? "Collapse Capy" : "Expand Capy"}
         onClick={toggle}
       >
         <span className="text-[11px]">{open ? "›" : "‹"}</span>
         {!open && (
           <span className="ledger-label" style={{ writingMode: "vertical-rl" }}>
-            margin
+            capy
           </span>
         )}
       </button>
       {/* Kept mounted while connected so the chat thread survives collapse; hidden when closed. */}
       {connected ? (
         <div className={open ? "flex flex-1 min-w-0" : "hidden"}>
-          <MarginRail />
+          <CapyRail />
         </div>
       ) : (
         open && (
-          <div className="flex-1 p-4 fade-up">
-            <div className="ledger-label mb-3">Margin</div>
-            <p className="text-[12px] text-muted leading-relaxed">Connect to a database to chat with the agent.</p>
+          <div className="flex-1 min-w-0 p-4 pr-5 fade-up">
+            <img src="/capy.png" alt="" className="h-12 w-12 rounded-full object-cover mb-3" />
+            <div className="ledger-label mb-3">Capy</div>
+            <p className="text-[12px] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
           </div>
         )
       )}

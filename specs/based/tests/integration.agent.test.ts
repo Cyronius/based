@@ -1,5 +1,5 @@
 // Traces: BASED-AI-PROVIDER, BASED-AGENT-ENDPOINT, BASED-AGENT-MUTATION-GATE, BASED-AGENT-AUDIT,
-//         BASED-AGENT-SCHEMA-CTX, BASED-AGENT-SAMPLE, BASED-AGENT-RUNQUERY
+//         BASED-AGENT-SCHEMA-CTX, BASED-AGENT-SAMPLE, BASED-AGENT-RUNQUERY, BASED-SKILL-LOAD
 // Server-level auth/gate tests always run; tool + audit tests that need a live DB self-skip like
 // the other integration suites.
 import { afterAll, describe, expect, test } from "bun:test";
@@ -13,6 +13,12 @@ import {
   AuditStore,
   DEFAULT_AI_CONFIG,
   buildAgentTools,
+  buildAgent,
+  agentInstructions,
+  GENERIC_CORE,
+  MSSQL_PERSONA,
+  LANCE_PERSONA,
+  skills,
   MssqlAdapter,
   testConnection,
   setAiKey,
@@ -65,8 +71,8 @@ describe("BASED-AI-PROVIDER: config store + key secrets", () => {
 });
 
 describe("BASED-AGENT-ENDPOINT: auth + session guard", () => {
-  test("POST /api/agent/margin without token → 401", async () => {
-    const r = await fetch(`${base}/api/agent/margin`, {
+  test("POST /api/agent/capy without token → 401", async () => {
+    const r = await fetch(`${base}/api/agent/capy`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -74,9 +80,79 @@ describe("BASED-AGENT-ENDPOINT: auth + session guard", () => {
     expect(r.status).toBe(401);
   });
 
-  test("POST /api/agent/margin with token but no connection → 409", async () => {
-    const r = await api("/api/agent/margin", { method: "POST", body: JSON.stringify({ threadId: "t", runId: "r", messages: [], tools: [], state: {}, context: [] }) });
+  test("POST /api/agent/capy with token but no connection → 409", async () => {
+    const r = await api("/api/agent/capy", { method: "POST", body: JSON.stringify({ threadId: "t", runId: "r", messages: [], tools: [], state: {}, context: [] }) });
     expect(r.status).toBe(409);
+  });
+});
+
+describe("BASED-SKILL-LOAD: load_skill tool + prompt catalog", () => {
+  // The load_skill tool touches no adapter, so this needs no live DB.
+  const tools = buildAgentTools({
+    getAdapter: () => {
+      throw new Error("load_skill must not touch the adapter");
+    },
+    connectionId: () => "c",
+    database: () => "d",
+    audit: new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-skill-")), "app.db"))),
+  });
+
+  test("load_skill({ name: 'diagrams' }) returns the diagrams body", async () => {
+    const out = (await tools.load_skill.execute!({ name: "diagrams" }, {} as never)) as { name?: string; body?: string };
+    expect(out.name).toBe("diagrams");
+    expect(out.body).toBe(skills.get("diagrams")!.body);
+  });
+
+  test("an unknown name returns the list of valid names, not an error throw", async () => {
+    const out = (await tools.load_skill.execute!({ name: "nope" }, {} as never)) as { validNames?: string[] };
+    expect(Array.isArray(out.validNames)).toBe(true);
+    expect(out.validNames).toContain("diagrams");
+  });
+
+  test("the built agent's instructions include the skill catalog + load_skill protocol", () => {
+    const text = agentInstructions(GENERIC_CORE, "SQL Server persona fragment");
+    for (const s of skills.catalog()) {
+      expect(text).toContain(s.name);
+      expect(text).toContain(s.description);
+    }
+    expect(text).toContain("load_skill");
+  });
+});
+
+describe("BASED-AGENT-INSTRUCTIONS-COMPOSE: buildAgent core/persona overrides", () => {
+  function noopToolDeps() {
+    return {
+      getAdapter: (): never => {
+        throw new Error("must not touch the adapter");
+      },
+      connectionId: () => "c",
+      database: () => "d",
+      audit: new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-compose-")), "app.db"))),
+    };
+  }
+
+  test("no override reproduces today's hardcoded per-engine output", async () => {
+    const mssqlAgent = buildAgent({ model: {} as never, memory: {} as never, engine: "mssql", toolDeps: noopToolDeps() });
+    expect(await mssqlAgent.getInstructions()).toBe(agentInstructions(GENERIC_CORE, MSSQL_PERSONA));
+
+    const lanceAgent = buildAgent({ model: {} as never, memory: {} as never, engine: "lancedb", toolDeps: noopToolDeps() });
+    expect(await lanceAgent.getInstructions()).toBe(agentInstructions(GENERIC_CORE, LANCE_PERSONA, ["lancedb"]));
+  });
+
+  test("core/persona overrides replace the built-in defaults", async () => {
+    const agent = buildAgent({
+      model: {} as never,
+      memory: {} as never,
+      engine: "lancedb",
+      toolDeps: noopToolDeps(),
+      core: "CUSTOM CORE TEXT",
+      persona: "CUSTOM LANCE PERSONA TEXT",
+    });
+    const text = await agent.getInstructions();
+    expect(text).toContain("CUSTOM CORE TEXT");
+    expect(text).toContain("CUSTOM LANCE PERSONA TEXT");
+    expect(text).not.toContain(GENERIC_CORE);
+    expect(text).not.toContain(LANCE_PERSONA);
   });
 });
 

@@ -1,7 +1,7 @@
 # Phase 0 — Validation spike results
 
 Plan: [.claude/plans/feasibility-and-architecture.md](../../.claude/plans/feasibility-and-architecture.md)
-Spike code: [spikes/](../../spikes/) (throwaway — delete after Phase 1 starts)
+Spike code: deleted after Phase 1 started; results below are the retained record.
 
 Environment: Windows 11 Pro, system Bun 1.3.14, Node v24.9.0, az CLI 2.80.0.
 Test DB: `zl5qolt7t8.database.windows.net` / `learnermobile_db_ci` (read-only queries only).
@@ -10,11 +10,11 @@ Test DB: `zl5qolt7t8.database.windows.net` / `learnermobile_db_ci` (read-only qu
 |---|-------|---------|------|
 | 1 | Electrobun hello-world on Windows | **PASS** (final DPI eyeball check = user) | 2026-07-21 |
 | 2 | tedious/mssql under Bun vs Node | **PASS** | 2026-07-21 |
-| 3 | Entra ID interactive browser auth under Bun | ready — needs human sign-in | |
+| 3 | Entra ID interactive browser auth under Bun | **PASS** | 2026-07-22 |
 | 4 | Mastra → AG-UI → lm-ag-ui + Streamdown streaming | **PASS** | 2026-07-21 |
 | 5 | LanceDB napi under Bun on Windows | **PASS** | 2026-07-21 |
 
-**Bottom line: 4 of 5 gates passed on first attempt; nothing fell back to a sidecar. Spike 3 awaits a human sign-in. Phase 1 is unblocked on the current evidence.**
+**Bottom line: 5 of 5 gates passed. Nothing fell back to a sidecar. Phase 1 is unblocked on the current evidence.**
 
 ## Spike 2 — tedious/mssql in-process under Bun: PASS
 
@@ -45,21 +45,11 @@ Test DB: `zl5qolt7t8.database.windows.net` / `learnermobile_db_ci` (read-only qu
 - Node control run: identical results.
 - **Consequence: LanceDB adapter can be in-process later; no Node sidecar needed on current evidence.**
 
-## Spike 3 — Entra ID interactive browser auth: READY, needs you
+## Spike 3 — Entra ID interactive browser auth: PASS
 
-`spikes/03-entra-interactive/spike.mjs`. Not run autonomously — it opens the system browser for sign-in.
+Ran interactively by the user (`InteractiveBrowserCredential`, system browser + loopback listener on `http://localhost:8400`, Azure CLI public client id, no app registration). Browser opened, sign-in succeeded, token acquired, connect succeeded as `josh.attoun@sviworld.com`.
 
-To run (both, for comparison):
-
-```
-cd c:\code\based\spikes\03-entra-interactive
-bun run spike.mjs
-node spike.mjs
-```
-
-Pass = browser opens → sign in → `TOKEN_OK` → `CONNECT_OK as josh.attoun@sviworld.com` → `SPIKE 3 PASS`.
-Uses the Azure CLI public client id (no app registration) with loopback redirect on `http://localhost:8400`; @azure/identity runs the loopback listener internally — that listener under Bun is exactly what this spike gates.
-Fail → alpha ships AzureCliCredential-only (already proven in spike 2).
+The only issue encountered was the target dev DB being restricted to SQL-login auth only (a database-config constraint) — not a defect in the Bun loopback listener or `InteractiveBrowserCredential` path, which is what this spike gated.
 
 ## Spike 1 — Electrobun hello-world on Windows: PASS
 

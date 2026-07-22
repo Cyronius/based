@@ -34,6 +34,17 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
   return runPwshDialog(script);
 }
 
+/** Native folder picker (e.g. for the LanceDB directory-path field). */
+export function openFolderDialog(startingFolder?: string): Promise<string | null> {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+${startingFolder ? `$d.SelectedPath = ${JSON.stringify(startingFolder)}` : ""}
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
+`;
+  return runPwshDialog(script);
+}
+
 /** Shell-open a file with its default app (e.g. .xlsx → Excel). */
 export function openWithDefaultApp(path: string): void {
   Bun.spawn(["cmd.exe", "/c", "start", "", path], { stdout: "ignore", stderr: "ignore" });

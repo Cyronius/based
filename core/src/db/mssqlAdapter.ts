@@ -2,21 +2,32 @@ import sql from "mssql";
 import type { TokenCredential } from "@azure/identity";
 import { splitBatches } from "./batch";
 import { createCredential, mintSqlToken, type SecretProvider } from "./entra";
+import { skipsWrap, wrapBatch } from "./planWrap";
 import { isRetryableError, withReconnect } from "./retry";
 import { DEFAULT_ROW_CAP, RowCollector } from "./rowcap";
-import { serializeRow } from "./serialize";
+import { serializeRow, serializeValue } from "./serialize";
+import { quoteIdent, qualified } from "./tableEdit";
 import type {
   ColumnInfo,
+  CommandResult,
   ConnectionConfig,
   ConnectionStatus,
   DatabaseAdapter,
+  DbCommand,
   DbObject,
   DbObjectType,
+  ExecuteOptions,
   QueryChunk,
   QueryExecution,
+  RoutineParameter,
   TableColumn,
+  TablePage,
   TestResult,
 } from "./types";
+
+/** SQL Server names the extra result set SET STATISTICS XML ON emits with this exact literal —
+ *  stable across every server version and Azure SQL. Single column, one nvarchar(max) XML row. */
+const SHOWPLAN_COLUMN = "Microsoft SQL Server 2005 XML Showplan";
 
 const TOKEN_REFRESH_AGE_MS = 45 * 60_000;
 const IDLE_PING_AGE_MS = 15 * 60_000;
@@ -41,6 +52,13 @@ function parseServer(server: string): { host: string; port: number } {
 }
 
 export class MssqlAdapter implements DatabaseAdapter {
+  readonly capabilities = {
+    sql: true,
+    vectorSearch: false,
+    fullTextSearch: false,
+    hybridSearch: false,
+    write: true,
+  } as const;
   readonly database: string;
   private pool: sql.ConnectionPool | null = null;
   private credential: TokenCredential | null = null;
@@ -150,6 +168,28 @@ export class MssqlAdapter implements DatabaseAdapter {
     this.emitStatus("disconnected");
   }
 
+  // Traces: BASED-CONN-TEST — connect, verify with a trivial query, report server version + identity.
+  async probe(): Promise<TestResult> {
+    try {
+      await this.connect();
+      let serverVersion: string | undefined;
+      let identity: string | undefined;
+      const exec = this.execute("SELECT @@VERSION AS v, SUSER_SNAME() AS who", (chunk) => {
+        if (chunk.type === "rows" && chunk.rows[0]) {
+          serverVersion = String(chunk.rows[0][0] ?? "").split("\n")[0];
+          identity = String(chunk.rows[0][1] ?? "");
+        }
+      });
+      const { status } = await exec.completion;
+      if (status !== "ok") return { ok: false, error: "Connected but test query failed" };
+      return { ok: true, serverVersion, identity };
+    } catch (err) {
+      return { ok: false, error: errMessage(err) };
+    } finally {
+      await this.disconnect().catch(() => {});
+    }
+  }
+
   async listDatabases(): Promise<string[]> {
     try {
       return await this.withPool(async (pool) => {
@@ -232,7 +272,101 @@ export class MssqlAdapter implements DatabaseAdapter {
     });
   }
 
-  execute(sqlText: string, onChunk: (chunk: QueryChunk) => void): QueryExecution {
+  // Traces: BASED-VIEW-DEFINITION — CREATE VIEW/PROCEDURE/FUNCTION body for the Details panel.
+  async getObjectDefinition(schema: string, name: string): Promise<string | null> {
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("schema", sql.NVarChar, schema);
+      request.input("name", sql.NVarChar, name);
+      const r = await request.query<{ definition: string | null }>(`
+        SELECT m.definition
+        FROM sys.sql_modules m
+        JOIN sys.objects o ON o.object_id = m.object_id
+        JOIN sys.schemas s ON s.schema_id = o.schema_id
+        WHERE s.name = @schema AND o.name = @name`);
+      return r.recordset[0]?.definition ?? null;
+    });
+  }
+
+  // Traces: BASED-ROUTINE-DETAILS — stored procedure / function parameter list, in declaration order.
+  async getRoutineParameters(schema: string, name: string): Promise<RoutineParameter[]> {
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("schema", sql.NVarChar, schema);
+      request.input("name", sql.NVarChar, name);
+      const r = await request.query(`
+        SELECT p.name, t.name AS typeName, p.is_output, p.parameter_id
+        FROM sys.parameters p
+        JOIN sys.types t ON t.user_type_id = p.user_type_id
+        JOIN sys.objects o ON o.object_id = p.object_id
+        JOIN sys.schemas s ON s.schema_id = o.schema_id
+        WHERE s.name = @schema AND o.name = @name AND p.parameter_id > 0
+        ORDER BY p.parameter_id`);
+      return r.recordset.map((row: Record<string, unknown>) => ({
+        name: String(row.name),
+        type: String(row.typeName),
+        mode: row.is_output ? ("out" as const) : ("in" as const),
+        ordinal: Number(row.parameter_id),
+      }));
+    });
+  }
+
+  // Traces: BASED-TABLE-BROWSE — one page ordered by a stable key, capped by the row cap.
+  async readTablePage(schema: string, table: string, opts: { offset: number; limit: number }): Promise<TablePage> {
+    const columns = await this.getTableColumns(schema, table);
+    if (columns.length === 0) throw new Error(`No columns for ${schema}.${table}`);
+    const pk = columns.filter((c) => c.isPrimaryKey);
+    const orderCols = (pk.length > 0 ? pk : [columns[0]!]).map((c) => c.name);
+    const limit = Math.min(Math.max(1, Math.floor(opts.limit)), this.rowCap);
+    const offset = Math.max(0, Math.floor(opts.offset));
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("off", sql.Int, offset);
+      request.input("lim", sql.Int, limit);
+      const orderBy = orderCols.map(quoteIdent).join(", ");
+      const r = await request.query<Record<string, unknown>>(
+        `SELECT * FROM ${qualified(schema, table)} ORDER BY ${orderBy} OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
+      );
+      const rows = r.recordset.map((row) => columns.map((c) => serializeValue(row[c.name])));
+      return { columns, rows, orderBy: orderCols };
+    });
+  }
+
+  // Traces: BASED-TABLE-COMMIT — all-or-nothing transactional writes; typed params, no interpolation.
+  async runCommands(commands: DbCommand[]): Promise<CommandResult> {
+    return this.withPool(async (pool) => {
+      const tx = new sql.Transaction(pool);
+      // A begin() failure is likely a dead pool → let it throw so withPool retries once against a fresh tx.
+      await tx.begin();
+      const rowsAffected: number[] = [];
+      try {
+        for (const cmd of commands) {
+          const request = new sql.Request(tx);
+          for (const p of cmd.params ?? []) {
+            if (p.value !== null && typeof p.value === "object") {
+              throw new Error(`Cannot bind binary/complex value for parameter @${p.name}`);
+            }
+            // NULL needs an explicit type (implicit-converts to any target column); otherwise infer from the JS value.
+            if (p.value === null) request.input(p.name, sql.NVarChar, null);
+            else request.input(p.name, p.value);
+          }
+          const r = await request.query(cmd.sql);
+          rowsAffected.push(...(r.rowsAffected ?? []));
+        }
+        await tx.commit();
+        return { rowsAffected, error: null };
+      } catch (err) {
+        try {
+          await tx.rollback();
+        } catch {
+          // rollback may fail if the batch already aborted the transaction; the original error is what matters
+        }
+        return { rowsAffected: [], error: errMessage(err) };
+      }
+    });
+  }
+
+  execute(sqlText: string, onChunk: (chunk: QueryChunk) => void, opts: ExecuteOptions = {}): QueryExecution {
     const batches = splitBatches(sqlText);
     let cancelled = false;
     let errored = false;
@@ -247,7 +381,7 @@ export class MssqlAdapter implements DatabaseAdapter {
         });
         for (const batch of batches) {
           if (cancelled) break;
-          const res = await this.runBatchStream(pool, batch, onChunk, (req) => (currentRequest = req));
+          const res = await this.runBatchStream(pool, batch, onChunk, (req) => (currentRequest = req), opts);
           if (res.errored) errored = true;
           if (res.cancelled) cancelled = true;
         }
@@ -281,6 +415,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     batchSql: string,
     onChunk: (chunk: QueryChunk) => void,
     setRequest: (req: sql.Request) => void,
+    opts: ExecuteOptions,
   ): Promise<{ errored: boolean; cancelled: boolean }> {
     return new Promise((resolve) => {
       const request = new sql.Request(pool);
@@ -288,10 +423,16 @@ export class MssqlAdapter implements DatabaseAdapter {
       (request as unknown as Record<string, unknown>).arrayRowMode = true;
       setRequest(request);
       let collector: RowCollector | null = null;
+      let planRows: string[] | null = null; // non-null while the current recordset is a showplan resultset
       let errored = false;
       let wasCancelled = false;
 
       const endResultSet = () => {
+        if (planRows) {
+          onChunk({ type: "plan", xml: planRows.join("") });
+          planRows = null;
+          return;
+        }
         if (!collector) return;
         const { rowCount, truncated } = collector.finish();
         onChunk({ type: "resultsetEnd", rowCount, truncated });
@@ -301,12 +442,20 @@ export class MssqlAdapter implements DatabaseAdapter {
       request.on("recordset", (cols: unknown) => {
         endResultSet();
         const arr = (Array.isArray(cols) ? cols : Object.values(cols as object)) as Array<{ name?: string }>;
+        if (arr.length === 1 && arr[0]?.name === SHOWPLAN_COLUMN) {
+          planRows = [];
+          return; // swallowed — never shown as a "Results N" grid tab
+        }
         const columns: ColumnInfo[] = arr.map((c, i) => ({ name: c.name || `(col ${i + 1})`, type: typeName(c) }));
         onChunk({ type: "resultset", columns });
-        collector = new RowCollector((rows) => onChunk({ type: "rows", rows }), this.rowCap);
+        collector = new RowCollector((rows) => onChunk({ type: "rows", rows }), opts.rowCap ?? this.rowCap);
       });
       request.on("row", (row: unknown) => {
         const values = Array.isArray(row) ? row : Object.values(row as object);
+        if (planRows) {
+          planRows.push(String(values[0] ?? ""));
+          return;
+        }
         collector?.push(serializeRow(values));
       });
       request.on("rowsaffected", (n: number) => {
@@ -329,36 +478,12 @@ export class MssqlAdapter implements DatabaseAdapter {
         resolve({ errored, cancelled: wasCancelled });
       });
 
-      const maybePromise = request.batch(batchSql) as unknown as Promise<unknown> | undefined;
+      if ((opts.capturePlan || opts.captureStats) && skipsWrap(batchSql)) {
+        onChunk({ type: "message", text: "Plan/stats capture skipped for this batch (CREATE must be the first statement)." });
+      }
+      const maybePromise = request.batch(wrapBatch(batchSql, opts)) as unknown as Promise<unknown> | undefined;
       if (maybePromise && typeof maybePromise.catch === "function") maybePromise.catch(() => {});
     });
   }
 }
 
-// Traces: BASED-CONN-TEST
-export async function testConnection(
-  cfg: ConnectionConfig,
-  getSecret: SecretProvider,
-  transientSecret?: string,
-): Promise<TestResult> {
-  const secretProvider: SecretProvider = (id) => transientSecret ?? getSecret(id);
-  const adapter = new MssqlAdapter(cfg, secretProvider);
-  try {
-    await adapter.connect();
-    let serverVersion: string | undefined;
-    let identity: string | undefined;
-    const exec = adapter.execute("SELECT @@VERSION AS v, SUSER_SNAME() AS who", (chunk) => {
-      if (chunk.type === "rows" && chunk.rows[0]) {
-        serverVersion = String(chunk.rows[0][0] ?? "").split("\n")[0];
-        identity = String(chunk.rows[0][1] ?? "");
-      }
-    });
-    const { status } = await exec.completion;
-    if (status !== "ok") return { ok: false, error: "Connected but test query failed" };
-    return { ok: true, serverVersion, identity };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  } finally {
-    await adapter.disconnect().catch(() => {});
-  }
-}

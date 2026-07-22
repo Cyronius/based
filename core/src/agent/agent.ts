@@ -1,32 +1,61 @@
-// Traces: BASED-AGENT-ENDPOINT, BASED-AGENT-SCHEMA-CTX
-// Builds the Margin Chat agent. Constructed per request so its tools bind to the live session
-// adapter; the model and memory are resolved once and passed in.
+// Traces: BASED-AGENT-ENDPOINT, BASED-AGENT-SCHEMA-CTX, BASED-LANCE-AGENT-SURFACE, BASED-AGENT-INSTRUCTIONS-COMPOSE
+// Builds the Capy agent. Constructed per request so its tools bind to the live session
+// adapter; the model and memory are resolved once and passed in. The toolset + persona vary by
+// engine (see ./surface.ts) — a SQL Server session and a LanceDB session get different tools.
 import { Agent } from "@mastra/core/agent";
 import type { LanguageModel } from "ai";
 import type { Memory } from "@mastra/memory";
-import { buildAgentTools, type ToolDeps } from "./tools";
+import type { DbEngine } from "../db/types";
+import { agentSurfaceFor } from "./surface";
+import { type ToolDeps } from "./tools/shared";
+import { catalog as skillCatalog } from "./skills";
 
-export const AGENT_ID = "margin";
+export const AGENT_ID = "capy";
 
-const INSTRUCTIONS = `You are "based" — an assistant embedded in a SQL Server database client, living in the right-hand margin next to the user's query editor. You help the user understand their database and write correct T-SQL.
+/** Engine-neutral core: identity, the work-from-real-schema discipline, and output format. Every
+ *  engine's persona fragment is appended after this. */
+export const GENERIC_CORE = `You are "Capy" — an assistant embedded in a database client, living in the right-hand rail next to the user's query editor. You help the user understand their database and work with its data.
 
 Ground rules:
-- Work from the actual schema. Call get_schema to list objects, or get_schema with a table name to see its columns, before writing SQL about tables you have not inspected. Never invent table or column names.
-- You only ever see schema and, when you explicitly call sample_rows, a small sample of rows. You do not have the full data.
-- run_query executes read-only SELECT/CTE statements and returns results. Use it to answer questions with real data.
-- You cannot write to the database directly. To INSERT/UPDATE/DELETE or run DDL, call the run_mutation tool with the exact SQL and a short reason — this shows the user an approval card. Only the user's approval runs it. Never try to smuggle a mutation through run_query; it will be refused.
-- Prefer SQL Server (T-SQL) syntax: TOP instead of LIMIT, square-bracket identifiers when needed, schema-qualified names (dbo.Table).
-- Answer in concise markdown. Put every SQL statement in a \`\`\`sql fenced code block so the user can insert or run it with one click. Explain briefly what a query does; don't narrate every tool call.`;
+- Work from the actual schema. Call get_schema to list objects, or get_schema with a table name to see its columns, before making claims about tables you have not inspected. Never invent table or column names.
+- You only ever see schema and, when you explicitly ask for them, small samples of rows. You do not have the full data.
+- Answer in concise markdown. Explain briefly what a query or search does; don't narrate every tool call.`;
 
-export function buildAgent(opts: { model: LanguageModel; memory: Memory; toolDeps: ToolDeps }): Agent {
+/** Compose the system prompt: core + the engine's persona + the (engine-filtered) skill
+ *  catalog + the load-a-skill-first protocol. Only each skill's name+description is advertised here;
+ *  the body is pulled on demand via load_skill. `core` defaults to GENERIC_CORE but is user-overridable
+ *  (BASED-AGENT-INSTRUCTIONS). */
+export function agentInstructions(core: string, persona: string, skillTags?: DbEngine[]): string {
+  const catalogText = skillCatalog(skillTags)
+    .map((s) => `- ${s.name}: ${s.description}`)
+    .join("\n");
+  const skillsBlock = catalogText
+    ? `\n\nSkills — extra capabilities you can pull in on demand. When a request matches a skill below, call the load_skill tool with its name to get the full instructions BEFORE acting on it; then follow them.\n${catalogText}`
+    : "";
+  return `${core}
+
+${persona}${skillsBlock}`;
+}
+
+export function buildAgent(opts: {
+  model: LanguageModel;
+  memory: Memory;
+  engine: DbEngine;
+  toolDeps: ToolDeps;
+  /** Override for the engine-neutral core (BASED-AGENT-INSTRUCTIONS); defaults to GENERIC_CORE. */
+  core?: string;
+  /** Override for the engine's persona fragment; defaults to the engine surface's persona. */
+  persona?: string;
+}): Agent {
+  const surface = agentSurfaceFor(opts.engine, opts.toolDeps);
   return new Agent({
     id: AGENT_ID,
-    name: "based margin chat",
-    instructions: INSTRUCTIONS,
+    name: "based capy",
+    instructions: agentInstructions(opts.core ?? GENERIC_CORE, opts.persona ?? surface.persona, surface.skillTags),
     // `as never`: the AI SDK model spec and Mastra's bundled copy are structurally identical but
     // nominally distinct across package boundaries (version skew) — runtime-compatible (spike-proven).
     model: opts.model as never,
-    tools: buildAgentTools(opts.toolDeps),
+    tools: surface.tools as never,
     memory: opts.memory as never,
   });
 }
