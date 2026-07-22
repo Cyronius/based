@@ -1,0 +1,13 @@
+.claude/plans/
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.*
+
+# Vendored prebuilt dependency (lm-ag-ui) — the dist IS the package, keep it tracked despite dist/ above.
+!ui/vendor/lm-ag-ui/dist/
+!ui/vendor/lm-ag-ui/dist/**
+
+.codegraph
