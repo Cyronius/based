@@ -109,8 +109,8 @@ export function ConnectionDialog() {
       const p = isLance ? { ...payload(), server: "", database: form.database || "lancedb" } : payload();
       const saved = await saveConnection(p);
       setDialog({ mode: "closed" });
-      // Creating a connection selects it: connect so the new one becomes the active session.
-      if (!editing) void connect(saved.id);
+      // Saving a connection (new or edited) selects it as the active session.
+      void connect(saved.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSaving(false);

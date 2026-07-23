@@ -36,11 +36,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
 
 /** Native folder picker (e.g. for the LanceDB directory-path field). */
 export function openFolderDialog(startingFolder?: string): Promise<string | null> {
+  // RootFolder=MyComputer stops WinForms from honoring SelectedPath (a long-standing
+  // FolderBrowserDialog quirk), so only set it when there's no starting path to seed.
   const script = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.RootFolder = [System.Environment+SpecialFolder]::MyComputer
-${startingFolder ? `$d.SelectedPath = ${JSON.stringify(startingFolder)}` : ""}
+${
+  startingFolder
+    ? `$d.SelectedPath = ${JSON.stringify(startingFolder)}`
+    : `$d.RootFolder = [System.Environment+SpecialFolder]::MyComputer`
+}
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
 `;
   return runPwshDialog(script);

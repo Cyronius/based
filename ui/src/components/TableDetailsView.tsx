@@ -92,7 +92,7 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
       <div className="px-5 pt-4 pb-3 flex items-center gap-3 shrink-0">
         <div className="flex items-center gap-1.5">
           {tabBtn("details", "Details")}
-          {tabBtn("data", "Edit Data")}
+          {tabBtn("data", "Data")}
           {sqlCapable && tabBtn("sql", "SQL")}
         </div>
         <h1 className="font-display text-xl text-paper">
