@@ -26,12 +26,12 @@ function OperatorNode({ data }: NodeProps<Node<{ op: LayoutNode }>>) {
   const { op } = data;
   return (
     <div
-      className="rounded border border-line bg-ink-900 text-paper-dim px-2 py-1.5 text-[11px] flex flex-col gap-0.5"
+      className="rounded border border-line bg-ink-900 text-paper-dim px-2 py-1.5 text-[length:var(--fs-sm)] flex flex-col gap-0.5"
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
     >
       <Handle type="target" position={Position.Top} />
       <div className="flex items-center gap-1.5">
-        <span className="text-brass text-[13px]">{glyphFor(op.physicalOp)}</span>
+        <span className="text-brass text-[length:var(--fs-md)]">{glyphFor(op.physicalOp)}</span>
         <span className="truncate font-medium">{op.physicalOp}</span>
       </div>
       <div className="text-faint truncate">{op.logicalOp}</div>
@@ -56,7 +56,7 @@ function DetailPanel({ op, onClose }: { op: LayoutNode; onClose: () => void }) {
     );
 
   return (
-    <div className="absolute top-2 right-2 w-72 max-h-[calc(100%-1rem)] overflow-auto rounded border border-line bg-ink-950/95 backdrop-blur-sm p-3 text-[11px] shadow-lg">
+    <div className="absolute top-2 right-2 w-72 max-h-[calc(100%-1rem)] overflow-auto rounded border border-line bg-ink-950/95 backdrop-blur-sm p-3 text-[length:var(--fs-sm)] shadow-lg">
       <div className="flex items-center justify-between mb-1.5">
         <div className="font-medium text-paper">{op.physicalOp}</div>
         <button className="text-faint hover:text-paper" onClick={onClose}>
@@ -93,7 +93,7 @@ function SinglePlanCanvas({ xml }: { xml: string }) {
   }, [xml]);
 
   if (nodes.length === 0) {
-    return <div className="h-full grid place-items-center text-faint text-[12px] italic">No plan operators found.</div>;
+    return <div className="h-full grid place-items-center text-faint text-[length:var(--fs-base)] italic">No plan operators found.</div>;
   }
 
   const flowNodes: Node[] = nodes.map((n) => ({
@@ -137,7 +137,7 @@ export function PlanView({ plans }: { plans: string[] }) {
           {plans.map((_, i) => (
             <button
               key={i}
-              className={`px-2.5 border-r border-line-soft text-[11px] ${
+              className={`px-2.5 border-r border-line-soft text-[length:var(--fs-sm)] ${
                 active === i
                   ? "bg-ink-800 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
                   : "text-muted hover:text-paper-dim hover:bg-ink-900/50"

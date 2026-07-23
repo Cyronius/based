@@ -117,7 +117,7 @@ export function ConnectionDialog() {
     }
   }
 
-  const field = "w-full px-2.5 py-1.5 rounded border border-line bg-ink-950 text-paper text-[12.5px] focus:outline-none focus:border-brass-soft placeholder:text-faint";
+  const field = "w-full px-2.5 py-1.5 rounded border border-line bg-ink-950 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft placeholder:text-faint";
   const label = "ledger-label block mb-1";
 
   return (
@@ -138,7 +138,7 @@ export function ConnectionDialog() {
               <option value="lancedb">LanceDB</option>
             </select>
             {isLance && (
-              <p className="mt-1 text-[11px] text-faint leading-snug">
+              <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
                 LanceDB has no SQL. Browse tables in the left rail and query them with vector, full-text, or hybrid search
                 through Ask Capi.
               </p>
@@ -178,7 +178,7 @@ export function ConnectionDialog() {
                   {!isLanceCloud && (
                     <button
                       type="button"
-                      className="shrink-0 px-2.5 py-1.5 text-[12px] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
+                      className="shrink-0 px-2.5 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
                       disabled={browsing}
                       onClick={() => void onBrowseFolder()}
                     >
@@ -187,7 +187,7 @@ export function ConnectionDialog() {
                   )}
                 </div>
                 {!isLanceCloud && (
-                  <p className="mt-1 text-[11px] text-faint leading-snug">
+                  <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
                     Point this at a single LanceDB directory, or at a folder containing several — subfolders holding
                     their own LanceDB tables are auto-detected and their tables appear flattened in the explorer.
                   </p>
@@ -263,7 +263,7 @@ export function ConnectionDialog() {
           )}
 
           {!isLance && (
-          <div className="flex gap-4 pt-1 text-[12px] text-muted">
+          <div className="flex gap-4 pt-1 text-[length:var(--fs-base)] text-muted">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={form.encrypt} onChange={(e) => setForm({ ...form, encrypt: e.target.checked })} className="accent-(--color-brass)" />
               Encrypt
@@ -281,17 +281,17 @@ export function ConnectionDialog() {
           )}
 
           {testResult && (
-            <div className={`px-3 py-2 rounded border text-[12px] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}>
+            <div className={`px-3 py-2 rounded border text-[length:var(--fs-base)] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}>
               {testResult.ok ? `Connected as ${testResult.identity || "?"} — ${testResult.serverVersion ?? ""}` : testResult.error}
             </div>
           )}
-          {error && <div className="px-3 py-2 rounded border border-err/40 bg-err/10 text-err text-[12px]">{error}</div>}
+          {error && <div className="px-3 py-2 rounded border border-err/40 bg-err/10 text-err text-[length:var(--fs-base)]">{error}</div>}
         </div>
 
         <div className="px-5 py-3 border-t border-line-soft flex items-center gap-2">
           {editing && (
             <button
-              className={`px-3 py-1.5 text-[12px] rounded border ${confirmDelete ? "border-err bg-err/20 text-err" : "border-line text-muted hover:text-err hover:border-err/50"}`}
+              className={`px-3 py-1.5 text-[length:var(--fs-base)] rounded border ${confirmDelete ? "border-err bg-err/20 text-err" : "border-line text-muted hover:text-err hover:border-err/50"}`}
               onClick={() => {
                 if (!confirmDelete) {
                   setConfirmDelete(true);
@@ -304,11 +304,11 @@ export function ConnectionDialog() {
             </button>
           )}
           <div className="flex-1" />
-          <button className="px-3 py-1.5 text-[12px] rounded border border-line text-muted hover:text-paper disabled:opacity-40" disabled={testing} onClick={() => void onTest()}>
+          <button className="px-3 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40" disabled={testing} onClick={() => void onTest()}>
             {testing ? "Testing…" : "Test connection"}
           </button>
           <button
-            className="px-4 py-1.5 text-[12px] rounded border border-brass-soft bg-brass/15 text-brass hover:bg-brass/25 disabled:opacity-40"
+            className="px-4 py-1.5 text-[length:var(--fs-base)] rounded border border-brass-soft bg-brass/15 text-brass hover:bg-brass/25 disabled:opacity-40"
             disabled={saving}
             onClick={() => void onSave()}
           >

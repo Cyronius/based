@@ -5,7 +5,7 @@
 // has no SQL surface, no schemas, no primary keys and no transactional writes — so execute/runCommands
 // return graceful errors (capabilities.sql / .write are false) and the real value is the search methods.
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import * as lancedb from "@lancedb/lancedb";
 import type { SecretProvider } from "./entra";
 import { DEFAULT_ROW_CAP } from "./rowcap";
@@ -30,6 +30,10 @@ import type {
   VectorSearchParams,
   WireValue,
 } from "./types";
+
+/** Lance's own on-disk layout inside every table (`<name>.lance`) directory — never valid names for a
+ *  nested database when scanning a base folder (BASED-LANCE-BASEFOLDER). */
+const LANCE_RESERVED_DIR_NAMES = new Set(["data", "_versions", "_indices", "_transactions", "_deletions"]);
 
 function errMessage(err: unknown): string {
   if (!err) return "Unknown error";
@@ -97,6 +101,12 @@ export class LanceDbAdapter implements DatabaseAdapter {
         // Local: uri is a directory path (fall back to server/database for hand-written configs).
         const dir = this.cfg.uri ?? this.cfg.server ?? this.cfg.database;
         if (!dir) throw new Error("LanceDB local connection requires a directory path");
+        const dirBase = basename(dir);
+        if (dirBase.toLowerCase().endsWith(".lance")) {
+          throw new Error(
+            `"${dir}" looks like a single LanceDB table directory ("${dirBase}"). Point the connection at its parent folder instead.`,
+          );
+        }
         const direct = await lancedb.connect(dir);
         const directTables = await direct.tableNames();
         if (directTables.length > 0) {
@@ -133,6 +143,7 @@ export class LanceDbAdapter implements DatabaseAdapter {
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      if (LANCE_RESERVED_DIR_NAMES.has(entry.name)) continue;
       try {
         const sub = await lancedb.connect(join(dir, entry.name));
         const tables = await sub.tableNames();

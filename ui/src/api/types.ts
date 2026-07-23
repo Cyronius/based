@@ -148,6 +148,7 @@ export interface AiConfig {
 export interface AppSettings {
   theme: string;
   rowPageSize: number;
+  fontScale: number;
 }
 
 export interface InstructionSet {

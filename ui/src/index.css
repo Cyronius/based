@@ -27,6 +27,15 @@
   --radius: 8px;
 }
 
+:root {
+  --font-scale: 1;
+  --fs-2xs: calc(9px * var(--font-scale));
+  --fs-xs: calc(10px * var(--font-scale));
+  --fs-sm: calc(11px * var(--font-scale));
+  --fs-base: calc(12px * var(--font-scale));
+  --fs-md: calc(13px * var(--font-scale));
+}
+
 @theme {
   --color-ink-950: #101216;
   --color-ink-900: #15181d;
@@ -65,7 +74,7 @@ body {
   background: var(--color-ink-950);
   color: var(--color-paper);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--fs-md);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -88,13 +97,12 @@ body {
   background: transparent;
 }
 
-/* Ledger section label: small caps, letterspaced */
+/* Ledger section label: heavy weight, letterspaced (no uppercase — see CLAUDE.md) */
 .ledger-label {
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
   color: var(--color-faint);
 }
 

@@ -73,7 +73,7 @@ function ConnectionSelector() {
                 }`}
               />
             </div>
-            <div className="text-[11px] text-muted truncate">{AUTH_LABEL[active.authType]}</div>
+            <div className="text-[length:var(--fs-sm)] text-muted truncate">{AUTH_LABEL[active.authType]}</div>
           </>
         ) : (
           <div className="text-muted py-0.5">Select a connection…</div>
@@ -92,7 +92,7 @@ function ConnectionSelector() {
                 }}
               >
                 <div className="truncate">{c.name}</div>
-                <div className="text-[11px] text-muted truncate">{connSubtitle(c)}</div>
+                <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c)}</div>
               </button>
               <button
                 title="Edit connection"
@@ -130,9 +130,12 @@ export function LeftRail() {
   const setDatabase = useStore((s) => s.setDatabase);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const status = useStore((s) => s.status);
+  const connections = useStore((s) => s.connections);
+  const activeConn = connections.find((c) => c.id === activeConnectionId);
+  const sqlEngine = !activeConn || engineOf(activeConn) === "mssql";
 
   const selectCls =
-    "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[12px] focus:outline-none focus:border-brass-soft disabled:opacity-40";
+    "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft disabled:opacity-40";
 
   const [width, setWidth] = useState(loadWidth);
   const [dragging, setDragging] = useState(false);
@@ -170,34 +173,38 @@ export function LeftRail() {
 
       <div className="px-3 space-y-2">
         <ConnectionSelector />
-        <select
-          className={selectCls}
-          value={database ?? ""}
-          disabled={!activeConnectionId || status !== "connected"}
-          onChange={(e) => void setDatabase(e.target.value)}
-          title="Database"
-        >
-          {database == null && <option value="">— database —</option>}
-          {databases.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-        </select>
-        <select
-          className={selectCls}
-          value={schemaFilter}
-          disabled={!activeConnectionId || status !== "connected"}
-          onChange={(e) => setSchemaFilter(e.target.value)}
-          title="Schema filter"
-        >
-          <option value="">All schemas</option>
-          {schemas.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        {sqlEngine && (
+          <select
+            className={selectCls}
+            value={database ?? ""}
+            disabled={!activeConnectionId || status !== "connected"}
+            onChange={(e) => void setDatabase(e.target.value)}
+            title="Database"
+          >
+            {database == null && <option value="">— database —</option>}
+            {databases.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        )}
+        {sqlEngine && (
+          <select
+            className={selectCls}
+            value={schemaFilter}
+            disabled={!activeConnectionId || status !== "connected"}
+            onChange={(e) => setSchemaFilter(e.target.value)}
+            title="Schema filter"
+          >
+            <option value="">All schemas</option>
+            {schemas.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="mt-3 flex-1 min-h-0 border-t border-line-soft">

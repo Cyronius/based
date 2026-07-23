@@ -39,6 +39,7 @@ export function openFolderDialog(startingFolder?: string): Promise<string | null
   const script = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.RootFolder = [System.Environment+SpecialFolder]::MyComputer
 ${startingFolder ? `$d.SelectedPath = ${JSON.stringify(startingFolder)}` : ""}
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
 `;

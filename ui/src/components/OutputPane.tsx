@@ -14,7 +14,7 @@ export function OutputPane({ tab }: { tab: QueryTabState }) {
         <span className="ledger-label">Output</span>
         {tab.stats && (
           <span
-            className={`text-[11px] font-mono ${
+            className={`text-[length:var(--fs-sm)] font-mono ${
               tab.stats.status === "ok" ? "text-ok" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"
             }`}
           >
@@ -22,7 +22,7 @@ export function OutputPane({ tab }: { tab: QueryTabState }) {
           </span>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-[11.5px] leading-relaxed">
+      <div className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-[length:var(--fs-sm)] leading-relaxed">
         {tab.output.length === 0 && !tab.running && <span className="text-faint italic">No messages.</span>}
         {tab.running && tab.output.length === 0 && <span className="text-muted pulse-soft">Executing…</span>}
         {tab.output.map((line, i) => (

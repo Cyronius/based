@@ -24,7 +24,7 @@ export function ResultText({ rs, version }: { rs: ResultSetData; version: number
   }, [rs, version]);
 
   return (
-    <pre className="h-full w-full overflow-auto px-3 py-2 font-mono text-[11.5px] leading-[1.5] text-paper-dim whitespace-pre">
+    <pre className="h-full w-full overflow-auto px-3 py-2 font-mono text-[length:var(--fs-sm)] leading-[1.5] text-paper-dim whitespace-pre">
       {text}
     </pre>
   );

@@ -9,7 +9,7 @@ import {
   fetchWindowState,
   saveWindowState,
 } from "./api/client";
-import { applyTheme, themeHint } from "./theme";
+import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
 import type {
   ColumnInfo,
@@ -111,12 +111,14 @@ interface AppState {
   banner: string | null;
   theme: string;
   rowPageSize: number;
+  fontScale: number;
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
 
   loadSettings(): Promise<void>;
   setTheme(id: string): void;
+  setFontScale(n: number): void;
   setRowPageSize(n: number): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
@@ -387,6 +389,7 @@ export const useStore = create<AppState>((set, get) => {
     banner: null,
     theme: themeHint(),
     rowPageSize: 500,
+    fontScale: fontScaleHint(),
     capturePlan: false,
     captureStats: false,
 
@@ -396,7 +399,8 @@ export const useStore = create<AppState>((set, get) => {
       try {
         const s = await getSettings();
         applyTheme(s.theme);
-        set({ theme: s.theme, rowPageSize: s.rowPageSize });
+        applyFontScale(s.fontScale);
+        set({ theme: s.theme, rowPageSize: s.rowPageSize, fontScale: s.fontScale });
       } catch {
         // keep the hinted theme if the server is unreachable
       }
@@ -406,6 +410,12 @@ export const useStore = create<AppState>((set, get) => {
       applyTheme(id);
       set({ theme: id });
       void saveSettings({ theme: id }).catch(() => {});
+    },
+
+    setFontScale(n) {
+      applyFontScale(n);
+      set({ fontScale: n });
+      void saveSettings({ fontScale: n }).catch(() => {});
     },
 
     setRowPageSize(n) {

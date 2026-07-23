@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
+import { engineOf } from "../api/types";
 
 const GROUPS: Array<{ type: DbObjectType; label: string; glyph: string }> = [
   { type: "table", label: "Tables", glyph: "▦" },
@@ -16,25 +17,32 @@ export function ObjectExplorer() {
   const openTableTab = useStore((s) => s.openTableTab);
   const openRoutineTab = useStore((s) => s.openRoutineTab);
   const status = useStore((s) => s.status);
+  const activeConnectionId = useStore((s) => s.activeConnectionId);
+  const connections = useStore((s) => s.connections);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
+  const activeConn = connections.find((c) => c.id === activeConnectionId);
+  const engine = activeConn ? engineOf(activeConn) : "mssql";
+  const groups = engine === "mssql" ? GROUPS : GROUPS.filter((g) => g.type === "table");
+
   const grouped = useMemo(() => {
-    const filtered = schemaFilter ? objects.filter((o) => o.schema === schemaFilter) : objects;
+    const filtered = engine === "mssql" && schemaFilter ? objects.filter((o) => o.schema === schemaFilter) : objects;
     const map = new Map<DbObjectType, DbObject[]>();
-    for (const g of GROUPS) map.set(g.type, []);
+    for (const g of groups) map.set(g.type, []);
     for (const o of filtered) map.get(o.type)?.push(o);
     return map;
-  }, [objects, schemaFilter]);
+  }, [objects, schemaFilter, engine, groups]);
 
-  const displayName = (o: DbObject) => (schemaFilter ? o.name : `${o.schema}.${o.name}`);
+  const displayName = (o: DbObject) =>
+    engine === "mssql" ? (schemaFilter ? o.name : `${o.schema}.${o.name}`) : o.schema ? `${o.schema}/${o.name}` : o.name;
 
   if (status !== "connected" && objects.length === 0) {
-    return <div className="p-4 text-faint text-[12px] italic">No connection.</div>;
+    return <div className="p-4 text-faint text-[length:var(--fs-base)] italic">No connection.</div>;
   }
 
   return (
     <div className="h-full overflow-y-auto py-1">
-      {GROUPS.map((g) => {
+      {groups.map((g) => {
         const items = grouped.get(g.type) ?? [];
         const isCollapsed = collapsed[g.type] ?? false;
         return (
@@ -43,24 +51,24 @@ export function ObjectExplorer() {
               className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-ink-900 group"
               onClick={() => setCollapsed({ ...collapsed, [g.type]: !isCollapsed })}
             >
-              <span className={`text-faint text-[10px] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+              <span className={`text-faint text-[length:var(--fs-xs)] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
               <span className="ledger-label group-hover:text-muted">{g.label}</span>
-              <span className="ml-auto text-[10px] font-mono text-faint">{items.length}</span>
+              <span className="ml-auto text-[length:var(--fs-xs)] font-mono text-faint">{items.length}</span>
             </button>
             {!isCollapsed &&
               items.map((o) => {
                 return (
                   <div
                     key={`${o.schema}.${o.name}`}
-                    className="flex items-center gap-2 pl-8 pr-3 py-[3px] text-[12px] text-paper-dim hover:bg-ink-900 hover:text-paper select-none cursor-pointer"
-                    title={`${o.schema}.${o.name} — double-click for details`}
+                    className="flex items-center gap-2 pl-8 pr-3 py-[3px] text-[length:var(--fs-base)] text-paper-dim hover:bg-ink-900 hover:text-paper select-none cursor-pointer"
+                    title={`${displayName(o)} — double-click for details`}
                     onDoubleClick={() => {
                       if (o.type === "table" || o.type === "view") void openTableTab(o.schema, o.name, o.type);
                       else void openRoutineTab(o.schema, o.name, o.type);
                     }}
                   >
-                    <span className="text-faint text-[11px] w-3 text-center">{g.glyph}</span>
-                    <span className="truncate font-mono text-[11.5px]">{displayName(o)}</span>
+                    <span className="text-faint text-[length:var(--fs-sm)] w-3 text-center">{g.glyph}</span>
+                    <span className="truncate font-mono text-[length:var(--fs-sm)]">{displayName(o)}</span>
                   </div>
                 );
               })}

@@ -226,7 +226,7 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-ink-900">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-line-soft shrink-0 text-[12px]">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-line-soft shrink-0 text-[length:var(--fs-base)]">
         <button
           className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
           disabled={loading || offset === 0 || pendingCount > 0}
@@ -261,14 +261,14 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
             </button>
           </>
         ) : (
-          <span className="text-[11px] text-faint italic">
+          <span className="text-[length:var(--fs-sm)] text-faint italic">
             {tab.objectType === "view" ? "Views are read-only." : "No primary key — read-only. Add a PK to edit."}
           </span>
         )}
 
         <div className="flex-1" />
 
-        {pendingCount > 0 && <span className="text-brass font-mono text-[11px]">{pendingCount} pending</span>}
+        {pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
         <button
           className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
           disabled={pendingCount === 0}
@@ -293,13 +293,13 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
       </div>
 
       {commitError && (
-        <div className="mx-3 mt-2 px-3 py-2 text-[12px] text-err bg-err/10 border border-err/30 rounded font-mono whitespace-pre-wrap">
+        <div className="mx-3 mt-2 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono whitespace-pre-wrap">
           {commitError}
         </div>
       )}
 
       {review && (
-        <div className="mx-3 mt-2 border border-line rounded bg-ink-950 text-[11px] font-mono max-h-48 overflow-auto">
+        <div className="mx-3 mt-2 border border-line rounded bg-ink-950 text-[length:var(--fs-sm)] font-mono max-h-48 overflow-auto">
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-line-soft sticky top-0 bg-ink-950">
             <span className="ledger-label">Review SQL — {review.length} command(s), parameterized</span>
             <button className="text-muted hover:text-paper" onClick={() => setReview(null)}>
@@ -323,9 +323,9 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
       )}
 
       <div className="flex-1 min-h-0 mt-2">
-        {loading && <div className="px-5 py-3 text-muted pulse-soft text-[12px]">Loading rows…</div>}
+        {loading && <div className="px-5 py-3 text-muted pulse-soft text-[length:var(--fs-base)]">Loading rows…</div>}
         {loadError && (
-          <div className="mx-3 px-3 py-2 text-[12px] text-err bg-err/10 border border-err/30 rounded font-mono">{loadError}</div>
+          <div className="mx-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{loadError}</div>
         )}
         {!loading && !loadError && page && (
           <DataEditor

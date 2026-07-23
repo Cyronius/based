@@ -36,19 +36,30 @@ async function waitFor(label: string, url: string, timeoutMs = 30_000): Promise<
   throw new Error(`[dev] ${label} did not come up within ${timeoutMs}ms (${url})`);
 }
 
-function shutdown(code = 0): never {
+async function shutdown(code = 0): Promise<never> {
+  // On Windows, Ctrl-C is a console-wide broadcast: core/vite/shell get it at the same
+  // instant we do and start their own graceful exit (Vite in particular restores the raw
+  // terminal mode it sets for its interactive shortcuts). Force-killing immediately races
+  // that cleanup and can leave the console stuck in raw mode. Give them a moment to exit
+  // themselves first; only hard-kill stragglers after the grace period.
+  const alive = children.filter((c) => c.exitCode === null && c.signalCode === null);
+  if (alive.length > 0) {
+    await Promise.race([Promise.all(alive.map((c) => c.exited)), Bun.sleep(2000)]);
+  }
   for (const c of children) {
-    try {
-      c.kill();
-    } catch {
-      // already gone
+    if (c.exitCode === null && c.signalCode === null) {
+      try {
+        c.kill();
+      } catch {
+        // already gone
+      }
     }
   }
   process.exit(code);
 }
 
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => void shutdown(0));
+process.on("SIGTERM", () => void shutdown(0));
 
 run("core (watch)", ["bun", "run", "dev:core"]);
 run("vite (HMR)", ["bun", "run", "dev:ui"]);

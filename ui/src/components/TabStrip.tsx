@@ -32,7 +32,7 @@ export function TabStrip() {
   }
 
   const toggleBtn = (active: boolean) =>
-    `grid place-items-center h-full w-8 border-l border-line-soft text-[13px] shrink-0 ${
+    `grid place-items-center h-full w-8 border-l border-line-soft text-[length:var(--fs-md)] shrink-0 ${
       active
         ? "bg-ink-900 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
         : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
@@ -56,15 +56,15 @@ export function TabStrip() {
             }}
             title={t.kind === "query" && t.filePath ? t.filePath : t.title}
           >
-            {t.kind === "table" && <span className="text-faint text-[11px]">{t.objectType === "view" ? "◫" : "▦"}</span>}
-            {t.kind === "routine" && <span className="text-faint text-[11px]">{t.routineType === "function" ? "λ" : "≡"}</span>}
+            {t.kind === "table" && <span className="text-faint text-[length:var(--fs-sm)]">{t.objectType === "view" ? "◫" : "▦"}</span>}
+            {t.kind === "routine" && <span className="text-faint text-[length:var(--fs-sm)]">{t.routineType === "function" ? "λ" : "≡"}</span>}
             {running && <span className="size-1.5 rounded-full bg-brass pulse-soft shrink-0" />}
-            <span className="truncate text-[12px]">
+            <span className="truncate text-[length:var(--fs-base)]">
               {t.title}
               {dirty ? " •" : ""}
             </span>
             <button
-              className="text-faint hover:text-err opacity-0 group-hover:opacity-100 transition-opacity text-[11px]"
+              className="text-faint hover:text-err opacity-0 group-hover:opacity-100 transition-opacity text-[length:var(--fs-sm)]"
               onClick={(e) => {
                 e.stopPropagation();
                 closeTab(t.id);
@@ -88,11 +88,11 @@ export function TabStrip() {
       <div className="flex-1" />
 
       <label className="self-center flex items-baseline gap-1.5 pl-2 pr-2 border-l border-line-soft select-none">
-        <span className="text-[11px] leading-none text-faint">Rows</span>
+        <span className="text-[length:var(--fs-sm)] leading-none text-faint">Rows</span>
         <input
           type="text"
           inputMode="numeric"
-          className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[11px] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
+          className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[length:var(--fs-sm)] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
           value={fetchSizeText}
           title="Max rows to fetch per query run"
           aria-label="Fetch size"

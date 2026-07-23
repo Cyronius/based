@@ -8,6 +8,7 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const themeId = useStore((s) => s.theme);
+  const fontScale = useStore((s) => s.fontScale);
 
   useEffect(() => {
     const model = getModel(tabId, initialContent);
@@ -15,7 +16,7 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
       model,
       theme: "based",
       fontFamily: monoFont(),
-      fontSize: 13,
+      fontSize: 13 * useStore.getState().fontScale,
       lineHeight: 21,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
@@ -60,6 +61,11 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
     syncMonacoTheme(monaco);
     editorRef.current?.updateOptions({ fontFamily: monoFont() });
   }, [themeId]);
+
+  // Font size scales with the app-wide General-tab slider.
+  useEffect(() => {
+    editorRef.current?.updateOptions({ fontSize: 13 * fontScale });
+  }, [fontScale]);
 
   return <div ref={hostRef} className="h-full w-full" />;
 }

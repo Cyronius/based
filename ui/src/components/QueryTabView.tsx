@@ -20,7 +20,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
       <div className="flex items-center gap-1.5 px-2 py-1 border-b border-line-soft shrink-0">
         {tab.running ? (
           <button
-            className="px-2.5 py-1 text-[12px] rounded border border-err/50 text-err hover:bg-err/10"
+            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
             title="Cancel (Ctrl+Break)"
             onClick={() => void cancelQuery(tab.id)}
           >
@@ -28,7 +28,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
           </button>
         ) : (
           <button
-            className="px-2.5 py-1 text-[12px] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
+            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
             title="Run (F5 / Ctrl+Enter)"
             disabled={!canRun}
             onClick={() => void runQuery(tab.id)}
@@ -37,16 +37,16 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
           </button>
         )}
         <button
-          className="px-2.5 py-1 text-[12px] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
           title="Save to .sql (Ctrl+S)"
           onClick={() => void saveTab(tab.id)}
         >
           Save{tab.dirty ? " •" : ""}
         </button>
-        {tab.filePath && <span className="text-[11px] text-faint font-mono truncate">{tab.filePath}</span>}
+        {tab.filePath && <span className="text-[length:var(--fs-sm)] text-faint font-mono truncate">{tab.filePath}</span>}
         <div className="flex-1" />
         <button
-          className="px-2 py-1 text-[11px] text-faint hover:text-paper"
+          className="px-2 py-1 text-[length:var(--fs-sm)] text-faint hover:text-paper"
           title="Toggle output pane"
           onClick={() => {
             const p = outputRef.current;

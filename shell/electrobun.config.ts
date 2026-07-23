@@ -81,6 +81,15 @@ export default {
     copy: {
       "src/mainview/index.html": "views/mainview/index.html",
     },
-    win: { bundleCEF: false },
+    // On Windows, electrobun 1.18.1's compiled CLI (bin/electrobun.exe) embeds
+    // this icon via `require.resolve("rcedit/package.json")` — but since that
+    // CLI is itself a Bun-compiled standalone binary, the call resolves against
+    // an absolute path baked in at the upstream CI build (`D:\a\electrobun\...`)
+    // instead of this project's node_modules. Confirmed still broken on the
+    // 1.18.4-beta.6 prerelease too; running the CLI from its own TS source to
+    // bypass the compiled binary doesn't work either, since the published npm
+    // package omits the `src/shared/*` modules that source imports. See
+    // shell/README.md for the (machine-local, session-scoped) workaround.
+    win: { bundleCEF: false, icon: "assets/icon.png" },
   },
 } satisfies ElectrobunConfig;

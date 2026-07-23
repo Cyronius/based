@@ -17,7 +17,7 @@ export function StatusBar() {
   const showReconnect = status === "disconnected" && activeConnectionId != null;
 
   return (
-    <footer className="h-7 shrink-0 flex items-center gap-4 px-3 border-t border-line bg-ink-900 text-[11px] font-mono">
+    <footer className="h-7 shrink-0 flex items-center gap-4 px-3 border-t border-line bg-ink-900 text-[length:var(--fs-sm)] font-mono">
       <span className={`flex items-center gap-1.5 ${statusColor}`}>
         <span className={`size-1.5 rounded-full bg-current ${status === "reconnecting" || status === "connecting" ? "pulse-soft" : ""}`} />
         {status === "reconnecting" ? "reconnecting…" : status}

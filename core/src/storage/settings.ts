@@ -8,11 +8,14 @@ export interface AppSettings {
   theme: string;
   /** Rows fetched per page in the table Data view. */
   rowPageSize: number;
+  /** App-wide font-size multiplier (see ui/src/theme.ts). */
+  fontScale: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "ledger",
   rowPageSize: 500,
+  fontScale: 1,
 };
 
 export class SettingsStore {

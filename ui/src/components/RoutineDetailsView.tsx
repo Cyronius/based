@@ -6,12 +6,12 @@ function ParametersTable({ tab }: { tab: RoutineTabState }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto">
       {tab.error && (
-        <div className="mx-5 mt-3 px-3 py-2 text-[12px] text-err bg-err/10 border border-err/30 rounded font-mono">{tab.error}</div>
+        <div className="mx-5 mt-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{tab.error}</div>
       )}
-      {!tab.parameters && !tab.error && <div className="px-5 pt-3 text-muted pulse-soft text-[12px]">Loading definition…</div>}
+      {!tab.parameters && !tab.error && <div className="px-5 pt-3 text-muted pulse-soft text-[length:var(--fs-base)]">Loading definition…</div>}
 
       {tab.parameters && tab.parameters.length > 0 && (
-        <table className="mx-5 my-4 text-[12px] border-collapse">
+        <table className="mx-5 my-4 text-[length:var(--fs-base)] border-collapse">
           <thead>
             <tr className="text-left">
               {["#", "Name", "Type", "Mode"].map((h) => (
@@ -34,7 +34,7 @@ function ParametersTable({ tab }: { tab: RoutineTabState }) {
         </table>
       )}
       {tab.parameters && tab.parameters.length === 0 && (
-        <div className="px-5 pt-3 text-faint text-[12px] italic">No parameters.</div>
+        <div className="px-5 pt-3 text-faint text-[length:var(--fs-base)] italic">No parameters.</div>
       )}
 
       {tab.definition && <DefinitionBlock definition={tab.definition} />}
@@ -51,7 +51,7 @@ export function RoutineDetailsView({ tab }: { tab: RoutineTabState }) {
           {tab.name}
         </h1>
         <span className="ledger-label">{tab.routineType}</span>
-        {tab.parameters && <span className="text-[11px] text-faint font-mono">{tab.parameters.length} parameters</span>}
+        {tab.parameters && <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.parameters.length} parameters</span>}
       </div>
       <ParametersTable tab={tab} />
     </div>

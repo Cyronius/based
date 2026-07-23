@@ -47,7 +47,7 @@ function ConfigPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[12px] space-y-2 fade-up">
+    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[length:var(--fs-base)] space-y-2 fade-up">
       <div className="ledger-label">AI provider</div>
       <label className="block">
         <span className="text-faint">Base URL</span>
@@ -178,7 +178,7 @@ function InstructionsPanel() {
   };
 
   return (
-    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[12px] space-y-2 fade-up">
+    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[length:var(--fs-base)] space-y-2 fade-up">
       <div className="ledger-label">Agent instructions</div>
       <label className="block">
         <span className="text-faint">Set</span>
@@ -254,7 +254,7 @@ function CapiRail() {
     <AgentProvider value={agent}>
       <div className="flex flex-1 min-h-0 min-w-0 flex-col">
         <header className="flex items-center justify-between border-b border-line-soft pl-3 pr-4 py-4">
-          <span className="flex items-center gap-2.5 font-sans text-[13px] font-semibold text-faint">
+          <span className="flex items-center gap-2.5 font-sans text-[length:var(--fs-md)] font-semibold text-faint">
             <img src="/capi.png" alt="" className="h-8 w-8 rounded-full object-cover" />
             Ask Capi
           </span>
@@ -269,7 +269,7 @@ function CapiRail() {
           </>
         )}
         {err && (
-          <div className="flex items-start gap-2 border-b border-err/30 bg-err/10 pl-3 pr-4 py-2 text-[11px] text-err">
+          <div className="flex items-start gap-2 border-b border-err/30 bg-err/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-err">
             <span className="flex-1 font-mono break-words">{err}</span>
             <button className="text-muted hover:text-paper" onClick={() => setErr(null)}>
               ✕
@@ -325,7 +325,7 @@ export function RightRail() {
         title={open ? "Collapse Capi" : "Expand Capi"}
         onClick={toggle}
       >
-        <span className="text-[11px]">{open ? "›" : "‹"}</span>
+        <span className="text-[length:var(--fs-sm)]">{open ? "›" : "‹"}</span>
         {!open && (
           <span className="ledger-label" style={{ writingMode: "vertical-rl" }}>
             capi
@@ -342,7 +342,7 @@ export function RightRail() {
           <div className="flex-1 min-w-0 p-4 pr-5 fade-up">
             <img src="/capi.png" alt="" className="h-36 w-36 rounded-full object-cover overflow-visible mb-3" />
             <div className="ledger-label mb-3">Capi</div>
-            <p className="text-[12px] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
+            <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
           </div>
         )
       )}

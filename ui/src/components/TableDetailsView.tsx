@@ -20,12 +20,12 @@ function ColumnsTable({ tab }: { tab: TableTabState }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto">
       {tab.error && (
-        <div className="mx-5 mt-3 px-3 py-2 text-[12px] text-err bg-err/10 border border-err/30 rounded font-mono">{tab.error}</div>
+        <div className="mx-5 mt-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{tab.error}</div>
       )}
-      {!tab.columns && !tab.error && <div className="px-5 pt-3 text-muted pulse-soft text-[12px]">Loading columns…</div>}
+      {!tab.columns && !tab.error && <div className="px-5 pt-3 text-muted pulse-soft text-[length:var(--fs-base)]">Loading columns…</div>}
 
       {tab.columns && (
-        <table className="mx-5 my-4 text-[12px] border-collapse">
+        <table className="mx-5 my-4 text-[length:var(--fs-base)] border-collapse">
           <thead>
             <tr className="text-left">
               {["Key", "Name", "Data Type", "Size", "Nullable", "References"].map((h) => (
@@ -78,7 +78,7 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
 
   const tabBtn = (view: "details" | "data" | "sql", label: string) => (
     <button
-      className={`px-2.5 py-1 text-[12px] rounded border ${
+      className={`px-2.5 py-1 text-[length:var(--fs-base)] rounded border ${
         tab.view === view ? "border-brass-soft/60 text-brass bg-brass/5" : "border-line text-muted hover:text-paper"
       }`}
       onClick={() => setTableView(tab.id, view)}
@@ -96,11 +96,13 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
           {sqlCapable && tabBtn("sql", "SQL")}
         </div>
         <h1 className="font-display text-xl text-paper">
-          <span className="text-muted">{tab.schema}.</span>
+          {tab.schema && (
+            <span className="text-muted">{tab.schema}{sqlCapable ? "." : "/"}</span>
+          )}
           {tab.table}
         </h1>
         <span className="ledger-label">{tab.objectType}</span>
-        {tab.columns && <span className="text-[11px] text-faint font-mono">{tab.columns.length} columns</span>}
+        {tab.columns && <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.columns.length} columns</span>}
       </div>
 
       {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}

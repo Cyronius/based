@@ -54,8 +54,9 @@ export function sharedTools(deps: ToolDeps) {
         const objects = await adapter.listObjects();
         return { objects };
       }
-      const columns = await adapter.getTableColumns(schema ?? "dbo", table);
-      return { schema: schema ?? "dbo", table, columns };
+      const resolvedSchema = schema ?? (adapter.capabilities.sql ? "dbo" : "");
+      const columns = await adapter.getTableColumns(resolvedSchema, table);
+      return { schema: resolvedSchema, table, columns };
     },
   });
 

@@ -197,6 +197,31 @@ export function themeHint(): string {
   }
 }
 
+const FONT_SCALE_HINT_KEY = "based.fontScale";
+export const DEFAULT_FONT_SCALE = 1;
+
+/** Apply the app-wide font-size multiplier by writing --font-scale onto <html>. Also caches it in
+ *  localStorage as a first-paint hint, mirroring applyTheme/themeHint. */
+export function applyFontScale(scale: number): void {
+  document.documentElement.style.setProperty("--font-scale", String(scale));
+  try {
+    localStorage.setItem(FONT_SCALE_HINT_KEY, String(scale));
+  } catch {
+    // private mode / storage disabled — server persistence still holds
+  }
+}
+
+/** The cached first-paint hint (used by main.tsx before React mounts). */
+export function fontScaleHint(): number {
+  try {
+    const raw = localStorage.getItem(FONT_SCALE_HINT_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : DEFAULT_FONT_SCALE;
+  } catch {
+    return DEFAULT_FONT_SCALE;
+  }
+}
+
 export function currentThemeMode(): ThemeMode {
   return themeDef(currentId).mode;
 }

@@ -45,7 +45,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
   }
 
   const btn =
-    "px-2 py-0.5 text-[11px] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60 disabled:opacity-35";
+    "px-2 py-0.5 text-[length:var(--fs-sm)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60 disabled:opacity-35";
   const iconBtn =
     "grid place-items-center h-[22px] w-[26px] rounded border border-line text-muted hover:text-brass hover:border-brass-soft/60 disabled:opacity-35";
 
@@ -58,7 +58,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
           {views.map((v) => (
             <button
               key={v}
-              className={`px-2.5 border-r border-line-soft text-[11px] capitalize ${
+              className={`px-2.5 border-r border-line-soft text-[length:var(--fs-sm)] capitalize ${
                 view === v
                   ? "bg-ink-800 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
                   : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
@@ -73,7 +73,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
         {tab.resultSets.map((s, i) => (
           <button
             key={i}
-            className={`px-2 py-0.5 text-[11px] rounded ${
+            className={`px-2 py-0.5 text-[length:var(--fs-sm)] rounded ${
               i === tab.activeResult ? "bg-ink-800 text-brass border border-brass-soft/50" : "text-muted hover:text-paper border border-transparent"
             }`}
             onClick={() => setActiveResult(tab.id, i)}
@@ -83,10 +83,10 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
           </button>
         ))}
         <div className="flex-1" />
-        {notice && <span className="text-[11px] text-brass mr-1">{notice}</span>}
+        {notice && <span className="text-[length:var(--fs-sm)] text-brass mr-1">{notice}</span>}
         {rs && (
           <>
-            <span className="text-[11px] text-muted font-mono mr-1">
+            <span className="text-[length:var(--fs-sm)] text-muted font-mono mr-1">
               {rs.complete ? `${rs.rowCount.toLocaleString()} rows` : `${rs.rows.length.toLocaleString()}…`}
               {tab.stats ? ` · ${tab.stats.durationMs.toLocaleString()} ms` : ""}
             </span>
@@ -119,7 +119,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
       </div>
 
       {rs?.truncated && (
-        <div className="px-3 py-1 text-[11px] bg-brass/10 text-brass border-b border-brass-soft/30 shrink-0">
+        <div className="px-3 py-1 text-[length:var(--fs-sm)] bg-brass/10 text-brass border-b border-brass-soft/30 shrink-0">
           Result truncated for display: showing the first {rs.rows.length.toLocaleString()} of {rs.rowCount.toLocaleString()} rows.
         </div>
       )}
@@ -140,7 +140,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
             <ResultText rs={rs} version={tab.version} />
           )
         ) : (
-          <div className="h-full grid place-items-center text-faint text-[12px] italic">
+          <div className="h-full grid place-items-center text-faint text-[length:var(--fs-base)] italic">
             {tab.running ? "Running…" : "No results — run a query (F5)."}
           </div>
         )}
