@@ -1,5 +1,6 @@
 // Traces: BASED-AI-PROVIDER, BASED-AGENT-ENDPOINT, BASED-AGENT-MUTATION-GATE, BASED-AGENT-AUDIT,
-//         BASED-AGENT-SCHEMA-CTX, BASED-AGENT-SAMPLE, BASED-AGENT-RUNQUERY, BASED-SKILL-LOAD
+//         BASED-AGENT-SCHEMA-CTX, BASED-AGENT-SAMPLE, BASED-AGENT-RUNQUERY, BASED-SKILL-LOAD,
+//         BASED-AGENT-MULTISTEP
 // Server-level auth/gate tests always run; tool + audit tests that need a live DB self-skip like
 // the other integration suites.
 import { afterAll, describe, expect, test } from "bun:test";
@@ -71,8 +72,8 @@ describe("BASED-AI-PROVIDER: config store + key secrets", () => {
 });
 
 describe("BASED-AGENT-ENDPOINT: auth + session guard", () => {
-  test("POST /api/agent/capy without token → 401", async () => {
-    const r = await fetch(`${base}/api/agent/capy`, {
+  test("POST /api/agent/capi without token → 401", async () => {
+    const r = await fetch(`${base}/api/agent/capi`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -80,8 +81,8 @@ describe("BASED-AGENT-ENDPOINT: auth + session guard", () => {
     expect(r.status).toBe(401);
   });
 
-  test("POST /api/agent/capy with token but no connection → 409", async () => {
-    const r = await api("/api/agent/capy", { method: "POST", body: JSON.stringify({ threadId: "t", runId: "r", messages: [], tools: [], state: {}, context: [] }) });
+  test("POST /api/agent/capi with token but no connection → 409", async () => {
+    const r = await api("/api/agent/capi", { method: "POST", body: JSON.stringify({ threadId: "t", runId: "r", messages: [], tools: [], state: {}, context: [] }) });
     expect(r.status).toBe(409);
   });
 });
@@ -153,6 +154,26 @@ describe("BASED-AGENT-INSTRUCTIONS-COMPOSE: buildAgent core/persona overrides", 
     expect(text).toContain("CUSTOM LANCE PERSONA TEXT");
     expect(text).not.toContain(GENERIC_CORE);
     expect(text).not.toContain(LANCE_PERSONA);
+  });
+});
+
+describe("BASED-AGENT-MULTISTEP: default step budget", () => {
+  test("buildAgent sets defaultOptions.maxSteps to 30 (overrides Mastra's implicit 5)", async () => {
+    const agent = buildAgent({
+      model: {} as never,
+      memory: {} as never,
+      engine: "mssql",
+      toolDeps: {
+        getAdapter: (): never => {
+          throw new Error("must not touch the adapter");
+        },
+        connectionId: () => "c",
+        database: () => "d",
+        audit: new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-multistep-")), "app.db"))),
+      },
+    });
+    const opts = await agent.getDefaultOptions();
+    expect(opts.maxSteps).toBe(30);
   });
 });
 

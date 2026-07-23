@@ -140,7 +140,7 @@ export function ConnectionDialog() {
             {isLance && (
               <p className="mt-1 text-[11px] text-faint leading-snug">
                 LanceDB has no SQL. Browse tables in the left rail and query them with vector, full-text, or hybrid search
-                through Ask Capy.
+                through Ask Capi.
               </p>
             )}
           </div>

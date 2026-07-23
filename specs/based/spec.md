@@ -142,16 +142,38 @@ SQL errors (syntax, permissions, timeout, runtime) shall surface as error chunks
 - `"SELECT 1/0"` → error chunk containing "Divide by zero"
 - Execution after an error batch continues with remaining GO batches reported (SSMS behavior: batch-scoped failure)
 
+### BASED-EXEC-PLAN: Actual execution plan capture
+**Applies to:** based (core)
+**Test category:** integration
+
+`execute()` shall accept a `capturePlan` option that wraps each GO-batch with `SET STATISTICS XML ON`/`OFF` and emits the resulting plan XML (one document per statement) as a `{type:"plan"}` chunk, never as a spurious grid resultset. SQL Server's showplan resultset is recognized by its stable, version-independent single-column name (`Microsoft SQL Server 2005 XML Showplan`) and diverted before it reaches the normal row-collection path. A batch whose first statement is `CREATE PROCEDURE/VIEW/FUNCTION/TRIGGER` is returned completely unwrapped (capture skipped, with a notice message) since `CREATE` must be the first statement in its batch and even the defensive OFF prefix would violate that. Note: a trivial constant query (e.g. `SELECT 1`) does not reach SQL Server's normal plan-generation path and never emits a plan — the underlying table access must be real.
+
+**Acceptance criteria:**
+- `capturePlan: true` against a real table-touching SELECT → exactly one `{type:"plan"}` chunk containing well-formed `<ShowPlanXML` text, and the normal resultset is unaffected (no extra "Results N" tab)
+- A multi-statement batch with `capturePlan: true` → one plan chunk per statement
+- Cancelling a capture-enabled run does not leak `SET STATISTICS XML/IO/TIME ON` onto the pooled connection: a second query run afterward is completely clean (no plan chunks, no stray stats messages) — the very next query may carry one harmless echoed stats message (inherent SQL Server behavior: a statement executed while STATISTICS TIME is still on prints its own stats, even the OFF statement that turns it off)
+- A batch starting with `CREATE PROCEDURE` with `capturePlan`/`captureStats` requested still runs successfully and emits a "capture skipped" message rather than erroring
+
+### BASED-CLIENT-STATS: Client statistics capture
+**Applies to:** based (core)
+**Test category:** integration
+
+`execute()` shall accept a `captureStats` option that wraps each GO-batch with `SET STATISTICS IO, TIME ON`/`OFF`. This output arrives over the same TDS INFO-token channel as `PRINT`, so it needs no new chunk type — it surfaces as ordinary `{type:"message"}` chunks through the existing Output pane.
+
+**Acceptance criteria:**
+- `captureStats: true` against a real table-touching SELECT → message chunks contain recognizable IO/TIME text (`logical reads`, `CPU time`)
+
 ### BASED-RECONNECT-RETRY: Token-expiry / dropped-connection retry
 **Applies to:** based (core)
 **Test category:** unit
 
-When connect/execute fails with a retryable condition (expired Entra token, closed/reset socket), the adapter shall re-mint the token, rebuild the pool, emit a "reconnecting" status, and retry exactly once; a second failure propagates the error.
+When connect/execute fails with a retryable condition (expired Entra token, closed/reset socket), the adapter shall re-mint the token, rebuild the pool, emit a "reconnecting" status, and retry with bounded exponential backoff (up to `MAX_RECONNECT_ATTEMPTS` total tries) so a blip that outlasts one retry — a brief failover, a longer network hiccup — still self-heals without the user re-running anything; exhausting the cap propagates the error rather than retrying forever. A pool-level socket error while idle (no operation in flight) proactively rebuilds in the background on the same backoff, instead of only reacting to the next user-initiated operation.
 
 **Acceptance criteria:**
 - Fake pool that fails once with token-expiry then succeeds → operation succeeds, status callback saw `reconnecting`, token minted twice
-- Fake pool that always fails → error propagates after exactly 2 attempts
+- Fake pool that always fails → error propagates after exactly `MAX_RECONNECT_ATTEMPTS` attempts, with backoff (`delay`) invoked between each
 - Non-retryable error (syntax) → no retry, 1 attempt
+- Fake pool that fails `MAX_RECONNECT_ATTEMPTS - 1` times then succeeds → operation succeeds without exhausting the cap
 
 ### BASED-VALUE-SAFETY: Safe cell serialization
 **Applies to:** based (core)
@@ -241,7 +263,7 @@ Within one window's session, switching to a connection already visited restores 
 **Applies to:** based (core)
 **Test category:** integration
 
-App-wide user preferences (the active theme id, and the Data view's rows-per-page) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
+App-wide user preferences (the active theme id, and `rowPageSize` — the Table Data view's rows-per-page *and* the tab bar's ad-hoc query fetch-size cap, see BASED-UI-EXEC-PLAN) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
 
 **Acceptance criteria:**
 - Fresh store → `GET /api/settings` returns `{ theme: "ledger", rowPageSize: 500 }`
@@ -377,7 +399,7 @@ A table/view tab's "SQL" tab (mssql connections only) is a full query-tab experi
 
 ---
 
-## Agent / AI (Phase 2 — Ask Capy)
+## Agent / AI (Phase 2 — Ask Capi)
 
 ### BASED-AI-PROVIDER: AI provider configuration & model resolution
 **Applies to:** based (core)
@@ -456,6 +478,16 @@ Every SQL the agent causes to run (reads via `run_query`/`sample_rows`, approved
 - POST with the token but no connection → 409
 - With a connection and a valid `RunAgentInput`, the response streams AG-UI events (`RUN_STARTED` … `RUN_FINISHED`, or a clean `RUN_ERROR` on model failure)
 
+### BASED-AGENT-MULTISTEP: Multi-step tool loop completes with a final message
+**Applies to:** based (core)
+**Test category:** unit
+
+The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) so multi-step tool runs (e.g. schema audits) are not cut off by Mastra's implicit 5-step default, which ends a run immediately after tool results with no final assistant text. (The AG-UI bridge passes no `maxSteps`/`stopWhen` of its own, so the agent-config default is what governs the loop.) A run that genuinely exhausts the budget still ends tool-calls-last without a summary — accepted residual limitation.
+
+**Acceptance criteria:**
+- `buildAgent(...)` yields an agent whose resolved default options have `maxSteps` of 30 (assert via `agent.getDefaultOptions(...)`)
+- Manual: "audit my tables" against the dev DB streams tool calls and ends with a final assistant text message before `RUN_FINISHED`
+
 ### BASED-AGENT-THREADS: Per-connection thread persistence
 **Applies to:** based (core)
 **Test category:** integration
@@ -529,7 +561,7 @@ settings-driven.
 **Applies to:** based (ui)
 **Test category:** manual
 
-The gear icon next to Ask Capy opens, alongside the AI-provider fields, an "Agent instructions"
+The gear icon next to Ask Capi opens, alongside the AI-provider fields, an "Agent instructions"
 section: a set picker (Default + any custom sets) and three collapsible boxes — Core (shared), SQL
 Server persona, LanceDB persona — editable only when the selected set isn't Default. Duplicate clones
 the selected set into a new editable one; Save persists edits; Delete removes a custom set.
@@ -544,7 +576,7 @@ the selected set into a new editable one; Save persists edits; Delete removes a 
 **Applies to:** based (ui)
 **Test category:** manual
 
-Assistant ` ```mermaid ` blocks render in the Capy rail (Streamdown mermaid plugin, already wired). The `diagrams` skill body covers ER (schema shape), FK graph (reference questions), sequence/flow (proc logic), `pie` (small categorical distribution), `xychart-beta` bar/line (trend/comparison, noting the beta limits), and "aggregate to a small group set and use `run_query`'s real numbers before charting."
+Assistant ` ```mermaid ` blocks render in the Capi rail (Streamdown mermaid plugin, already wired). The `diagrams` skill body covers ER (schema shape), FK graph (reference questions), sequence/flow (proc logic), `pie` (small categorical distribution), `xychart-beta` bar/line (trend/comparison, noting the beta limits), and "aggregate to a small group set and use `run_query`'s real numbers before charting."
 
 **Verification procedure (needs a healthy model backend):**
 1. "pie of orders by status" → agent runs an aggregate, emits a mermaid `pie` with the real counts, chart renders
@@ -558,9 +590,9 @@ Assistant ` ```mermaid ` blocks render in the Capy rail (Streamdown mermaid plug
 **Applies to:** based (ui)
 **Test category:** manual
 
-Three-region workbench: left rail (connection selector, database selector, schema dropdown, object explorer), center tabbed work area, right rail hosting Ask Capy (Phase 2; a "connect to chat" placeholder until a connection is active).
+Three-region workbench: left rail (connection selector, database selector, schema dropdown, object explorer), center tabbed work area, right rail hosting Ask Capi (Phase 2; a "connect to chat" placeholder until a connection is active).
 
-**Verification procedure:** launch app → left rail and center area render; right rail toggle exists and expands/collapses; with a connection active the rail shows Ask Capy.
+**Verification procedure:** launch app → left rail and center area render; right rail toggle exists and expands/collapses; with a connection active the rail shows Ask Capi.
 
 ### BASED-UI-CONNECTIONS: Connection management UI
 **Applies to:** based (ui)
@@ -598,14 +630,28 @@ Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save
 **Applies to:** based (ui)
 **Test category:** manual
 
-Sub-tabs per result set for multi-statement batches. Toolbar: Excel-style grid / plain-text toggle; row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap.
+At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Sub-tabs per result set for multi-statement batches. Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the tab bar's fetch-size input value, not a fixed constant).
 
 **Verification procedure:**
 1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 sub-tabs, each with stats
-2. Toggle grid/text views
+2. Toggle grid/text views (far left of the toolbar, styled as tabs)
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
-5. Row-cap notice appears for a >50k-row query
+5. Row-cap notice appears once fetched rows exceed the tab bar's fetch-size value
+
+### BASED-UI-EXEC-PLAN: Execution plan & client statistics controls
+**Applies to:** based (ui)
+**Test category:** manual
+
+Far right of the document tab bar (`TabStrip`): a compact fetch-size number input (max rows to fetch per run — reuses the app's existing `rowPageSize` setting, default 500, persisted; this is now the *only* place that setting is edited, replacing the page-size `<select>` formerly in the Table Data view), and two checkable icon toggles — **Execution Plan** (captures the actual plan, with runtime stats, on the next run) and **Client Statistics** (captures `STATISTICS TIME, IO` output on the next run) — each with a hover tooltip, styled with the tab bar's active-tab look (brass inset-shadow) when checked. Both toggles are global, not per-tab, and apply to whichever run happens next. When a run captured a plan, a **Plan** tab appears in the results toolbar (BASED-UI-RESULTS) showing an interactive `@xyflow/react` operator-tree diagram: pan (drag), zoom (wheel/pinch), and click a node to open a detail panel (physical/logical operator, estimated vs. actual rows, IO/CPU estimates, subtree cost, object accessed, predicate). A multi-statement run shows a small "Statement 1/2/…" picker above the canvas.
+
+**Verification procedure:**
+1. Type a fetch size, tab away or press Enter → value persists across a restart (`GET /api/settings`)
+2. Toggle Execution Plan on, run a query against a real table → a "Plan" tab appears next to Grid/Text; toggle off and rerun → Plan tab disappears
+3. In the Plan view: drag to pan, scroll/pinch to zoom, click an operator node → detail panel shows its stats; click the canvas background → panel closes
+4. Run a batch with 2+ statements with Execution Plan on → a Statement 1/Statement 2 picker appears above the canvas
+5. Toggle Client Statistics on, run a query → Output pane shows `SQL Server Execution Times`/`logical reads` text
+6. Both toggles on simultaneously → both the Plan tab and the stats messages appear from the same run
 
 ### BASED-UI-OUTPUT: Output pane & connection state
 **Applies to:** based (ui)
@@ -618,19 +664,45 @@ Errors (syntax, permissions, timeout) appear as readable text in the Output pane
 2. Run `SELECT 1/0` → divide-by-zero message
 3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
 
-### BASED-CHAT-UI: Ask Capy panel
+### BASED-UI-SESSION-RESUME: Auto-resume a lost server session
 **Applies to:** based (ui)
 **Test category:** manual
 
-The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**; `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail; a ⚙ panel edits base URL / model / key.
+The based server keeps each window's session (active connection, adapter, tabs context) in memory; a server restart or crash wipes it while the browser tab stays open. The UI shall detect this — a `connection-status` SSE snapshot for a different/blank session arriving while the window still believes it's connected — and automatically re-establish the session (re-`connect()` to the same connection/database) with bounded exponential backoff, showing "reconnecting…" in the status strip, with open tabs/schema-filter/active-tab preserved throughout. If the backoff cap is exhausted the status settles on "disconnected" with a clear banner, and a **Reconnect** button appears in the status strip to retry on demand; the button never appears before a connection has actually been established (no connection picked yet).
+
+**Verification procedure:**
+1. Connect, open a few tabs. Kill and restart the based server process. Within the backoff window, status strip shows "reconnecting…" then "connected" again with no manual action — tabs/schema filter/active tab unchanged.
+2. Same scenario, but leave the server down past the backoff cap → status settles on "disconnected" with a banner, and a Reconnect button appears in the status strip.
+3. Bring the server back up, click Reconnect → status returns to "connected", tabs preserved.
+4. Fresh boot with no connection ever made → Reconnect button never appears.
+
+### BASED-CHAT-UI: Ask Capi panel
+**Applies to:** based (ui)
+**Test category:** manual
+
+The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail; a ⚙ panel edits base URL / model / key.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
-1. Connect to a DB → open the Capy rail → ask "what tables are there?" → answer streams
-2. Ask for SQL → a highlighted SQL block appears with Insert / Run → Run opens a results tab
+1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
+2. Ask for SQL → a highlighted SQL block appears with Insert / Run, labeled with the agent's purpose comment and the first statement line → Run opens a results tab
 3. Ask for an update → approval card renders; Reject = nothing runs; Approve = runs via the endpoint and an audit row appears
 4. Kill the app mid-thread, reopen, same connection → prior turns still shown
 
 **Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host.
+
+### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
+**Applies to:** based (ui + core)
+**Test category:** unit
+
+The MSSQL persona shall instruct the model to make the first line of every ```sql fence a single-line comment (`-- ...`) briefly stating what the statement does. The chat UI shall parse each fence (`parseSqlBlocks` in `ui/src/lib/sqlBlocks.ts`) into `{sql, label, firstLine}`: `label` is the text of a leading `--` comment (or null), `firstLine` is the first non-empty non-comment line, and `sql` is the full fence content including the comment (what Insert/Run receive).
+
+**Acceptance criteria:**
+- Fence `-- Add covering index\nCREATE INDEX ...` → `label: "Add covering index"`, `firstLine: "CREATE INDEX ..."`, `sql` retains the comment line
+- Fence with no leading comment → `label: null`, `firstLine` = first non-empty line
+- Multiple leading comments → only the first becomes `label`; the rest stay in `sql`
+- Multiple fences → one block each, order preserved; empty and non-`sql` fences ignored
+- All-comment fence → `firstLine` falls back to the raw first line
+- `MSSQL_PERSONA` contains the leading-comment instruction
 
 ---
 
@@ -719,7 +791,7 @@ The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB s
 1. New connection → Engine: LanceDB → Local → set a directory with a LanceDB table → Test → ok → Save
 2. Connect → object tree lists tables (no schemas/procs) → open one → the vector column shows `vector[dim]`; the grid is read-only; cells show `vec[dim] […]`
 3. The "+" new-query button is absent for the LanceDB connection
-4. Open the Capy rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` and renders results (needs a healthy model backend)
+4. Open the Capi rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` and renders results (needs a healthy model backend)
 
 ### BASED-LANCE-FOLDER-BROWSE: native folder picker for the local directory path
 **Applies to:** based

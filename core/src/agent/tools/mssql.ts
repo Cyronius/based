@@ -19,7 +19,7 @@ export const MSSQL_PERSONA = `You are connected to a Microsoft SQL Server databa
 - sample_rows returns a small sample of rows from a table or view when you need to see example values.
 - You cannot write to the database directly. To INSERT/UPDATE/DELETE or run DDL, propose the exact SQL to the user for approval — never smuggle a mutation through run_query; it will be refused.
 - Prefer SQL Server (T-SQL) syntax: TOP instead of LIMIT, square-bracket identifiers when needed, schema-qualified names (dbo.Table).
-- Put every SQL statement in a \`\`\`sql fenced code block so the user can insert or run it with one click.`;
+- Put every SQL statement in its own \`\`\`sql fenced code block so the user can insert or run it with one click. Make the first line of each block a single-line comment (\`-- ...\`) briefly stating what the statement does — the UI shows it as the block's label.`;
 
 /** SQL-Server-specific tools bound to the live session adapter. */
 export function mssqlTools(deps: ToolDeps) {

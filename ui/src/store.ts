@@ -130,6 +130,9 @@ interface AppState {
   setSchemaFilter(schema: string): void;
   refreshObjects(): Promise<void>;
   setStatus(status: ConnectionStatus, detail?: string | null): void;
+  /** BASED-UI-SESSION-RESUME: the based server lost this window's session (process restart) while
+   *  the UI still thought it was connected. Re-establishes it with bounded backoff, preserving tabs. */
+  resumeSession(): void;
 
   newQueryTab(): void;
   openTableTab(schema: string, table: string, objectType: "table" | "view"): Promise<void>;
@@ -187,6 +190,18 @@ interface ConnectionSnapshot {
   activeTabId: string | null;
 }
 const connectionCache = new Map<string, ConnectionSnapshot>();
+
+// BASED-UI-SESSION-RESUME backoff — mirrors core's MAX_RECONNECT_ATTEMPTS/backoff shape (separate
+// runtime, so not literally shared code): capped exponential delay, ~23s total before giving up.
+const RESUME_MAX_ATTEMPTS = 6;
+const RESUME_BASE_DELAY_MS = 1000;
+const RESUME_MAX_DELAY_MS = 8000;
+let resumingSession = false;
+
+function resumeDelay(attempt: number): Promise<void> {
+  const ms = Math.min(RESUME_BASE_DELAY_MS * 2 ** (attempt - 1), RESUME_MAX_DELAY_MS);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function updateTab(tabs: TabState[], id: string, patch: Partial<QueryTabState>): TabState[] {
   return tabs.map((t) => (t.id === id && t.kind === "query" ? { ...t, ...patch } : t));
@@ -533,6 +548,32 @@ export const useStore = create<AppState>((set, get) => {
 
     setStatus(status, detail) {
       set({ status, statusDetail: detail ?? null });
+    },
+
+    resumeSession() {
+      if (resumingSession) return;
+      const { activeConnectionId, database } = get();
+      if (!activeConnectionId) return;
+      resumingSession = true;
+      set({ status: "reconnecting", statusDetail: "server connection lost" });
+      void (async () => {
+        try {
+          for (let attempt = 1; attempt <= RESUME_MAX_ATTEMPTS; attempt++) {
+            await get().connect(activeConnectionId, database ?? undefined);
+            if (get().status === "connected") return;
+            if (attempt < RESUME_MAX_ATTEMPTS) {
+              set({ status: "reconnecting", statusDetail: "server connection lost" });
+              await resumeDelay(attempt);
+            }
+          }
+          set({
+            status: "disconnected",
+            banner: "Lost connection to the based server and couldn't reconnect automatically. Click Reconnect to try again.",
+          });
+        } finally {
+          resumingSession = false;
+        }
+      })();
     },
 
     newQueryTab() {

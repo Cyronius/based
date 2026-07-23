@@ -27,8 +27,16 @@ describe.skip("BASED-UI-TABS: manual verification", () => {
 });
 
 // Traces: BASED-UI-RESULTS (canonical spec: specs/based/spec.md)
-// Verification: manual — result-set sub-tabs, grid/text toggle, copy, CSV/XLSX export, Open in Excel, row-cap notice.
+// Verification: manual — result-set sub-tabs, grid/text/plan tabs at far left (tab-styled), copy,
+// CSV/XLSX export, Open in Excel, row-cap notice tied to the tab bar's fetch-size input.
 describe.skip("BASED-UI-RESULTS: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-UI-EXEC-PLAN (canonical spec: specs/based/spec.md)
+// Verification: manual — tab bar's fetch-size input + Execution Plan/Client Statistics icon toggles;
+// interactive pan/zoom/click-select plan canvas; multi-statement plan picker; stats messages in Output.
+describe.skip("BASED-UI-EXEC-PLAN: manual verification", () => {
   it.todo("see spec.md procedure");
 });
 
@@ -57,7 +65,7 @@ describe.skip("BASED-AUTH-SP: manual verification", () => {
 });
 
 // Traces: BASED-AGENT-INSTRUCTIONS-UI (canonical spec: specs/based/spec.md)
-// Verification: manual — gear panel next to Ask Capy exposes the instruction-set picker + three
+// Verification: manual — gear panel next to Ask Capi exposes the instruction-set picker + three
 // collapsible boxes; Default is read-only; duplicate/edit/save/delete/switch all persist.
 describe.skip("BASED-AGENT-INSTRUCTIONS-UI: manual verification", () => {
   it.todo("see spec.md procedure");

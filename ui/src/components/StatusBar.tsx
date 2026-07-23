@@ -6,11 +6,15 @@ export function StatusBar() {
   const database = useStore((s) => s.database);
   const connections = useStore((s) => s.connections);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
+  const resumeSession = useStore((s) => s.resumeSession);
   const tab = useStore(activeQueryTab);
 
   const conn = connections.find((c) => c.id === activeConnectionId);
   const statusColor =
     status === "connected" ? "text-ok" : status === "disconnected" ? "text-faint" : "text-brass";
+  // BASED-UI-SESSION-RESUME: only offer a manual retry once auto-resume has given up on a
+  // connection we actually had — never on a fresh boot where nothing's been picked yet.
+  const showReconnect = status === "disconnected" && activeConnectionId != null;
 
   return (
     <footer className="h-7 shrink-0 flex items-center gap-4 px-3 border-t border-line bg-ink-900 text-[11px] font-mono">
@@ -19,6 +23,11 @@ export function StatusBar() {
         {status === "reconnecting" ? "reconnecting…" : status}
         {statusDetail ? ` — ${statusDetail}` : ""}
       </span>
+      {showReconnect && (
+        <button className="text-brass hover:underline" onClick={() => resumeSession()}>
+          Reconnect
+        </button>
+      )}
       {conn && (
         <span className="text-muted truncate">
           {conn.server}

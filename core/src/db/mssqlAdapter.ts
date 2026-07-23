@@ -65,6 +65,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   private tokenMintedAt = 0;
   private lastActivity = 0;
   private statusCb: ((status: ConnectionStatus, detail?: string) => void) | null = null;
+  private reconnectingInBackground = false;
   private readonly rowCap: number;
 
   constructor(
@@ -116,8 +117,11 @@ export class MssqlAdapter implements DatabaseAdapter {
     }
     const pool = new sql.ConnectionPool(config);
     pool.on("error", () => {
-      // Pool-level socket errors: surface as status; the next operation's retry path rebuilds.
+      // Pool-level socket errors while idle (no operation in flight to trigger withPool's retry
+      // path): proactively rebuild in the background so the connection is already healthy by the
+      // time the user's next action runs, instead of only reacting to it.
       this.emitStatus("reconnecting", "connection lost");
+      void this.backgroundReconnect();
     });
     await pool.connect();
     return pool;
@@ -128,6 +132,29 @@ export class MssqlAdapter implements DatabaseAdapter {
     this.pool = null;
     if (old) await old.close().catch(() => {});
     this.pool = await this.buildPool();
+  }
+
+  /** Bounded-backoff reconnect for an idle drop (no caller waiting on it). Skipped if a reconnect
+   *  is already underway — the pool's next "error" firing (or a caller's own withPool retry) would
+   *  otherwise stack overlapping rebuild loops. Reuses withReconnect's backoff by treating
+   *  rebuild() itself as the retried operation. */
+  private async backgroundReconnect(): Promise<void> {
+    if (this.reconnectingInBackground) return;
+    this.reconnectingInBackground = true;
+    try {
+      await withReconnect({
+        attempt: () => this.rebuild(),
+        rebuild: async () => {},
+        onReconnecting: () => this.emitStatus("reconnecting", "connection lost"),
+        isRetryable: () => true,
+      });
+      this.emitStatus("connected");
+    } catch {
+      this.pool = null;
+      this.emitStatus("disconnected", "unable to reconnect");
+    } finally {
+      this.reconnectingInBackground = false;
+    }
   }
 
   private async ensurePool(): Promise<sql.ConnectionPool> {

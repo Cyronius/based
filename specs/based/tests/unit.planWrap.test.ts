@@ -31,11 +31,10 @@ describe("BASED-EXEC-PLAN, BASED-CLIENT-STATS: wrapBatch", () => {
     expect(wrapped).toContain("SET STATISTICS IO, TIME ON;");
   });
 
-  test("CREATE-first batch skips the wrap even with capture requested", () => {
+  test("CREATE-first batch is returned completely unmodified, even the defensive OFF prefix", () => {
     const sql = "CREATE PROCEDURE dbo.foo AS SELECT 1";
-    const wrapped = wrapBatch(sql, { capturePlan: true, captureStats: true });
-    expect(wrapped).toBe(`SET STATISTICS XML OFF;\nSET STATISTICS IO, TIME OFF;\n${sql}`);
-    expect(wrapped).not.toContain("BEGIN TRY");
+    expect(wrapBatch(sql, { capturePlan: true, captureStats: true })).toBe(sql);
+    expect(wrapBatch(sql, {})).toBe(sql);
   });
 
   test("skipsWrap: true for CREATE, false for SELECT/INSERT/UPDATE/DELETE/EXEC", () => {

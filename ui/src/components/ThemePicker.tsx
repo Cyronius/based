@@ -52,29 +52,50 @@ export function ThemePicker() {
     };
   }, [open]);
 
-  const dark = THEMES.filter((t) => t.mode === "dark");
+  const dark = THEMES.filter((t) => t.mode === "dark" && t.tone !== "midtone");
+  const midtone = THEMES.filter((t) => t.tone === "midtone");
   const light = THEMES.filter((t) => t.mode === "light");
 
-  const Group = ({ label, items }: { label: string; items: ThemeDef[] }) => (
+  const [expanded, setExpanded] = useState(() => ({
+    dark: dark.some((t) => t.id === theme),
+    midtone: midtone.some((t) => t.id === theme),
+    light: light.some((t) => t.id === theme),
+  }));
+
+  const Group = ({
+    id,
+    label,
+    items,
+  }: {
+    id: keyof typeof expanded;
+    label: string;
+    items: ThemeDef[];
+  }) => (
     <div>
-      <div className="ledger-label px-3 pt-2 pb-1">{label}</div>
-      {items.map((t) => (
-        <button
-          key={t.id}
-          className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-ink-800 ${
-            t.id === theme ? "text-brass" : "text-paper-dim"
-          }`}
-          onClick={() => {
-            setTheme(t.id);
-            setOpen(false);
-          }}
-        >
-          <Swatch t={t} />
-          <span className="flex-1 truncate text-[12px]">{t.label}</span>
-          {t.from && <span className="text-[9px] text-faint">↩ {t.from}</span>}
-          {t.id === theme && <span className="text-[11px]">✓</span>}
-        </button>
-      ))}
+      <button
+        className="ledger-label flex w-full items-center gap-1.5 px-3 pt-2 pb-1 text-left"
+        onClick={() => setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
+      >
+        <span className="text-[9px] text-faint">{expanded[id] ? "▾" : "▸"}</span>
+        <span>{label}</span>
+      </button>
+      {expanded[id] &&
+        items.map((t) => (
+          <button
+            key={t.id}
+            className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-ink-800 ${
+              t.id === theme ? "text-brass" : "text-paper-dim"
+            }`}
+            onClick={() => {
+              setTheme(t.id);
+              setOpen(false);
+            }}
+          >
+            <Swatch t={t} />
+            <span className="flex-1 truncate text-[12px]">{t.label}</span>
+            {t.id === theme && <span className="text-[11px]">✓</span>}
+          </button>
+        ))}
     </div>
   );
 
@@ -93,9 +114,11 @@ export function ThemePicker() {
           className="fixed z-40 max-h-[70vh] w-60 overflow-auto rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up"
           style={{ top: pos.top, left: pos.left }}
         >
-          <Group label="Dark" items={dark} />
+          <Group id="dark" label="Dark" items={dark} />
           <div className="my-1 border-t border-line-soft" />
-          <Group label="Light" items={light} />
+          <Group id="midtone" label="Midtone" items={midtone} />
+          <div className="my-1 border-t border-line-soft" />
+          <Group id="light" label="Light" items={light} />
         </div>
       )}
     </div>

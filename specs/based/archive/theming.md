@@ -8,8 +8,8 @@ Anticipated need for theming + general settings. Decided to defer frameless/cust
 theming under the native frame instead. Full decision: `~/.claude/plans/we-ll-probably-need-theming-dynamic-finch.md`.
 
 ## What shipped
-- **18 themes** (11 dark / 7 light), several ported from the blabberstack project (Cozy Reading Room,
-  Tater Dog, Chillwave). Single source of truth: `ui/src/theme.ts` (`THEMES`). Full font swap per theme.
+- **18 themes** (11 dark / 7 light). Single source of truth: `ui/src/theme.ts` (`THEMES`). Full font
+  swap per theme.
 - **Application model:** `applyTheme(id)` writes CSS custom properties (`--color-*`, `--font-*`, shadcn
   tokens, `color-scheme`) onto `<html>`, so Tailwind v4 utilities retint at runtime. Monaco (`based`
   theme via `syncMonacoTheme`) and both Glide grids (`gridThemeFromCss` / `gridCellOverrides`) read the

@@ -1,5 +1,5 @@
 // Traces: BASED-UI-LAYOUT, BASED-CHAT-UI
-// The right-hand rail now hosts Ask Capy (Phase 2). The agent provider stays mounted
+// The right-hand rail now hosts Ask Capi (Phase 2). The agent provider stays mounted
 // while a connection is active so the thread survives collapse/expand.
 import { useEffect, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
@@ -16,8 +16,8 @@ import {
   deleteAgentInstructionSet,
 } from "../api/client";
 import type { AiConfig, AgentInstructionsConfig, InstructionSet } from "../api/types";
-import { capyTools } from "../agent/capyTools";
-import { CapyChat } from "./CapyChat";
+import { capiTools } from "../agent/capiTools";
+import { CapiChat } from "./CapiChat";
 
 const WIDTH_KEY = "based:rightRailWidth";
 const MIN_WIDTH = 280;
@@ -237,13 +237,13 @@ function InstructionsPanel() {
   );
 }
 
-function CapyRail() {
+function CapiRail() {
   const [err, setErr] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
-    agentId: "capy",
-    tools: capyTools,
+    agentId: "capi",
+    tools: capiTools,
     tokenProvider: async () => token,
     sendFullHistory: false,
     configParams: { sid: sessionId },
@@ -253,12 +253,12 @@ function CapyRail() {
   return (
     <AgentProvider value={agent}>
       <div className="flex flex-1 min-h-0 min-w-0 flex-col">
-        <header className="flex items-center justify-between border-b border-line-soft pl-3 pr-4 py-2">
-          <span className="flex items-center gap-1.5 ledger-label">
-            <img src="/capy.png" alt="" className="h-4 w-4 rounded-full object-cover" />
-            Ask Capy
+        <header className="flex items-center justify-between border-b border-line-soft pl-3 pr-4 py-4">
+          <span className="flex items-center gap-2.5 font-sans text-[13px] font-semibold text-faint">
+            <img src="/capi.png" alt="" className="h-8 w-8 rounded-full object-cover" />
+            Ask Capi
           </span>
-          <button className="text-faint hover:text-brass text-[13px]" title="AI provider settings" onClick={() => setShowConfig((v) => !v)}>
+          <button className="text-faint hover:text-brass text-base" title="AI provider settings" onClick={() => setShowConfig((v) => !v)}>
             ⚙
           </button>
         </header>
@@ -276,7 +276,7 @@ function CapyRail() {
             </button>
           </div>
         )}
-        <CapyChat />
+        <CapiChat />
       </div>
     </AgentProvider>
   );
@@ -322,26 +322,26 @@ export function RightRail() {
       )}
       <button
         className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-        title={open ? "Collapse Capy" : "Expand Capy"}
+        title={open ? "Collapse Capi" : "Expand Capi"}
         onClick={toggle}
       >
         <span className="text-[11px]">{open ? "›" : "‹"}</span>
         {!open && (
           <span className="ledger-label" style={{ writingMode: "vertical-rl" }}>
-            capy
+            capi
           </span>
         )}
       </button>
       {/* Kept mounted while connected so the chat thread survives collapse; hidden when closed. */}
       {connected ? (
         <div className={open ? "flex flex-1 min-w-0" : "hidden"}>
-          <CapyRail />
+          <CapiRail />
         </div>
       ) : (
         open && (
           <div className="flex-1 min-w-0 p-4 pr-5 fade-up">
-            <img src="/capy.png" alt="" className="h-12 w-12 rounded-full object-cover mb-3" />
-            <div className="ledger-label mb-3">Capy</div>
+            <img src="/capi.png" alt="" className="h-36 w-36 rounded-full object-cover overflow-visible mb-3" />
+            <div className="ledger-label mb-3">Capi</div>
             <p className="text-[12px] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
           </div>
         )

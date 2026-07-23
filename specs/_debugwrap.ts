@@ -1,2 +1,1 @@
-import { wrapBatch } from "@based/core";
-console.log(wrapBatch("SELECT 1 AS a", { capturePlan: true }));
+// Scratch debug file — safe to delete.

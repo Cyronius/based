@@ -1,5 +1,5 @@
-// Traces: BASED-AGENT-ENDPOINT, BASED-AGENT-SCHEMA-CTX, BASED-LANCE-AGENT-SURFACE, BASED-AGENT-INSTRUCTIONS-COMPOSE
-// Builds the Capy agent. Constructed per request so its tools bind to the live session
+// Traces: BASED-AGENT-ENDPOINT, BASED-AGENT-SCHEMA-CTX, BASED-LANCE-AGENT-SURFACE, BASED-AGENT-INSTRUCTIONS-COMPOSE, BASED-AGENT-MULTISTEP
+// Builds the Capi agent. Constructed per request so its tools bind to the live session
 // adapter; the model and memory are resolved once and passed in. The toolset + persona vary by
 // engine (see ./surface.ts) — a SQL Server session and a LanceDB session get different tools.
 import { Agent } from "@mastra/core/agent";
@@ -10,11 +10,17 @@ import { agentSurfaceFor } from "./surface";
 import { type ToolDeps } from "./tools/shared";
 import { catalog as skillCatalog } from "./skills";
 
-export const AGENT_ID = "capy";
+export const AGENT_ID = "capi";
+
+// Traces: BASED-AGENT-MULTISTEP — the AG-UI bridge calls agent.stream() with no maxSteps/stopWhen,
+// so Mastra's implicit stepCountIs(5) would end a schema-audit run right after its 5th round of tool
+// calls with no final assistant message. Agent-config defaultOptions deep-merge under per-call
+// options, so this is the value that actually governs the loop.
+export const AGENT_MAX_STEPS = 30;
 
 /** Engine-neutral core: identity, the work-from-real-schema discipline, and output format. Every
  *  engine's persona fragment is appended after this. */
-export const GENERIC_CORE = `You are "Capy" — an assistant embedded in a database client, living in the right-hand rail next to the user's query editor. You help the user understand their database and work with its data.
+export const GENERIC_CORE = `You are "Capi" — an assistant embedded in a database client, living in the right-hand rail next to the user's query editor. You help the user understand their database and work with its data.
 
 Ground rules:
 - Work from the actual schema. Call get_schema to list objects, or get_schema with a table name to see its columns, before making claims about tables you have not inspected. Never invent table or column names.
@@ -50,12 +56,13 @@ export function buildAgent(opts: {
   const surface = agentSurfaceFor(opts.engine, opts.toolDeps);
   return new Agent({
     id: AGENT_ID,
-    name: "based capy",
+    name: "based capi",
     instructions: agentInstructions(opts.core ?? GENERIC_CORE, opts.persona ?? surface.persona, surface.skillTags),
     // `as never`: the AI SDK model spec and Mastra's bundled copy are structurally identical but
     // nominally distinct across package boundaries (version skew) — runtime-compatible (spike-proven).
     model: opts.model as never,
     tools: surface.tools as never,
     memory: opts.memory as never,
+    defaultOptions: { maxSteps: AGENT_MAX_STEPS },
   });
 }

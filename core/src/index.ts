@@ -6,7 +6,7 @@ export { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
 export { splitBatches } from "./db/batch";
 export { serializeValue, serializeRow, formatSqlDate } from "./db/serialize";
 export { buildEditCommands, quoteIdent, qualified, type TableChangeSet, type EditColumnMeta } from "./db/tableEdit";
-export { isRetryableError, withReconnect } from "./db/retry";
+export { isRetryableError, withReconnect, MAX_RECONNECT_ATTEMPTS } from "./db/retry";
 export { RowCollector, DEFAULT_ROW_CAP } from "./db/rowcap";
 export { toCsv, cellText } from "./export/csv";
 export { writeXlsx } from "./export/xlsx";

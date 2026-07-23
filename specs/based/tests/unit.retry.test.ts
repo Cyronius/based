@@ -1,6 +1,9 @@
 // Traces: BASED-RECONNECT-RETRY
 import { describe, expect, test } from "bun:test";
-import { isRetryableError, withReconnect } from "@based/core";
+import { isRetryableError, MAX_RECONNECT_ATTEMPTS, withReconnect } from "@based/core";
+
+// No-op delay so backoff tests run instantly instead of waiting out real timers.
+const noDelay = async () => {};
 
 const tokenExpired = Object.assign(new Error("Login failed: access token is expired"), { code: "ELOGIN" });
 const socketClosed = Object.assign(new Error("socket hang up"), { code: "ESOCKET" });
@@ -30,6 +33,7 @@ describe("BASED-RECONNECT-RETRY: retry orchestration", () => {
       onReconnecting: () => {
         sawReconnecting = true;
       },
+      delay: noDelay,
     });
     expect(result).toBe("ok");
     expect(attempts).toBe(2);
@@ -37,8 +41,9 @@ describe("BASED-RECONNECT-RETRY: retry orchestration", () => {
     expect(sawReconnecting).toBe(true);
   });
 
-  test("always-failing retryable error propagates after exactly 2 attempts", async () => {
+  test("always-failing retryable error propagates after exactly MAX_RECONNECT_ATTEMPTS attempts, with backoff between each", async () => {
     let attempts = 0;
+    let delays = 0;
     await expect(
       withReconnect({
         attempt: async () => {
@@ -47,9 +52,29 @@ describe("BASED-RECONNECT-RETRY: retry orchestration", () => {
         },
         rebuild: async () => {},
         onReconnecting: () => {},
+        delay: async () => {
+          delays++;
+        },
       }),
     ).rejects.toThrow("socket hang up");
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(MAX_RECONNECT_ATTEMPTS);
+    expect(delays).toBe(MAX_RECONNECT_ATTEMPTS - 1);
+  });
+
+  test("fails MAX_RECONNECT_ATTEMPTS - 1 times then succeeds: cap isn't exhausted", async () => {
+    let attempts = 0;
+    const result = await withReconnect({
+      attempt: async () => {
+        attempts++;
+        if (attempts < MAX_RECONNECT_ATTEMPTS) throw socketClosed;
+        return "ok";
+      },
+      rebuild: async () => {},
+      onReconnecting: () => {},
+      delay: noDelay,
+    });
+    expect(result).toBe("ok");
+    expect(attempts).toBe(MAX_RECONNECT_ATTEMPTS);
   });
 
   test("non-retryable error: no retry, 1 attempt", async () => {
@@ -65,6 +90,7 @@ describe("BASED-RECONNECT-RETRY: retry orchestration", () => {
           rebuilds++;
         },
         onReconnecting: () => {},
+        delay: noDelay,
       }),
     ).rejects.toThrow("Incorrect syntax");
     expect(attempts).toBe(1);

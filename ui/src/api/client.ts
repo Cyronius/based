@@ -20,7 +20,7 @@ export const token = new URLSearchParams(window.location.hash.slice(1)).get("tok
 export const sessionId = new URLSearchParams(window.location.hash.slice(1)).get("sid") ?? "default";
 
 /** Base URL for the lm-ag-ui agent client; relative so the Vite proxy (dev) and same-origin (prod)
- *  both route `/api/agent/capy` to the core server. */
+ *  both route `/api/agent/capi` to the core server. */
 export const AGENT_BASE_URL = "/api";
 
 export function apiUrl(path: string): string {

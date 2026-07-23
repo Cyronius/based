@@ -37,4 +37,4 @@ Three ways to run the app, fastest-feedback first:
   HMR** — run `bun run build:ui` after UI changes or you'll see a stale bundle. Set `BASED_DEV_URL` to point
   this same window at Vite instead (that's what `bun run dev` does under the hood).
 
-Phase 1 (classic core) is complete — see `specs/based/archive/phase1-classic-core.md`. Phase 2 is Ask Capy (Mastra agent + AG-UI in the right rail).
+Phase 1 (classic core) is complete — see `specs/based/archive/phase1-classic-core.md`. Phase 2 is Ask Capi (Mastra agent + AG-UI in the right rail).

@@ -43,6 +43,7 @@ export function App() {
   const restoreWindow = useStore((s) => s.restoreWindow);
   const theme = useStore((s) => s.theme);
   const setStatus = useStore((s) => s.setStatus);
+  const resumeSession = useStore((s) => s.resumeSession);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
@@ -60,11 +61,16 @@ export function App() {
         // Only mirror push-status for the live session; connect() manages its own transitions.
         if (current && event.connectionId === current && status !== "connecting") {
           setStatus(event.status as never, (event.detail as string) ?? null);
+        } else if (current && event.connectionId !== current && status === "connected") {
+          // BASED-UI-SESSION-RESUME: a snapshot for a different (or blank) session while we still
+          // think we're connected means the based server restarted and lost this window's session —
+          // resume automatically instead of leaving the UI stuck on a stale "connected" state.
+          resumeSession();
         }
       }
     });
     return () => es.close();
-  }, [loadConnections, loadSettings, restoreWindow, setStatus]);
+  }, [loadConnections, loadSettings, restoreWindow, setStatus, resumeSession]);
 
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.
   useEffect(() => {

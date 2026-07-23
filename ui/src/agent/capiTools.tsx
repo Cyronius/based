@@ -78,7 +78,7 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
   );
 }
 
-export const capyTools: Record<string, ToolDefinition> = {
+export const capiTools: Record<string, ToolDefinition> = {
   run_mutation: {
     definition: {
       name: "run_mutation",

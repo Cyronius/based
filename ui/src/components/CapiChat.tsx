@@ -1,7 +1,7 @@
 // Traces: BASED-CHAT-UI
-// The Capy chat conversation surface. Renders the lm-ag-ui thread with Streamdown, extracts SQL
+// The Capi chat conversation surface. Renders the lm-ag-ui thread with Streamdown, extracts SQL
 // blocks into Insert/Run affordances, and hosts the run_mutation approval card via the tool renderer.
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentContext } from "@itkennel/lm-ag-ui";
 import type { Message } from "@ag-ui/client";
 import { Streamdown } from "streamdown";
@@ -9,6 +9,7 @@ import { code } from "@streamdown/code";
 import { mermaid } from "@streamdown/mermaid";
 import "streamdown/styles.css";
 import { useStore } from "../store";
+import { parseSqlBlocks } from "../lib/sqlBlocks";
 
 function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
@@ -18,41 +19,34 @@ function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   );
 }
 
-/** Pull ```sql fenced blocks out of assistant markdown for the Insert/Run affordances. */
-function extractSql(md: string): string[] {
-  const out: string[] = [];
-  const re = /```sql\s*\r?\n([\s\S]*?)```/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(md))) {
-    const sql = m[1]!.trim();
-    if (sql) out.push(sql);
-  }
-  return out;
-}
-
 function SqlActions({ text }: { text: string }) {
   const insert = useStore((s) => s.insertSqlIntoEditor);
   const run = useStore((s) => s.runSqlInNewTab);
-  const blocks = extractSql(text);
+  const blocks = parseSqlBlocks(text);
   if (blocks.length === 0) return null;
   return (
-    <div className="mt-1 flex flex-col gap-1">
-      {blocks.map((sql, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <span className="ledger-label text-faint">sql {blocks.length > 1 ? i + 1 : ""}</span>
-          <button className="text-[11px] text-brass hover:underline" onClick={() => insert(sql)}>
-            Insert
-          </button>
-          <button className="text-[11px] text-brass hover:underline" onClick={() => void run(sql)}>
-            Run
-          </button>
+    <div className="mt-1 flex flex-col gap-1.5">
+      {blocks.map((b, i) => (
+        <div key={i} className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="ledger-label text-faint min-w-0 truncate">
+              {b.label ?? `sql ${blocks.length > 1 ? i + 1 : ""}`.trim()}
+            </span>
+            <button className="text-[11px] text-brass hover:underline shrink-0" onClick={() => insert(b.sql)}>
+              Insert
+            </button>
+            <button className="text-[11px] text-brass hover:underline shrink-0" onClick={() => void run(b.sql)}>
+              Run
+            </button>
+          </div>
+          <div className="font-mono text-[11px] text-faint truncate">{b.firstLine}</div>
         </div>
       ))}
     </div>
   );
 }
 
-export function CapyChat() {
+export function CapiChat() {
   const {
     messages,
     currentMessage,
@@ -65,6 +59,12 @@ export function CapyChat() {
     getToolNameFromCallId,
   } = useAgentContext();
   const [input, setInput] = useState("");
+  const open = useStore((s) => s.rightRailOpen);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   const send = async () => {
     const text = input.trim();
@@ -142,7 +142,8 @@ export function CapyChat() {
       <div className="border-t border-line-soft pl-2 pr-3 py-2">
         <div className="flex items-end gap-2">
           <textarea
-            className="flex-1 min-w-0 resize-none rounded-md border border-line bg-ink-950 px-2 py-1.5 text-[13px] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
+            ref={inputRef}
+            className="flex-1 min-w-0 resize-none rounded-md border border-line bg-ink-800 px-2 py-1.5 text-[13px] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
             rows={2}
             placeholder="Ask about the database…"
             value={input}

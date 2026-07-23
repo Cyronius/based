@@ -87,20 +87,22 @@ export function TabStrip() {
 
       <div className="flex-1" />
 
-      <input
-        type="number"
-        className="w-16 h-full px-2 border-l border-line-soft bg-transparent text-[11px] text-muted text-right font-mono focus:text-paper focus:outline-none"
-        min={1}
-        max={MAX_FETCH_SIZE}
-        value={fetchSizeText}
-        title="Max rows to fetch per query run"
-        aria-label="Fetch size"
-        onChange={(e) => setFetchSizeText(e.target.value)}
-        onBlur={commitFetchSize}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-      />
+      <label className="self-center flex items-baseline gap-1.5 pl-2 pr-2 border-l border-line-soft select-none">
+        <span className="text-[11px] leading-none text-faint">Rows</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[11px] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
+          value={fetchSizeText}
+          title="Max rows to fetch per query run"
+          aria-label="Fetch size"
+          onChange={(e) => setFetchSizeText(e.target.value)}
+          onBlur={commitFetchSize}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+        />
+      </label>
       <button
         className={toggleBtn(capturePlan)}
         title="Capture actual execution plan on next run"
