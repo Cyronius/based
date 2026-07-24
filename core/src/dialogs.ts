@@ -22,12 +22,19 @@ export function filterFor(kind: "sql" | "csv" | "xlsx"): string {
   return kind === "sql" ? SQL_FILTER : kind === "csv" ? CSV_FILTER : XLSX_FILTER;
 }
 
+// PowerShell single-quoted strings do zero escape processing (only '' -> literal '), unlike
+// double-quoted strings — so this, not JSON.stringify, is the correct way to inject a literal
+// value (e.g. a Windows path with backslashes) into a -EncodedCommand script.
+function psSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
 export function saveFileDialog(defaultName: string, filter: string): Promise<string | null> {
   const script = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.SaveFileDialog
-$d.FileName = ${JSON.stringify(defaultName)}
-$d.Filter = ${JSON.stringify(filter)}
+$d.FileName = ${psSingleQuote(defaultName)}
+$d.Filter = ${psSingleQuote(filter)}
 $d.OverwritePrompt = $true
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }
 `;
@@ -43,7 +50,7 @@ Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
 ${
   startingFolder
-    ? `$d.SelectedPath = ${JSON.stringify(startingFolder)}`
+    ? `$d.SelectedPath = ${psSingleQuote(startingFolder)}`
     : `$d.RootFolder = [System.Environment+SpecialFolder]::MyComputer`
 }
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }

@@ -639,6 +639,21 @@ At the far left of the results toolbar, Grid/Text (and Plan, when a plan was cap
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
 5. Row-cap notice appears once fetched rows exceed the tab bar's fetch-size value
 
+### BASED-UI-GRID-COLUMNS: Resizable, auto-fit grid columns with hover tooltip and Data-tab export
+**Applies to:** based (ui)
+**Test category:** manual
+
+Both the query-results grid (BASED-UI-RESULTS) and the Edit Data grid (BASED-UI-TABLE-EDIT, including read-only LanceDB tables) support: dragging a column border to resize; columns default to a content-fit width (header + currently-loaded cell values, capped so one huge value can't blow out the grid); a "Fit columns" toolbar action resets manually-resized columns back to content-fit; hovering a cell whose text is wider than its column shows a tooltip with the full value. The Edit Data grid additionally gains Copy and CSV/Excel export (previously query-results-only), reflecting any pending in-grid edits.
+
+**Verification procedure:**
+1. Run a query returning short and long text columns → columns default to roughly fit content, capped at a max width for very long values
+2. Drag a column border → resizes and stays at that width as more rows stream in
+3. Hover a cell whose text is cut off → tooltip shows the full value; hover a cell that fits → no tooltip
+4. Click "Fit columns" → all columns (including manually-resized ones) snap back to content-fit width
+5. Repeat 1-4 in the Edit Data grid (Data tab of an mssql table, and a LanceDB table)
+6. Edit a cell in Edit Data, then Copy / export CSV → the edited (uncommitted) value appears, not the stale committed one
+7. Open a read-only LanceDB table's Data tab → Copy and CSV/Excel export both work despite the grid being read-only
+
 ### BASED-UI-EXEC-PLAN: Execution plan & client statistics controls
 **Applies to:** based (ui)
 **Test category:** manual

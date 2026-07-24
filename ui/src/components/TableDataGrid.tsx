@@ -3,21 +3,16 @@
 // table has a primary key, edits cells / inserts / deletes rows into a pending change set, previews the
 // generated parameterized SQL (Review SQL), and commits it in one transaction. Pending edits, new rows,
 // and deletions live in local state; nothing touches the DB until Commit.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  DataEditor,
-  GridCellKind,
-  type EditableGridCell,
-  type GridCell,
-  type GridColumn,
-  type GridSelection,
-  type Item,
-} from "@glideapps/glide-data-grid";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GridCellKind, type EditableGridCell, type GridCell, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import type { TableTabState } from "../store";
 import { useStore } from "../store";
 import { commitTableEdit, fetchTablePage, previewTableEdit } from "../api/client";
 import { cellText, type DbCommandPreview, type TableChangeSet, type TablePage, type WireValue } from "../api/types";
-import { gridThemeFromCss, gridCellOverrides } from "../theme";
+import { gridCellOverrides } from "../theme";
+import { computeSelectionText } from "../gridSelectionText";
+import { DataGrid, type DataGridColumnDef } from "./DataGrid";
+import { GridToolbarActions } from "./GridToolbarActions";
 
 const NUMERIC_TYPES = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney)$/;
 
@@ -47,8 +42,8 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
 
   const themeId = useStore((s) => s.theme);
   const pageSize = useStore((s) => s.rowPageSize);
-  const gridTheme = useMemo(() => gridThemeFromCss(), [themeId]);
   const overrides = useMemo(() => gridCellOverrides(), [themeId]);
+  const fitFnRef = useRef<() => void>(() => {});
 
   const hasPk = !!page?.columns.some((c) => c.isPrimaryKey);
   const editable = tab.objectType === "table" && hasPk;
@@ -93,13 +88,31 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
     return [...existing, ...created];
   }, [page, newRows, deleted]);
 
-  const columns = useMemo<GridColumn[]>(
-    () =>
-      (page?.columns ?? []).map((c) => ({
-        title: c.isPrimaryKey ? `⚿ ${c.name}` : c.name,
-        id: c.name,
-        width: Math.min(320, Math.max(80, c.name.length * 9 + 48)),
-      })),
+  /** Resolves a display row's current value for one column — committed page value, overridden by a
+   *  pending edit, or a new row's in-progress value. Shared by getCellContent and displayRows so
+   *  Copy/Export always reflect exactly what's rendered. */
+  const valueAt = useCallback(
+    (ref: DisplayRef, colIdx: number): WireValue => {
+      const meta = page?.columns[colIdx];
+      if (!meta) return null;
+      if (ref.kind === "existing") {
+        const edit = edits[ref.orig]?.[meta.name];
+        return edit !== undefined ? edit : (page!.rows[ref.orig]?.[colIdx] ?? null);
+      }
+      return newRows[ref.idx]?.[meta.name] ?? null;
+    },
+    [page, edits, newRows],
+  );
+
+  /** What's currently rendered — pending edits overlaid, new rows included, deleted rows excluded.
+   *  Feeds Copy/CSV/Excel export so they match the grid, not the last-committed page. */
+  const displayRows = useMemo<WireValue[][]>(
+    () => (page ? display.map((ref) => page.columns.map((_, colIdx) => valueAt(ref, colIdx))) : []),
+    [display, page, valueAt],
+  );
+
+  const columns = useMemo<DataGridColumnDef[]>(
+    () => (page?.columns ?? []).map((c) => ({ id: c.name, title: c.isPrimaryKey ? `⚿ ${c.name}` : c.name })),
     [page?.columns],
   );
 
@@ -108,15 +121,8 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
       const ref = display[row];
       const meta = page?.columns[col];
       if (!ref || !meta) return { kind: GridCellKind.Text, data: "", displayData: "", allowOverlay: false };
-      let value: WireValue;
-      let dirty = false;
-      if (ref.kind === "existing") {
-        const edit = edits[ref.orig]?.[meta.name];
-        dirty = edit !== undefined;
-        value = dirty ? edit! : (page!.rows[ref.orig]?.[col] ?? null);
-      } else {
-        value = newRows[ref.idx]?.[meta.name] ?? null;
-      }
+      const value = valueAt(ref, col);
+      const dirty = ref.kind === "existing" && edits[ref.orig]?.[meta.name] !== undefined;
       const cellEditable = editable || ref.kind === "new";
       const text = value === null ? "" : typeof value === "object" ? cellText(value) : String(value);
       const themeOverride =
@@ -130,7 +136,7 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
         themeOverride,
       };
     },
-    [display, page, edits, newRows, editable, overrides],
+    [display, page, valueAt, edits, editable, overrides],
   );
 
   const onCellEdited = useCallback(
@@ -268,6 +274,15 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
 
         <div className="flex-1" />
 
+        {page && (
+          <GridToolbarActions
+            columns={page.columns}
+            rows={displayRows}
+            getSelectionText={() => computeSelectionText(selection, page.columns, displayRows)}
+            onFitColumns={() => fitFnRef.current()}
+          />
+        )}
+
         {pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
         <button
           className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
@@ -328,22 +343,19 @@ export function TableDataGrid({ tab }: { tab: TableTabState }) {
           <div className="mx-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{loadError}</div>
         )}
         {!loading && !loadError && page && (
-          <DataEditor
+          <DataGrid
             columns={columns}
-            rows={display.length}
+            rowCount={display.length}
             getCellContent={getCellContent}
+            dataVersion={`${offset}:${Object.keys(edits).length}:${newRows.length}:${deleted.size}`}
             onCellEdited={editable || newRows.length > 0 ? onCellEdited : undefined}
-            getCellsForSelection={true}
             rowMarkers="both"
             rowSelectionMode="multi"
-            smoothScrollX
-            smoothScrollY
-            width="100%"
-            height="100%"
-            theme={gridTheme}
             gridSelection={selection}
-            key={themeId}
             onGridSelectionChange={setSelection}
+            onFitColumns={(fn) => {
+              fitFnRef.current = fn;
+            }}
           />
         )}
       </div>
