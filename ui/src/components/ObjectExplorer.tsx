@@ -1,8 +1,10 @@
-// Traces: BASED-UI-EXPLORER (manual)
+// Traces: BASED-UI-EXPLORER (manual), BASED-UI-SCRIPT-AS (multi-select + Script as),
+//         BASED-EXPLORER-ACTION (settings-driven double-click)
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
 import { engineOf } from "../api/types";
+import { ExplorerContextMenu } from "./ExplorerContextMenu";
 
 const GROUPS: Array<{ type: DbObjectType; label: string; glyph: string }> = [
   { type: "table", label: "Tables", glyph: "▦" },
@@ -11,15 +13,27 @@ const GROUPS: Array<{ type: DbObjectType; label: string; glyph: string }> = [
   { type: "function", label: "Functions", glyph: "λ" },
 ];
 
+const keyOf = (o: DbObject) => `${o.type}:${o.schema}.${o.name}`;
+
 export function ObjectExplorer() {
   const objects = useStore((s) => s.objects);
   const schemaFilter = useStore((s) => s.schemaFilter);
   const openTableTab = useStore((s) => s.openTableTab);
   const openRoutineTab = useStore((s) => s.openRoutineTab);
+  const scriptObjects = useStore((s) => s.scriptObjects);
+  const capabilities = useStore((s) => s.capabilities);
+  const explorerTableAction = useStore((s) => s.explorerTableAction);
+  const explorerRoutineAction = useStore((s) => s.explorerRoutineAction);
   const status = useStore((s) => s.status);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const connections = useStore((s) => s.connections);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  // Traces: BASED-UI-SCRIPT-AS — selection is type-homogeneous: plain click selects one, ctrl
+  // toggles, shift ranges within the anchor's group; clicking another group's row resets.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<{ type: DbObjectType; index: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   const activeConn = connections.find((c) => c.id === activeConnectionId);
   const engine = activeConn ? engineOf(activeConn) : "mssql";
@@ -35,6 +49,65 @@ export function ObjectExplorer() {
 
   const displayName = (o: DbObject) =>
     engine === "mssql" ? (schemaFilter ? o.name : `${o.schema}.${o.name}`) : o.schema ? `${o.schema}/${o.name}` : o.name;
+
+  const selectedObjects = useMemo(() => {
+    const out: DbObject[] = [];
+    for (const items of grouped.values()) for (const o of items) if (selected.has(keyOf(o))) out.push(o);
+    return out;
+  }, [grouped, selected]);
+
+  function handleClick(e: React.MouseEvent, o: DbObject, index: number) {
+    const k = keyOf(o);
+    if (e.shiftKey && anchor && anchor.type === o.type) {
+      const items = grouped.get(o.type) ?? [];
+      const [lo, hi] = [Math.min(anchor.index, index), Math.max(anchor.index, index)];
+      const range = items.slice(lo, hi + 1).map(keyOf);
+      setSelected(new Set(e.ctrlKey || e.metaKey ? [...selected, ...range] : range));
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl-toggle; joining from a different group resets to this row (type-homogeneous).
+      const sameGroup = anchor?.type === o.type && selectedObjects.every((s) => s.type === o.type);
+      const next = new Set(sameGroup ? selected : []);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      setSelected(next);
+      setAnchor({ type: o.type, index });
+      return;
+    }
+    setSelected(new Set([k]));
+    setAnchor({ type: o.type, index });
+  }
+
+  function handleContextMenu(e: React.MouseEvent, o: DbObject, index: number) {
+    e.preventDefault();
+    if (!selected.has(keyOf(o))) {
+      setSelected(new Set([keyOf(o)]));
+      setAnchor({ type: o.type, index });
+    }
+    setMenu({ x: e.clientX, y: e.clientY });
+  }
+
+  // Traces: BASED-EXPLORER-ACTION — settings-driven default, degraded to what the engine supports.
+  function handleDoubleClick(o: DbObject) {
+    if (o.type === "table" || o.type === "view") {
+      let action = explorerTableAction;
+      if (action === "sql" && !capabilities?.sql) action = "details";
+      if (action === "script-create" && !capabilities?.script) action = "details";
+      if (action === "script-create") {
+        void scriptObjects([{ schema: o.schema, name: o.name, type: o.type }], "create");
+        return;
+      }
+      void openTableTab(o.schema, o.name, o.type, action);
+      return;
+    }
+    const action = capabilities?.script ? explorerRoutineAction : "details";
+    if (action === "script-create") {
+      void scriptObjects([{ schema: o.schema, name: o.name, type: o.type }], "create");
+      return;
+    }
+    void openRoutineTab(o.schema, o.name, o.type);
+  }
 
   if (status !== "connected" && objects.length === 0) {
     return <div className="p-4 text-faint text-[length:var(--fs-base)] italic">No connection.</div>;
@@ -56,16 +129,18 @@ export function ObjectExplorer() {
               <span className="ml-auto text-[length:var(--fs-xs)] font-mono text-faint">{items.length}</span>
             </button>
             {!isCollapsed &&
-              items.map((o) => {
+              items.map((o, index) => {
+                const isSelected = selected.has(keyOf(o));
                 return (
                   <div
                     key={`${o.schema}.${o.name}`}
-                    className="flex items-center gap-2 pl-8 pr-3 py-[3px] text-[length:var(--fs-base)] text-paper-dim hover:bg-ink-900 hover:text-paper select-none cursor-pointer"
-                    title={`${displayName(o)} — double-click for details`}
-                    onDoubleClick={() => {
-                      if (o.type === "table" || o.type === "view") void openTableTab(o.schema, o.name, o.type);
-                      else void openRoutineTab(o.schema, o.name, o.type);
-                    }}
+                    className={`flex items-center gap-2 pl-8 pr-3 py-[3px] text-[length:var(--fs-base)] select-none cursor-pointer ${
+                      isSelected ? "bg-ink-850 text-paper" : "text-paper-dim hover:bg-ink-900 hover:text-paper"
+                    }`}
+                    title={`${displayName(o)} — double-click to open`}
+                    onClick={(e) => handleClick(e, o, index)}
+                    onContextMenu={(e) => handleContextMenu(e, o, index)}
+                    onDoubleClick={() => handleDoubleClick(o)}
                   >
                     <span className="text-faint text-[length:var(--fs-sm)] w-3 text-center">{g.glyph}</span>
                     <span className="truncate font-mono text-[length:var(--fs-sm)]">{displayName(o)}</span>
@@ -75,6 +150,9 @@ export function ObjectExplorer() {
           </section>
         );
       })}
+      {menu && selectedObjects.length > 0 && (
+        <ExplorerContextMenu objects={selectedObjects} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }

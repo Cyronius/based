@@ -11,12 +11,14 @@ const iconBtn =
 
 export function GridToolbarActions({
   columns,
-  rows,
+  getRows,
   getSelectionText,
   onFitColumns,
 }: {
   columns: { name: string }[];
-  rows: WireValue[][];
+  /** Getter (not a snapshot) so export always reads the CURRENT view — sorted/filtered results,
+   *  pending-edit overlays — WYSIWYG (BASED-GRID-SORT). */
+  getRows: () => WireValue[][];
   getSelectionText: () => string;
   onFitColumns: () => void;
 }) {
@@ -27,7 +29,7 @@ export function GridToolbarActions({
     try {
       const res = await api<{ path: string | null }>("/api/export", {
         method: "POST",
-        body: JSON.stringify({ format, columns, rows, openAfter }),
+        body: JSON.stringify({ format, columns, rows: getRows(), openAfter }),
       });
       setNotice(res.path ? (openAfter ? "Opened in Excel" : `Saved ${res.path.split(/[\\/]/).pop()}`) : null);
     } catch (err) {

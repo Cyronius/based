@@ -10,16 +10,41 @@ import { TabStore } from "./storage/tabs";
 import { WindowStateStore } from "./storage/windowState";
 import { HistoryStore } from "./storage/history";
 import { SettingsStore, type AppSettings } from "./storage/settings";
-import { getSecret, setSecret, deleteSecret, getAiKey, setAiKey, deleteAiKey } from "./secrets";
+import { EmbeddingProfileStore, type EmbeddingProfileInput } from "./storage/embeddingProfiles";
+import { RerankerProfileStore, type RerankerProfileInput } from "./storage/rerankerProfiles";
+import { AiProfileStore, type AiProfile, type AiProfileInput } from "./storage/aiProfiles";
+import {
+  getSecret,
+  setSecret,
+  deleteSecret,
+  getAiKey,
+  setAiKey,
+  deleteAiKey,
+  getEmbeddingKey,
+  setEmbeddingKey,
+  deleteEmbeddingKey,
+  getRerankerKey,
+  setRerankerKey,
+  deleteRerankerKey,
+} from "./secrets";
 import { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
+import { encodeVectorSample } from "./db/vectorWire";
+import { labelClusters, type LabelCluster } from "./agent/labelClusters";
+import { createLspSubsystem } from "./lsp";
+import { resolveEmbeddingProfile, resolveRerankerProfile } from "./db/searchProfileResolve";
 import { buildEditCommands, type TableChangeSet } from "./db/tableEdit";
-import { filterFor, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
+import { joinScripts, scriptCreateTable, scriptObject, type ScriptAction } from "./db/scripter";
+import { filterFor, openFileDialog, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
+import { parseCsv } from "./import/csvParse";
+import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
 import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
-import { AiConfigStore, resolveModel, type AiConfig } from "./agent/provider";
+import { AiConfigStore, resolveModel, resolveExecutionDefaults } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
 import { buildAgent, AGENT_ID } from "./agent/agent";
+import { renderTabContext } from "./agent/tabContext";
+import { mapDbMessagesToAgui } from "./agent/threadMessages";
 import { AgentInstructionsStore } from "./agent/instructionsStore";
 import { collectQuery } from "./agent/runSql";
 import { isReadOnly } from "./db/classify";
@@ -29,9 +54,23 @@ import type {
   ConnectionStatus,
   DatabaseAdapter,
   ExecuteOptions,
+  LanceSearchRequest,
   QueryExecution,
+  TableFilter,
+  TableSort,
   WireValue,
 } from "./db/types";
+
+// Traces: BASED-UI-SESSION-RESUME — a request arrived for a sid whose in-memory session is gone
+// (the server process restarted — e.g. dev `bun --watch` — while the browser stayed open). Distinct
+// from a genuine "never connected": the client keys on the 409 `session-lost` code to auto-resume
+// (re-connect to the same connection) and retry, instead of surfacing a raw error.
+class SessionLostError extends Error {
+  constructor() {
+    super("Not connected");
+    this.name = "SessionLostError";
+  }
+}
 
 export interface ServerOptions {
   port?: number;
@@ -71,6 +110,39 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const history = new HistoryStore(db);
   const aiConfig = new AiConfigStore(db);
   const settings = new SettingsStore(db);
+  const embeddingProfiles = new EmbeddingProfileStore(db);
+  const rerankerProfiles = new RerankerProfileStore(db);
+  const aiProfiles = new AiProfileStore(db);
+
+  // Traces: BASED-AI-PROVIDER-PROFILES — migrate the legacy single ai_config row (or its
+  // DEFAULT_AI_CONFIG fallback) into a "Default" profile the first time profiles are read, whether
+  // that's the settings popover listing them or the agent resolving one to run against.
+  function ensureAiProfiles(): AiProfile[] {
+    const list = aiProfiles.list();
+    if (list.length > 0) return list;
+    const legacy = aiConfig.get();
+    let created = aiProfiles.save({
+      name: "Default",
+      kind: legacy.kind,
+      baseUrl: legacy.baseUrl,
+      model: legacy.model,
+      deployment: legacy.deployment,
+      instructionSetId: "default",
+    });
+    const legacyKey = getAiKey(legacy.providerId);
+    if (legacyKey) {
+      setAiKey(created.id, legacyKey);
+      created = aiProfiles.save({ ...created, hasKey: true });
+    }
+    settings.save({ activeAiProfileId: created.id });
+    return [created];
+  }
+
+  function activeAiProfile(): AiProfile {
+    const list = ensureAiProfiles();
+    const activeId = settings.get().activeAiProfileId;
+    return list.find((p) => p.id === activeId) ?? list[0]!;
+  }
   const agentInstructions = new AgentInstructionsStore(db);
   const audit = new AuditStore(db);
   const agentMemory = createAgentMemory(opts.agentDbPath);
@@ -78,6 +150,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const sessions = new Map<string, SessionState>();
   const executions = new Map<string, QueryExecution>();
   const sseClients = new Set<{ sid: string; controller: ReadableStreamDefaultController<Uint8Array> }>();
+  // Traces: BASED-LSP-TRANSPORT — one LSP backend per connected session, over /api/lsp WebSocket.
+  const lsp = createLspSubsystem({
+    getSession: (sid) => getSession(sid),
+    getConnection: (id) => connections.get(id) ?? undefined,
+  });
 
   function getSession(sid: string): SessionState {
     let s = sessions.get(sid);
@@ -110,11 +187,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const session = getSession(sid);
     const cfg = connections.get(connectionId);
     if (!cfg) throw new Error(`Unknown connection: ${connectionId}`);
+    lsp.closeForSession(sid); // the old engine's LSP backend is wrong for the new connection
     if (session.adapter) await session.adapter.disconnect().catch(() => {});
     session.connectionId = connectionId;
     session.database = database ?? cfg.database;
     setStatus(sid, "connecting");
-    const adapter = createAdapter(cfg, getSecret, { database: session.database });
+    const adapter = await createAdapter(cfg, getSecret, { database: session.database });
     adapter.onStatus((status, detail) => setStatus(sid, status, detail));
     session.adapter = adapter;
     try {
@@ -129,7 +207,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
   function requireAdapter(sid: string): DatabaseAdapter {
     const adapter = getSession(sid).adapter;
-    if (!adapter) throw new Error("Not connected");
+    if (!adapter) throw new SessionLostError();
     return adapter;
   }
 
@@ -144,19 +222,29 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     hostname: "127.0.0.1",
     port: opts.port ?? 0,
     idleTimeout: 0,
-    async fetch(req) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
       const path = url.pathname;
 
       if (!path.startsWith("/api/")) return serveStatic(opts.staticDir, path);
       if (!authorized(req, url)) return json({ error: "Unauthorized" }, 401);
 
+      // Traces: BASED-LSP-TRANSPORT — WebSocket upgrade for the LSP channel (token via query param,
+      // since browsers can't set headers on WebSocket connects; authorized() above covers both).
+      if (path === "/api/lsp") {
+        const sid = url.searchParams.get("sid") ?? "default";
+        const refusal = lsp.handleUpgrade(req, srv, sid);
+        return refusal ?? (undefined as unknown as Response); // null → Bun completed the 101 upgrade
+      }
+
       try {
         return await route(req, url, path);
       } catch (err) {
+        if (err instanceof SessionLostError) return json({ error: "session-lost" }, 409);
         return json({ error: err instanceof Error ? err.message : String(err) }, 500);
       }
     },
+    websocket: lsp.websocket,
   });
 
   async function route(req: Request, url: URL, path: string): Promise<Response> {
@@ -195,7 +283,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     // --- session ---
     if (path === "/api/session/state") {
       const session = getSession(sid);
-      return json({ connectionId: session.connectionId, database: session.database, status: session.status });
+      return json({
+        connectionId: session.connectionId,
+        database: session.database,
+        status: session.status,
+        capabilities: session.adapter?.capabilities ?? null,
+      });
     }
     if (path === "/api/session/connect" && method === "POST") {
       const body = (await req.json()) as { connectionId: string; database?: string };
@@ -207,10 +300,18 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         adapter.listObjects(),
       ]);
       const session = getSession(sid);
-      return json({ connectionId: session.connectionId, database: session.database, databases, schemas, objects });
+      return json({
+        connectionId: session.connectionId,
+        database: session.database,
+        databases,
+        schemas,
+        objects,
+        capabilities: adapter.capabilities,
+      });
     }
     if (path === "/api/session/disconnect" && method === "POST") {
       const session = getSession(sid);
+      lsp.closeForSession(sid);
       if (session.adapter) await session.adapter.disconnect().catch(() => {});
       session.adapter = null;
       session.connectionId = null;
@@ -222,6 +323,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     // Also drops this window's persisted state — a cleanly closed window isn't reopened on next launch.
     if (path === "/api/session/close" && method === "POST") {
       const session = sessions.get(sid);
+      lsp.closeForSession(sid);
       if (session?.adapter) await session.adapter.disconnect().catch(() => {});
       sessions.delete(sid);
       windowState.delete(sid);
@@ -268,13 +370,75 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         rowCap: body.rowCap,
       });
     }
-    // Traces: BASED-TABLE-BROWSE — paginated table data read for the Data view.
+    // Traces: BASED-TABLE-BROWSE, BASED-TABLE-ORDERBY — paginated table data read for the Data
+    // view; optional `sort`/`filters` URL-encoded JSON (server-side ORDER BY / WHERE, adapter-validated).
     if (path === "/api/session/table-data") {
       const schema = url.searchParams.get("schema") ?? "dbo";
       const table = url.searchParams.get("table") ?? "";
       const offset = Number(url.searchParams.get("offset") ?? "0");
       const limit = Number(url.searchParams.get("limit") ?? "100");
-      return json(await requireAdapter(sid).readTablePage(schema, table, { offset, limit }));
+      let orderBy: TableSort[] | undefined;
+      let filters: TableFilter[] | undefined;
+      try {
+        const sortRaw = url.searchParams.get("sort");
+        const filtersRaw = url.searchParams.get("filters");
+        if (sortRaw) orderBy = JSON.parse(sortRaw) as TableSort[];
+        if (filtersRaw) filters = JSON.parse(filtersRaw) as TableFilter[];
+      } catch {
+        return json({ error: "Malformed sort/filters JSON" }, 400);
+      }
+      return json(await requireAdapter(sid).readTablePage(schema, table, { offset, limit, orderBy, filters }));
+    }
+    // Traces: BASED-TABLE-DETAILS — full introspection + server-computed CREATE script for the
+    // enriched Details view and the scripter.
+    if (path === "/api/session/table-details") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.script || !adapter.getTableDetails) {
+        return json({ error: "This engine does not support object scripting" }, 400);
+      }
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const table = url.searchParams.get("table") ?? "";
+      const details = await adapter.getTableDetails(schema, table);
+      // Views have no table DDL to synthesize — their definition text comes from BASED-VIEW-DEFINITION.
+      const isTable = (await adapter.listObjects()).some((o) => o.schema === schema && o.name === table && o.type === "table");
+      return json({ details, createScript: isTable ? scriptCreateTable(details) : null });
+    }
+    // Traces: BASED-RELATIONS — bulk tables + FK edges for the ER diagram.
+    if (path === "/api/session/relations") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.relations || !adapter.getRelations) {
+        return json({ error: "This engine does not support relationship introspection" }, 400);
+      }
+      const schema = url.searchParams.get("schema") ?? undefined;
+      return json(await adapter.getRelations(schema || undefined));
+    }
+    // Traces: BASED-SCRIPT-API — multi-object scripting; per-object failures collect into `errors`
+    // while the rest still script, joined with GO in request order.
+    if (path === "/api/session/script" && method === "POST") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.script) return json({ error: "This engine does not support object scripting" }, 400);
+      const body = (await req.json()) as {
+        objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>;
+        action: ScriptAction;
+      };
+      const scripts: string[] = [];
+      const errors: Array<{ schema: string; name: string; message: string }> = [];
+      for (const obj of body.objects ?? []) {
+        try {
+          if (obj.type === "table") {
+            const details = await adapter.getTableDetails!(obj.schema, obj.name);
+            scripts.push(scriptObject({ kind: "table", details }, body.action));
+          } else {
+            const definition = await adapter.getObjectDefinition?.(obj.schema, obj.name);
+            if (definition == null) throw new Error(`No definition found for ${obj.schema}.${obj.name}`);
+            const type = obj.type === "view" ? "view" : obj.type === "procedure" ? "procedure" : "function";
+            scripts.push(scriptObject({ kind: "module", type, schema: obj.schema, name: obj.name, definition }, body.action));
+          }
+        } catch (err) {
+          errors.push({ schema: obj.schema, name: obj.name, message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return json({ sql: joinScripts(scripts), errors });
     }
     // Traces: BASED-TABLE-DML, BASED-TABLE-COMMIT — build the parameterized commands and (unless
     // previewing) run them in one transaction, recording a history row.
@@ -287,6 +451,65 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       executions.get(body.queryId)?.cancel();
       return json({ ok: true });
     }
+    // Traces: BASED-EMBED-VECTORS — full-precision vector sample (binary: BASED-EMBED-WIRE) for the
+    // Embeddings visualization. Present only on engines exposing readVectorSample (LanceDB).
+    if (path === "/api/session/table-vectors") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.readVectorSample) {
+        return json({ error: "This connection does not expose raw vectors." }, 400);
+      }
+      const schema = url.searchParams.get("schema") ?? "";
+      const table = url.searchParams.get("table") ?? "";
+      const column = url.searchParams.get("column") ?? "";
+      const limit = Number(url.searchParams.get("limit") ?? "5000");
+      try {
+        const sample = await adapter.readVectorSample(schema, table, { column, limit });
+        return new Response(encodeVectorSample(sample) as unknown as BodyInit, {
+          headers: { "content-type": "application/octet-stream" },
+        });
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+    // Traces: BASED-EMBED-LABELS-AI — name embedding clusters with the active AI profile's model.
+    // One generateText call, not the agent loop; input is clamped server-side (clampClusters).
+    if (path === "/api/session/label-clusters" && method === "POST") {
+      const body = (await req.json()) as { clusters?: LabelCluster[] };
+      if (!Array.isArray(body.clusters) || body.clusters.length === 0) {
+        return json({ error: "No clusters to label" }, 400);
+      }
+      let model;
+      let profile: AiProfile;
+      try {
+        profile = activeAiProfile();
+        model = resolveModel(profile, getAiKey(profile.id));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      try {
+        const labels = await labelClusters(model, body.clusters, AbortSignal.timeout(60_000));
+        return json({ labels, model: profile.model });
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
+    // Traces: BASED-LANCE-SEARCH-UNIFIED — vector/keyword/hybrid search for the Data tab + agent tools.
+    if (path === "/api/session/lance-search" && method === "POST") {
+      const body = (await req.json()) as LanceSearchRequest;
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.search || !adapter.search) {
+        return json({ error: "This connection does not support search." }, 400);
+      }
+      try {
+        const { embeddingProfileId, rerankerProfileId, ...rest } = body;
+        const embeddingProfile = resolveEmbeddingProfile(embeddingProfiles, getEmbeddingKey, embeddingProfileId);
+        const rerankerProfile = resolveRerankerProfile(rerankerProfiles, getRerankerKey, rerankerProfileId);
+        const result = await adapter.search({ ...rest, embeddingProfile, rerankerProfile });
+        return json(result);
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
 
     // --- tabs ---
     if (path === "/api/tabs" && method === "GET") {
@@ -294,6 +517,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
     if (path === "/api/tabs" && method === "POST") {
       const body = (await req.json()) as {
+        connectionId?: string;
         tabs: Array<{
           id: string;
           connectionId: string;
@@ -301,11 +525,15 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           content: string;
           filePath: string | null;
           position: number;
-          kind: "query" | "table" | "routine";
+          kind: "query" | "table" | "routine" | "diagram";
           meta: unknown | null;
         }>;
       };
-      return json(body.tabs.map((t) => tabs.upsert(t)));
+      // Replace the connection's full tab set so the persisted rows mirror what's open (closed
+      // tabs of every kind get pruned). connectionId is explicit so an empty payload still scopes.
+      const connectionId = body.connectionId ?? body.tabs[0]?.connectionId;
+      if (!connectionId) return json({ error: "connectionId required" }, 400);
+      return json(tabs.replaceForConnection(connectionId, body.tabs));
     }
     const tabMatch = path.match(/^\/api\/tabs\/([^/]+)$/);
     if (tabMatch && method === "DELETE") {
@@ -339,19 +567,69 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json(settings.save(body));
     }
 
-    // --- AI provider config ---
-    if (path === "/api/ai/config" && method === "GET") {
-      return json(aiConfig.get());
-    }
-    if (path === "/api/ai/config" && method === "POST") {
-      const body = (await req.json()) as AiConfig & { key?: string | null };
-      const { key, ...cfg } = body;
-      if (key != null) {
-        if (key === "") deleteAiKey(cfg.providerId);
-        else setAiKey(cfg.providerId, key);
+    // --- AI provider profiles (BASED-AI-PROVIDER-PROFILES) ---
+    if (path === "/api/ai-profiles" && method === "GET") return json(ensureAiProfiles());
+    if (path === "/api/ai-profiles" && method === "POST") {
+      const body = (await req.json()) as AiProfileInput;
+      const { apiKey, ...meta } = body;
+      const saved = aiProfiles.save(meta);
+      if (apiKey != null) {
+        if (apiKey === "") deleteAiKey(saved.id);
+        else setAiKey(saved.id, apiKey);
       }
-      const hasKey = getAiKey(cfg.providerId) != null;
-      return json(aiConfig.save({ ...cfg, hasKey }));
+      const hasKey = getAiKey(saved.id) != null;
+      return json(aiProfiles.save({ ...saved, hasKey }));
+    }
+    const aiProfileMatch = path.match(/^\/api\/ai-profiles\/([^/]+)$/);
+    if (aiProfileMatch && method === "DELETE") {
+      aiProfiles.delete(aiProfileMatch[1]!);
+      deleteAiKey(aiProfileMatch[1]!);
+      if (settings.get().activeAiProfileId === aiProfileMatch[1]) settings.save({ activeAiProfileId: null });
+      return json({ ok: true });
+    }
+    if (path === "/api/ai-profiles/active" && method === "POST") {
+      const { id } = (await req.json()) as { id: string };
+      return json(settings.save({ activeAiProfileId: id }));
+    }
+
+    // --- embedding profiles (BASED-LANCE-EMBED-PROFILES) ---
+    if (path === "/api/embedding-profiles" && method === "GET") return json(embeddingProfiles.list());
+    if (path === "/api/embedding-profiles" && method === "POST") {
+      const body = (await req.json()) as EmbeddingProfileInput;
+      const { apiKey, ...meta } = body;
+      const saved = embeddingProfiles.save(meta);
+      if (apiKey != null) {
+        if (apiKey === "") deleteEmbeddingKey(saved.id);
+        else setEmbeddingKey(saved.id, apiKey);
+      }
+      const hasKey = getEmbeddingKey(saved.id) != null;
+      return json(embeddingProfiles.save({ ...saved, hasKey }));
+    }
+    const embedProfileMatch = path.match(/^\/api\/embedding-profiles\/([^/]+)$/);
+    if (embedProfileMatch && method === "DELETE") {
+      embeddingProfiles.delete(embedProfileMatch[1]!);
+      deleteEmbeddingKey(embedProfileMatch[1]!);
+      return json({ ok: true });
+    }
+
+    // --- reranker profiles (BASED-LANCE-RERANK-PROFILES) ---
+    if (path === "/api/reranker-profiles" && method === "GET") return json(rerankerProfiles.list());
+    if (path === "/api/reranker-profiles" && method === "POST") {
+      const body = (await req.json()) as RerankerProfileInput;
+      const { apiKey, ...meta } = body;
+      const saved = rerankerProfiles.save(meta);
+      if (apiKey != null) {
+        if (apiKey === "") deleteRerankerKey(saved.id);
+        else setRerankerKey(saved.id, apiKey);
+      }
+      const hasKey = getRerankerKey(saved.id) != null;
+      return json(rerankerProfiles.save({ ...saved, hasKey }));
+    }
+    const rerankProfileMatch = path.match(/^\/api\/reranker-profiles\/([^/]+)$/);
+    if (rerankProfileMatch && method === "DELETE") {
+      rerankerProfiles.delete(rerankProfileMatch[1]!);
+      deleteRerankerKey(rerankProfileMatch[1]!);
+      return json({ ok: true });
     }
 
     // Traces: BASED-AGENT-INSTRUCTIONS — named, user-editable instruction sets; "default" is virtual/locked.
@@ -387,6 +665,29 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/agent/audit" && method === "GET") {
       return json(audit.list(url.searchParams.get("connectionId") ?? ""));
     }
+    // Traces: BASED-AGENT-THREADS — per-tab thread history restore + deletion. Memory-only: neither
+    // route needs a live DB connection (restore must work before/independent of connect ordering).
+    const threadMessagesMatch = path.match(/^\/api\/agent\/threads\/([^/]+)\/messages$/);
+    if (threadMessagesMatch && method === "GET") {
+      const threadId = decodeURIComponent(threadMessagesMatch[1]!);
+      const resourceId = url.searchParams.get("resourceId") ?? getSession(sid).connectionId ?? "";
+      if (!resourceId) return json([]);
+      try {
+        const { messages } = await agentMemory.recall({ threadId, resourceId, perPage: false });
+        return json(mapDbMessagesToAgui(messages as never));
+      } catch {
+        return json([]); // unknown thread / storage hiccup → empty history, never an error
+      }
+    }
+    const threadMatch = path.match(/^\/api\/agent\/threads\/([^/]+)$/);
+    if (threadMatch && method === "DELETE") {
+      try {
+        await agentMemory.deleteThread(decodeURIComponent(threadMatch[1]!));
+      } catch {
+        // deleting an unknown thread is a no-op
+      }
+      return json({ ok: true });
+    }
     // Traces: BASED-AGENT-MUTATION-GATE — the only path that runs agent-proposed DML/DDL.
     if (path === "/api/agent/mutation" && method === "POST") {
       const body = (await req.json()) as { sql: string; approved?: boolean };
@@ -402,6 +703,77 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const body = (await req.json()) as { startingFolder?: string };
       const path_ = await openFolderDialog(body.startingFolder);
       return json({ path: path_ });
+    }
+    // Traces: BASED-DIALOG-OPEN-FILE
+    if (path === "/api/dialog/open-file" && method === "POST") {
+      const body = (await req.json()) as { kind?: "sql" | "csv" | "xlsx" };
+      const path_ = await openFileDialog(filterFor(body.kind ?? "csv"));
+      return json({ path: path_ });
+    }
+
+    // --- CSV import (BASED-IMPORT-CSV-RUN) ---
+    if (path === "/api/import/csv/inspect" && method === "POST") {
+      const body = (await req.json()) as { path: string; sampleRows?: number };
+      const file = Bun.file(body.path);
+      if (!(await file.exists())) return json({ error: `File not found: ${body.path}` }, 400);
+      const sample = Math.min(Math.max(1, body.sampleRows ?? 50), 500);
+      // Read only the head of the file — enough bytes for the sample rows.
+      const head = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer());
+      const rows = parseCsv(new TextDecoder("utf-8").decode(head));
+      return json({ header: rows[0] ?? [], rows: rows.slice(1, 1 + sample) });
+    }
+    if (path === "/api/import/csv/run" && method === "POST") {
+      const adapter = requireAdapter(sid);
+      const session = getSession(sid);
+      if (!adapter.capabilities.write) return json({ error: "This engine does not support writes" }, 400);
+      const body = (await req.json()) as CsvImportRequest;
+      const columns = await adapter.getTableColumns(body.schema, body.table);
+      if (columns.length === 0) return json({ error: `No columns for ${body.schema}.${body.table}` }, 400);
+      const connectionId = session.connectionId!;
+      const database = session.database!;
+      const startedAt = new Date().toISOString();
+      let closed = false;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (obj: unknown) => {
+            if (closed) return;
+            try {
+              controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+            } catch {
+              closed = true;
+            }
+          };
+          runCsvImport(adapter, body, columns, send)
+            .then((result) => {
+              history.add({
+                connectionId,
+                database,
+                sql: `-- import csv → ${body.schema}.${body.table}: ${result.inserted} rows inserted, ${result.failed} failed (${body.path})`,
+                startedAt,
+                durationMs: Date.now() - new Date(startedAt).getTime(),
+                status: result.status,
+                error: result.error ?? null,
+              });
+            })
+            .catch((err: unknown) => {
+              send({ type: "done", status: "error", inserted: 0, failed: 0, durationMs: 0, error: err instanceof Error ? err.message : String(err) });
+            })
+            .finally(() => {
+              if (!closed) {
+                closed = true;
+                try {
+                  controller.close();
+                } catch {
+                  // already closed by client
+                }
+              }
+            });
+        },
+        cancel() {
+          closed = true;
+        },
+      });
+      return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
     }
 
     // --- files / export ---
@@ -588,9 +960,10 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (!session.adapter) return json({ error: "Connect to a database first" }, 409);
 
     let model;
+    let profile: AiProfile;
     try {
-      const cfg = aiConfig.get();
-      model = resolveModel(cfg, getAiKey(cfg.providerId));
+      profile = activeAiProfile();
+      model = resolveModel(profile, getAiKey(profile.id));
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -599,18 +972,33 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const connectionId = session.connectionId!;
     const connCfg = connections.get(connectionId);
     const engine = connCfg ? engineOf(connCfg) : "mssql";
-    const active = agentInstructions.resolveActive(engine);
+    // Instructions are tied to the active provider profile (BASED-AI-PROVIDER-PROFILES): the agent
+    // runs the persona from the set the active profile links to, falling back to "default".
+    const active = agentInstructions.resolveById(profile.instructionSetId ?? "default", engine);
+    // Traces: BASED-AGENT-TAB-CONTEXT — the client's workspace snapshot rides forwardedProps (an
+    // injected system message would be dropped by the @ag-ui/mastra converter).
+    const contextNote = renderTabContext(
+      (input as { forwardedProps?: { tabContext?: unknown } }).forwardedProps?.tabContext,
+    );
     const agent = buildAgent({
       model,
       memory: agentMemory,
       engine,
       core: active.core,
       persona: active.persona,
+      contextNote: contextNote ?? undefined,
+      // Per-profile model params (temperature, reasoning_effort, …) ride the agent's default
+      // options so every run of the active profile carries them (BASED-AI-PROFILE-PARAMS).
+      executionDefaults: resolveExecutionDefaults(profile.kind, profile.params),
       toolDeps: {
         getAdapter: () => requireAdapter(sid),
         connectionId: () => getSession(sid).connectionId!,
         database: () => getSession(sid).database!,
         audit,
+        embeddingProfiles,
+        rerankerProfiles,
+        getEmbeddingKey,
+        getRerankerKey,
       },
     });
 
@@ -690,11 +1078,15 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     token,
     url: `http://127.0.0.1:${port}`,
     stop: async () => {
+      await lsp.stopAll();
       for (const exec of executions.values()) exec.cancel();
       for (const session of sessions.values()) {
         if (session.adapter) await session.adapter.disconnect().catch(() => {});
       }
-      await server.stop(true);
+      // Bounded: after a server-initiated WebSocket close, Bun's stop(force) can wedge forever
+      // (observed on Windows, Bun 1.3.14 — even with the LSP settle delay). Every stop() caller
+      // exits the process right after, so a bounded wait beats hanging shutdown/test runs.
+      await Promise.race([server.stop(true), new Promise((resolve) => setTimeout(resolve, 2_000))]);
       db.close();
     },
   };

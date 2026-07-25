@@ -1,10 +1,11 @@
 // Traces: BASED-API-AUTH, BASED-HISTORY, BASED-CONN-TEST (endpoint), BASED-SECRET-STORE (delete via API),
-//         BASED-TABLE-COMMIT (endpoint + history row)
+//         BASED-TABLE-COMMIT (endpoint + history row), BASED-UI-SESSION-RESUME (session-lost signal)
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, getSecret, testConnection, MssqlAdapter } from "@based/core";
+import { startServer, getSecret, testConnection } from "@based/core";
+import { MssqlAdapter } from "@based/core/mssql";
 import type { ConnectionInput, ConnectionConfig } from "@based/core";
 
 const TOKEN = "spec-token";
@@ -76,12 +77,19 @@ describe("tabs API (BASED-TABSTORE via API)", () => {
       { id: "st1", connectionId: "conn-a", title: "Q1", content: "SELECT 1", filePath: null, position: 0, kind: "query", meta: null },
       { id: "st2", connectionId: "conn-a", title: "Q2", content: "SELECT 2", filePath: null, position: 1, kind: "query", meta: null },
     ];
-    await api("/api/tabs", { method: "POST", body: JSON.stringify({ tabs }) });
+    await api("/api/tabs", { method: "POST", body: JSON.stringify({ connectionId: "conn-a", tabs }) });
     const listed = (await (await api("/api/tabs?connectionId=conn-a")).json()) as Array<{ id: string }>;
     expect(listed.map((t) => t.id)).toEqual(["st1", "st2"]);
-    await api("/api/tabs/st1", { method: "DELETE" });
+
+    // Re-POST a subset: the persisted set mirrors the open set, so the dropped tab is pruned
+    // even without an explicit DELETE (the fix for accumulating table tabs on restore).
+    await api("/api/tabs", { method: "POST", body: JSON.stringify({ connectionId: "conn-a", tabs: [tabs[1]] }) });
+    const replaced = (await (await api("/api/tabs?connectionId=conn-a")).json()) as Array<{ id: string }>;
+    expect(replaced.map((t) => t.id)).toEqual(["st2"]);
+
+    await api("/api/tabs/st2", { method: "DELETE" });
     const after = (await (await api("/api/tabs?connectionId=conn-a")).json()) as Array<{ id: string }>;
-    expect(after.map((t) => t.id)).toEqual(["st2"]);
+    expect(after.map((t) => t.id)).toEqual([]);
   });
 });
 
@@ -227,4 +235,179 @@ dw("BASED-TABLE-COMMIT: table-edit endpoint applies changes and records history"
     await api("/api/session/query", { method: "POST", body: JSON.stringify({ sql: `DROP TABLE dbo.[${tbl}]` }) }).then((r) => r.text());
     await api("/api/session/disconnect", { method: "POST" });
   }, 120_000);
+});
+
+dw("BASED-SCRIPT-API + BASED-TABLE-DETAILS: scripting endpoints", () => {
+  test("multi-object script joins with GO in order; per-object failures collect; table-details returns createScript", async () => {
+    const { id: _i, createdAt: _c, updatedAt: _u, ...input } = devCfg;
+    const created = (await (await api("/api/connections", { method: "POST", body: JSON.stringify(input) })).json()) as ConnectionConfig;
+    await api("/api/session/connect", { method: "POST", body: JSON.stringify({ connectionId: created.id }) });
+
+    const t1 = `based_spec_scr_a_${Date.now()}`;
+    const t2 = `based_spec_scr_b_${Date.now()}`;
+    const vw = `based_spec_scr_v_${Date.now()}`;
+    const run = (sql: string) => api("/api/session/query", { method: "POST", body: JSON.stringify({ sql }) }).then((r) => r.text());
+    await run(`CREATE TABLE dbo.[${t1}] (id int PRIMARY KEY, name nvarchar(20))`);
+    await run(`CREATE TABLE dbo.[${t2}] (id int PRIMARY KEY)`);
+    await run(`CREATE VIEW dbo.[${vw}] AS SELECT id FROM dbo.[${t1}]`);
+
+    try {
+      // multi-object create: GO-joined, request order
+      const res = await api("/api/session/script", {
+        method: "POST",
+        body: JSON.stringify({
+          objects: [
+            { schema: "dbo", name: t1, type: "table" },
+            { schema: "dbo", name: t2, type: "table" },
+          ],
+          action: "create",
+        }),
+      });
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as { sql: string; errors: unknown[] };
+      expect(out.errors).toEqual([]);
+      const i1 = out.sql.indexOf(`CREATE TABLE [dbo].[${t1}]`);
+      const i2 = out.sql.indexOf(`CREATE TABLE [dbo].[${t2}]`);
+      expect(i1).toBeGreaterThanOrEqual(0);
+      expect(i2).toBeGreaterThan(i1);
+      expect(out.sql.slice(i1, i2)).toContain("\nGO\n");
+
+      // view alter: CREATE→ALTER rewrite via sql_modules
+      const alterRes = await api("/api/session/script", {
+        method: "POST",
+        body: JSON.stringify({ objects: [{ schema: "dbo", name: vw, type: "view" }], action: "alter" }),
+      });
+      const alterOut = (await alterRes.json()) as { sql: string; errors: unknown[] };
+      expect(alterOut.errors).toEqual([]);
+      expect(alterOut.sql).toMatch(/ALTER\s+VIEW/i);
+
+      // one good + one unknown → good scripts, bad collects
+      const mixed = await api("/api/session/script", {
+        method: "POST",
+        body: JSON.stringify({
+          objects: [
+            { schema: "dbo", name: t1, type: "table" },
+            { schema: "dbo", name: "based_spec_missing_xyz", type: "table" },
+          ],
+          action: "create",
+        }),
+      });
+      const mixedOut = (await mixed.json()) as { sql: string; errors: Array<{ name: string }> };
+      expect(mixedOut.sql).toContain(`CREATE TABLE [dbo].[${t1}]`);
+      expect(mixedOut.errors.length).toBe(1);
+      expect(mixedOut.errors[0]!.name).toBe("based_spec_missing_xyz");
+
+      // table-details endpoint: details + server-computed createScript (null for a view)
+      const det = await api(`/api/session/table-details?schema=dbo&table=${t1}`);
+      expect(det.status).toBe(200);
+      const detOut = (await det.json()) as { details: { columns: unknown[] }; createScript: string | null };
+      expect(detOut.details.columns.length).toBe(2);
+      expect(detOut.createScript).toContain(`CREATE TABLE [dbo].[${t1}]`);
+      const detView = (await (await api(`/api/session/table-details?schema=dbo&table=${vw}`)).json()) as {
+        createScript: string | null;
+      };
+      expect(detView.createScript).toBeNull();
+    } finally {
+      await run(`DROP VIEW dbo.[${vw}]`);
+      await run(`DROP TABLE dbo.[${t1}]`);
+      await run(`DROP TABLE dbo.[${t2}]`);
+      await api("/api/session/disconnect", { method: "POST" });
+    }
+  }, 120_000);
+});
+
+dw("BASED-IMPORT-CSV-RUN: inspect + batched transactional import", () => {
+  test("atomic import, rollback on bad value, skip-bad-rows accounting", async () => {
+    const { id: _i, createdAt: _c, updatedAt: _u, ...input } = devCfg;
+    const created = (await (await api("/api/connections", { method: "POST", body: JSON.stringify(input) })).json()) as ConnectionConfig;
+    await api("/api/session/connect", { method: "POST", body: JSON.stringify({ connectionId: created.id }) });
+
+    const tbl = `based_spec_imp_${Date.now()}`;
+    const run = (sql: string) => api("/api/session/query", { method: "POST", body: JSON.stringify({ sql }) }).then((r) => r.text());
+    await run(`CREATE TABLE dbo.[${tbl}] (id int PRIMARY KEY, name nvarchar(50) NULL, qty int NULL)`);
+
+    const dir = mkdtempSync(join(tmpdir(), "based-spec-csv-"));
+    const goodCsv = join(dir, "good.csv");
+    await Bun.write(goodCsv, 'id,name,qty\r\n1,"a,b",10\r\n2,,\r\n3,"he said ""hi""",30\r\n');
+
+    const mapping = [
+      { csvIndex: 0, column: "id" },
+      { csvIndex: 1, column: "name" },
+      { csvIndex: 2, column: "qty" },
+    ];
+
+    try {
+      // inspect returns header + sample
+      const inspect = (await (
+        await api("/api/import/csv/inspect", { method: "POST", body: JSON.stringify({ path: goodCsv }) })
+      ).json()) as { header: string[]; rows: string[][] };
+      expect(inspect.header).toEqual(["id", "name", "qty"]);
+      expect(inspect.rows.length).toBe(3);
+
+      // atomic import
+      const res = await api("/api/import/csv/run", {
+        method: "POST",
+        body: JSON.stringify({ path: goodCsv, schema: "dbo", table: tbl, hasHeader: true, mapping, nullEmpty: true, skipBadRows: false }),
+      });
+      expect(res.status).toBe(200);
+      const chunks = (await res.text()).trim().split("\n").map((l) => JSON.parse(l) as { type: string; status?: string; inserted?: number });
+      const done = chunks.find((c) => c.type === "done")!;
+      expect(done.status).toBe("ok");
+      expect(done.inserted).toBe(3);
+
+      const page = (await (await api(`/api/session/table-data?schema=dbo&table=${tbl}&offset=0&limit=100`)).json()) as {
+        rows: unknown[][];
+      };
+      expect(page.rows.length).toBe(3);
+      expect(page.rows.find((r) => r[0] === 1)?.[1]).toBe("a,b");
+      expect(page.rows.find((r) => r[0] === 2)?.[1]).toBeNull(); // empty + nullEmpty → NULL
+      expect(page.rows.find((r) => r[0] === 3)?.[1]).toBe('he said "hi"');
+
+      // bad numeric value, atomic mode → nothing committed, error names the CSV row
+      const badCsv = join(dir, "bad.csv");
+      await Bun.write(badCsv, "id,name,qty\r\n10,x,1\r\n11,y,notanumber\r\n12,z,3\r\n");
+      const bad = await api("/api/import/csv/run", {
+        method: "POST",
+        body: JSON.stringify({ path: badCsv, schema: "dbo", table: tbl, hasHeader: true, mapping, nullEmpty: true, skipBadRows: false }),
+      });
+      const badChunks = (await bad.text()).trim().split("\n").map((l) => JSON.parse(l) as { type: string; status?: string; error?: string; row?: number });
+      const badDone = badChunks.find((c) => c.type === "done")!;
+      expect(badDone.status).toBe("error");
+      expect(badDone.error).toContain("Row 3");
+      expect(badChunks.find((c) => c.type === "rowError")?.row).toBe(3);
+      const after = (await (await api(`/api/session/table-data?schema=dbo&table=${tbl}&offset=0&limit=100`)).json()) as {
+        rows: unknown[][];
+      };
+      expect(after.rows.some((r) => r[0] === 10)).toBe(false); // nothing committed
+
+      // skipBadRows imports the good rows and reports the bad
+      const skip = await api("/api/import/csv/run", {
+        method: "POST",
+        body: JSON.stringify({ path: badCsv, schema: "dbo", table: tbl, hasHeader: true, mapping, nullEmpty: true, skipBadRows: true }),
+      });
+      const skipChunks = (await skip.text()).trim().split("\n").map((l) => JSON.parse(l) as { type: string; status?: string; inserted?: number; failed?: number });
+      const skipDone = skipChunks.find((c) => c.type === "done")!;
+      expect(skipDone.status).toBe("ok");
+      expect(skipDone.inserted).toBe(2);
+      expect(skipDone.failed).toBe(1);
+
+      // a history summary row was recorded
+      const hist = (await (await api(`/api/history?connectionId=${created.id}`)).json()) as Array<{ sql: string }>;
+      expect(hist.some((h) => h.sql.includes("import csv"))).toBe(true);
+    } finally {
+      await run(`DROP TABLE dbo.[${tbl}]`);
+      await api("/api/session/disconnect", { method: "POST" });
+    }
+  }, 120_000);
+});
+
+describe("BASED-UI-SESSION-RESUME: session-lost signal", () => {
+  // A server restart wipes in-memory sessions; a fresh sid that never connected reproduces that exact
+  // state (no adapter). The endpoint must answer with the distinct 409 `session-lost` the client keys on
+  // to auto-resume + retry — NOT a generic 500 — so a wiped session heals instead of surfacing an error.
+  test("a session-scoped request with no adapter returns 409 session-lost", async () => {
+    const res = await api("/api/session/objects?sid=resume-probe");
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("session-lost");
+  });
 });

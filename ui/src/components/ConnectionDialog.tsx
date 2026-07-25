@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import { browseFolder } from "../api/client";
+import { IconButton } from "./IconButton";
 import type { AuthType, ConnectionInput, TestResult } from "../api/types";
 
 const AUTH_OPTIONS: Array<{ value: AuthType; label: string }> = [
@@ -125,9 +126,9 @@ export function ConnectionDialog() {
       <div className="w-[440px] max-h-[90vh] overflow-y-auto rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
         <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between">
           <h2 className="font-display text-lg text-paper">{editing ? "Edit connection" : "New connection"}</h2>
-          <button className="text-faint hover:text-paper" onClick={() => setDialog({ mode: "closed" })}>
+          <IconButton title="Close" aria-label="Close" className="text-faint hover:text-paper" onClick={() => setDialog({ mode: "closed" })}>
             ✕
-          </button>
+          </IconButton>
         </div>
 
         <div className="px-5 py-4 space-y-3">
@@ -139,8 +140,9 @@ export function ConnectionDialog() {
             </select>
             {isLance && (
               <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
-                LanceDB has no SQL. Browse tables in the left rail and query them with vector, full-text, or hybrid search
-                through Ask Capi.
+                {isLanceCloud
+                  ? "LanceDB Cloud has no SQL editor. Browse tables in the left rail and query them with vector, full-text, or hybrid search through Ask Capi."
+                  : "Local LanceDB folders get a SQL editor (DuckDB with the Lance extension) plus vector, full-text, and hybrid search through Ask Capi."}
               </p>
             )}
           </div>
@@ -282,7 +284,11 @@ export function ConnectionDialog() {
 
           {testResult && (
             <div className={`px-3 py-2 rounded border text-[length:var(--fs-base)] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}>
-              {testResult.ok ? `Connected as ${testResult.identity || "?"} — ${testResult.serverVersion ?? ""}` : testResult.error}
+              {testResult.ok
+                ? testResult.identity
+                  ? `Connected as ${testResult.identity} — ${testResult.serverVersion ?? ""}`
+                  : `Connected ${testResult.serverVersion ?? ""}`
+                : testResult.error}
             </div>
           )}
           {error && <div className="px-3 py-2 rounded border border-err/40 bg-err/10 text-err text-[length:var(--fs-base)]">{error}</div>}

@@ -8,11 +8,21 @@ import { GridToolbarActions } from "./GridToolbarActions";
 
 type View = "grid" | "text" | "plan";
 
-export function ResultsPane({ tab }: { tab: QueryTabState }) {
+export function ResultsPane({
+  tab,
+  onCellTextChange,
+  onCellActivate,
+}: {
+  tab: QueryTabState;
+  onCellTextChange?: (text: string | null) => void;
+  onCellActivate?: (text: string) => void;
+}) {
   const setActiveResult = useStore((s) => s.setActiveResult);
   const [view, setView] = useState<View>("grid");
   const selectionDataRef = useRef<() => string>(() => "");
   const fitColumnsRef = useRef<() => void>(() => {});
+  // Sorted/filtered view rows from the grid, so export/copy are WYSIWYG (BASED-GRID-SORT).
+  const viewRowsRef = useRef<(() => QueryTabState["resultSets"][number]["rows"]) | null>(null);
 
   const rs = tab.resultSets[Math.min(tab.activeResult, tab.resultSets.length - 1)] ?? null;
   const hasPlan = !!tab.plan?.length;
@@ -64,7 +74,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
             </span>
             <GridToolbarActions
               columns={rs.columns}
-              rows={rs.rows}
+              getRows={() => viewRowsRef.current?.() ?? rs.rows}
               getSelectionText={() => selectionDataRef.current()}
               onFitColumns={() => fitColumnsRef.current()}
             />
@@ -75,6 +85,7 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
       {rs?.truncated && (
         <div className="px-3 py-1 text-[length:var(--fs-sm)] bg-brass/10 text-brass border-b border-brass-soft/30 shrink-0">
           Result truncated for display: showing the first {rs.rows.length.toLocaleString()} of {rs.rowCount.toLocaleString()} rows.
+          Sort and filters apply to the fetched rows only.
         </div>
       )}
 
@@ -89,9 +100,14 @@ export function ResultsPane({ tab }: { tab: QueryTabState }) {
               onSelectionData={(fn) => {
                 selectionDataRef.current = fn;
               }}
+              onViewRows={(fn) => {
+                viewRowsRef.current = fn;
+              }}
               onFitColumns={(fn) => {
                 fitColumnsRef.current = fn;
               }}
+              onCellTextChange={onCellTextChange}
+              onCellActivate={onCellActivate}
             />
           ) : (
             <ResultText rs={rs} version={tab.version} />

@@ -19,9 +19,21 @@ import type {
   ExecuteOptions,
   QueryChunk,
   QueryExecution,
+  RelationsForeignKey,
+  RelationsGraph,
+  RelationsTable,
   RoutineParameter,
+  ScriptTableColumn,
+  TableCheckConstraint,
   TableColumn,
+  TableDefaultConstraint,
+  TableDetails,
+  TableFilter,
+  TableForeignKey,
+  TableIndex,
   TablePage,
+  TableSort,
+  TableTrigger,
   TestResult,
 } from "./types";
 
@@ -54,10 +66,11 @@ function parseServer(server: string): { host: string; port: number } {
 export class MssqlAdapter implements DatabaseAdapter {
   readonly capabilities = {
     sql: true,
-    vectorSearch: false,
-    fullTextSearch: false,
-    hybridSearch: false,
+    search: false,
     write: true,
+    orderedBrowse: true,
+    script: true,
+    relations: true,
   } as const;
   readonly database: string;
   private pool: sql.ConnectionPool | null = null;
@@ -338,24 +351,352 @@ export class MssqlAdapter implements DatabaseAdapter {
     });
   }
 
-  // Traces: BASED-TABLE-BROWSE — one page ordered by a stable key, capped by the row cap.
-  async readTablePage(schema: string, table: string, opts: { offset: number; limit: number }): Promise<TablePage> {
+  // Traces: BASED-TABLE-BROWSE, BASED-TABLE-ORDERBY — one page ordered by a stable key (user sort
+  // first when given, stable key appended as tiebreak), optional parameterized filters, capped by
+  // the row cap. Every referenced column is membership-validated against the real column list
+  // before quoting; filter values ride as typed parameters, never interpolated.
+  async readTablePage(
+    schema: string,
+    table: string,
+    opts: { offset: number; limit: number; orderBy?: TableSort[]; filters?: TableFilter[] },
+  ): Promise<TablePage> {
     const columns = await this.getTableColumns(schema, table);
     if (columns.length === 0) throw new Error(`No columns for ${schema}.${table}`);
+    const byName = new Map(columns.map((c) => [c.name, c]));
+    const requireCol = (name: string): TableColumn => {
+      const col = byName.get(name);
+      if (!col) throw new Error(`Unknown column "${name}" on ${schema}.${table}`);
+      return col;
+    };
+
     const pk = columns.filter((c) => c.isPrimaryKey);
-    const orderCols = (pk.length > 0 ? pk : [columns[0]!]).map((c) => c.name);
+    const stableCols = (pk.length > 0 ? pk : [columns[0]!]).map((c) => c.name);
+    const userSort = (opts.orderBy ?? []).map((s) => ({ name: requireCol(s.column).name, dir: s.dir === "desc" ? "DESC" : "ASC" }));
+    // User sort first, then the stable key columns not already present → deterministic paging.
+    const orderParts = [
+      ...userSort.map((s) => `${quoteIdent(s.name)} ${s.dir}`),
+      ...stableCols.filter((c) => !userSort.some((s) => s.name === c)).map((c) => quoteIdent(c)),
+    ];
+
     const limit = Math.min(Math.max(1, Math.floor(opts.limit)), this.rowCap);
     const offset = Math.max(0, Math.floor(opts.offset));
     return this.withPool(async (pool) => {
       const request = pool.request();
       request.input("off", sql.Int, offset);
       request.input("lim", sql.Int, limit);
-      const orderBy = orderCols.map(quoteIdent).join(", ");
+
+      const whereParts: string[] = [];
+      (opts.filters ?? []).forEach((f, i) => {
+        const col = requireCol(f.column);
+        const ident = quoteIdent(col.name);
+        if (f.op === "is-null") {
+          whereParts.push(`${ident} IS NULL`);
+          return;
+        }
+        if (f.op === "not-null") {
+          whereParts.push(`${ident} IS NOT NULL`);
+          return;
+        }
+        const OPS: Record<string, string> = { eq: "=", ne: "<>", gt: ">", ge: ">=", lt: "<", le: "<=", like: "LIKE" };
+        const op = OPS[f.op];
+        if (!op) throw new Error(`Unknown filter op "${f.op}"`);
+        const pname = `f${i}`;
+        if (typeof f.value === "number") request.input(pname, f.value);
+        else request.input(pname, sql.NVarChar, f.value ?? "");
+        whereParts.push(`${ident} ${op} @${pname}`);
+      });
+
+      const where = whereParts.length > 0 ? ` WHERE ${whereParts.join(" AND ")}` : "";
       const r = await request.query<Record<string, unknown>>(
-        `SELECT * FROM ${qualified(schema, table)} ORDER BY ${orderBy} OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
+        `SELECT * FROM ${qualified(schema, table)}${where} ORDER BY ${orderParts.join(", ")} OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
       );
       const rows = r.recordset.map((row) => columns.map((c) => serializeValue(row[c.name])));
-      return { columns, rows, orderBy: orderCols };
+      return { columns, rows, orderBy: stableCols };
+    });
+  }
+
+  // Traces: BASED-TABLE-DETAILS — one parameterized multi-recordset batch over the sys.* catalogs:
+  // columns (identity/computed/collation), indexes (keys/INCLUDE/filter), FKs (per-column pairs +
+  // actions), check/default constraints, triggers. Feeds the scripter and the enriched Details view.
+  async getTableDetails(schema: string, name: string): Promise<TableDetails> {
+    const base = await this.getTableColumns(schema, name);
+    if (base.length === 0) throw new Error(`No columns for ${schema}.${name}`);
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("schema", sql.NVarChar, schema);
+      request.input("table", sql.NVarChar, name);
+      const r = await request.query<Record<string, unknown>>(`
+        DECLARE @oid int = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table));
+
+        -- rs0: column extensions (identity / computed / collation), keyed by name
+        SELECT c.name, c.collation_name,
+               c.is_identity,
+               CAST(ic.seed_value AS bigint) AS seed, CAST(ic.increment_value AS bigint) AS increment,
+               cc.definition AS computed_definition, cc.is_persisted
+        FROM sys.columns c
+        LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+        WHERE c.object_id = @oid
+        ORDER BY c.column_id;
+
+        -- rs1: indexes + key/included columns (covers PK + unique constraints too)
+        SELECT i.index_id, i.name, i.type_desc, i.is_unique, i.is_primary_key, i.is_unique_constraint,
+               i.filter_definition, ic.key_ordinal, ic.is_descending_key, ic.is_included_column,
+               col.name AS column_name
+        FROM sys.indexes i
+        JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+        WHERE i.object_id = @oid AND i.type > 0
+        ORDER BY i.index_id, ic.is_included_column, ic.key_ordinal, ic.index_column_id;
+
+        -- rs2: foreign keys with per-column pairs + referential actions
+        SELECT fk.name, fk.delete_referential_action_desc AS on_delete, fk.update_referential_action_desc AS on_update,
+               fk.is_disabled, pc.name AS parent_column, rs.name AS ref_schema, rt.name AS ref_table,
+               rc.name AS ref_column, fkc.constraint_column_id
+        FROM sys.foreign_keys fk
+        JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+        JOIN sys.objects rt ON rt.object_id = fk.referenced_object_id
+        JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+        JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+        WHERE fk.parent_object_id = @oid
+        ORDER BY fk.name, fkc.constraint_column_id;
+
+        -- rs3: check constraints (column-scoped or table-level)
+        SELECT ck.name, ck.definition, ck.is_disabled, col.name AS column_name
+        FROM sys.check_constraints ck
+        LEFT JOIN sys.columns col ON col.object_id = ck.parent_object_id AND col.column_id = ck.parent_column_id
+        WHERE ck.parent_object_id = @oid;
+
+        -- rs4: default constraints
+        SELECT dc.name, dc.definition, col.name AS column_name
+        FROM sys.default_constraints dc
+        JOIN sys.columns col ON col.object_id = dc.parent_object_id AND col.column_id = dc.parent_column_id
+        WHERE dc.parent_object_id = @oid;
+
+        -- rs5: triggers + events
+        SELECT tr.name, tr.is_disabled, tr.is_instead_of_trigger, te.type_desc AS event
+        FROM sys.triggers tr
+        JOIN sys.trigger_events te ON te.object_id = tr.object_id
+        WHERE tr.parent_id = @oid;
+      `);
+      const sets = r.recordsets as unknown as Array<Array<Record<string, unknown>>>;
+      const [rsCols, rsIdx, rsFk, rsCk, rsDf, rsTr] = [
+        sets[0] ?? [],
+        sets[1] ?? [],
+        sets[2] ?? [],
+        sets[3] ?? [],
+        sets[4] ?? [],
+        sets[5] ?? [],
+      ];
+
+      const extByName = new Map(rsCols.map((row) => [String(row.name), row]));
+      const columns: ScriptTableColumn[] = base.map((c) => {
+        const ext = extByName.get(c.name);
+        return {
+          ...c,
+          collation: ext?.collation_name != null ? String(ext.collation_name) : null,
+          isIdentity: !!ext?.is_identity,
+          identitySeed: ext?.seed != null ? Number(ext.seed) : null,
+          identityIncrement: ext?.increment != null ? Number(ext.increment) : null,
+          computedDefinition: ext?.computed_definition != null ? String(ext.computed_definition) : null,
+          computedPersisted: !!ext?.is_persisted,
+        };
+      });
+
+      const indexes: TableIndex[] = [];
+      const idxById = new Map<number, TableIndex>();
+      for (const row of rsIdx) {
+        const id = Number(row.index_id);
+        let idx = idxById.get(id);
+        if (!idx) {
+          idx = {
+            name: String(row.name),
+            typeDesc: String(row.type_desc),
+            isUnique: !!row.is_unique,
+            isPrimaryKey: !!row.is_primary_key,
+            isUniqueConstraint: !!row.is_unique_constraint,
+            filterDefinition: row.filter_definition != null ? String(row.filter_definition) : null,
+            keyColumns: [],
+            includedColumns: [],
+          };
+          idxById.set(id, idx);
+          indexes.push(idx);
+        }
+        if (row.is_included_column) idx.includedColumns.push(String(row.column_name));
+        else idx.keyColumns.push({ name: String(row.column_name), descending: !!row.is_descending_key });
+      }
+
+      const fks: TableForeignKey[] = [];
+      const fkByName = new Map<string, TableForeignKey>();
+      for (const row of rsFk) {
+        const fkName = String(row.name);
+        let fk = fkByName.get(fkName);
+        if (!fk) {
+          fk = {
+            name: fkName,
+            columns: [],
+            refSchema: String(row.ref_schema),
+            refTable: String(row.ref_table),
+            refColumns: [],
+            onDelete: String(row.on_delete),
+            onUpdate: String(row.on_update),
+            isDisabled: !!row.is_disabled,
+          };
+          fkByName.set(fkName, fk);
+          fks.push(fk);
+        }
+        fk.columns.push(String(row.parent_column));
+        fk.refColumns.push(String(row.ref_column));
+      }
+
+      const checkConstraints: TableCheckConstraint[] = rsCk.map((row) => ({
+        name: String(row.name),
+        definition: String(row.definition),
+        column: row.column_name != null ? String(row.column_name) : null,
+        isDisabled: !!row.is_disabled,
+      }));
+      const defaultConstraints: TableDefaultConstraint[] = rsDf.map((row) => ({
+        name: String(row.name),
+        column: String(row.column_name),
+        definition: String(row.definition),
+      }));
+
+      const triggers: TableTrigger[] = [];
+      const trByName = new Map<string, TableTrigger>();
+      for (const row of rsTr) {
+        const trName = String(row.name);
+        let tr = trByName.get(trName);
+        if (!tr) {
+          tr = { name: trName, isInsteadOf: !!row.is_instead_of_trigger, isDisabled: !!row.is_disabled, events: [] };
+          trByName.set(trName, tr);
+          triggers.push(tr);
+        }
+        tr.events.push(String(row.event));
+      }
+
+      return { schema, name, columns, indexes, foreignKeys: fks, checkConstraints, defaultConstraints, triggers };
+    });
+  }
+
+  // Traces: BASED-LSP-MSSQL-NATIVE — one bulk column query across all user tables/views for the
+  // in-house language server's catalog (structural seam: not on DatabaseAdapter, the LSP layer
+  // casts to it like the Lance requireSqlBridge seam).
+  async listAllColumns(): Promise<Array<{ schema: string; table: string; column: string; type: string; isPrimaryKey: boolean }>> {
+    return this.withPool(async (pool) => {
+      const r = await pool.request().query<Record<string, unknown>>(`
+        SELECT s.name AS schemaName, o.name AS tableName, c.name AS colName, t.name AS typeName,
+               CAST(CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS bit) AS is_pk
+        FROM sys.objects o
+        JOIN sys.schemas s ON s.schema_id = o.schema_id
+        JOIN sys.columns c ON c.object_id = o.object_id
+        JOIN sys.types t ON t.user_type_id = c.user_type_id
+        LEFT JOIN (
+          SELECT ic.object_id, ic.column_id
+          FROM sys.index_columns ic
+          JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND i.is_primary_key = 1
+        ) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+        WHERE o.type IN ('U', 'V') AND o.is_ms_shipped = 0
+        ORDER BY s.name, o.name, c.column_id
+      `);
+      return r.recordset.map((row) => ({
+        schema: String(row.schemaName),
+        table: String(row.tableName),
+        column: String(row.colName),
+        type: String(row.typeName),
+        isPrimaryKey: !!row.is_pk,
+      }));
+    });
+  }
+
+  // Traces: BASED-RELATIONS — all user tables + columns + FK edges in one two-recordset batch
+  // (no N+1). A schema scope filters the table list but keeps edges touching the scope, so
+  // cross-schema references still render.
+  async getRelations(schemaFilter?: string): Promise<RelationsGraph> {
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("schema", sql.NVarChar, schemaFilter ?? null);
+      const r = await request.query<Record<string, unknown>>(`
+        -- rs0: user tables + columns in scope
+        SELECT s.name AS schemaName, o.name AS tableName, c.name AS colName, t.name AS typeName,
+               c.is_nullable, c.column_id,
+               CAST(CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS bit) AS is_pk,
+               CAST(CASE WHEN fkc.parent_column_id IS NOT NULL THEN 1 ELSE 0 END AS bit) AS is_fk
+        FROM sys.tables o
+        JOIN sys.schemas s ON s.schema_id = o.schema_id
+        JOIN sys.columns c ON c.object_id = o.object_id
+        JOIN sys.types t ON t.user_type_id = c.user_type_id
+        LEFT JOIN (
+          SELECT ic.object_id, ic.column_id
+          FROM sys.index_columns ic
+          JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND i.is_primary_key = 1
+        ) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+        LEFT JOIN (
+          SELECT DISTINCT parent_object_id, parent_column_id
+          FROM sys.foreign_key_columns
+        ) fkc ON fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id
+        WHERE o.is_ms_shipped = 0 AND (@schema IS NULL OR s.name = @schema)
+        ORDER BY s.name, o.name, c.column_id;
+
+        -- rs1: FK edges; scope keeps any edge touching the scope
+        SELECT fk.name, ps.name AS parent_schema, pt.name AS parent_table, pc.name AS parent_col,
+               rs.name AS ref_schema, rt.name AS ref_table, rc.name AS ref_col, fkc.constraint_column_id
+        FROM sys.foreign_keys fk
+        JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        JOIN sys.tables pt ON pt.object_id = fk.parent_object_id
+        JOIN sys.schemas ps ON ps.schema_id = pt.schema_id
+        JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+        JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
+        JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+        JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+        WHERE pt.is_ms_shipped = 0 AND (@schema IS NULL OR ps.name = @schema OR rs.name = @schema)
+        ORDER BY fk.name, fkc.constraint_column_id;
+      `);
+      const sets = r.recordsets as unknown as Array<Array<Record<string, unknown>>>;
+      const [rsTables, rsFks] = [sets[0] ?? [], sets[1] ?? []];
+
+      const tables: RelationsTable[] = [];
+      const tableByKey = new Map<string, RelationsTable>();
+      for (const row of rsTables) {
+        const key = `${String(row.schemaName)}.${String(row.tableName)}`;
+        let table = tableByKey.get(key);
+        if (!table) {
+          table = { schema: String(row.schemaName), name: String(row.tableName), columns: [] };
+          tableByKey.set(key, table);
+          tables.push(table);
+        }
+        table.columns.push({
+          name: String(row.colName),
+          type: String(row.typeName),
+          isPrimaryKey: !!row.is_pk,
+          isForeignKey: !!row.is_fk,
+          nullable: !!row.is_nullable,
+        });
+      }
+
+      const foreignKeys: RelationsForeignKey[] = [];
+      const fkByKey = new Map<string, RelationsForeignKey>();
+      for (const row of rsFks) {
+        const key = `${String(row.parent_schema)}.${String(row.parent_table)}.${String(row.name)}`;
+        let fk = fkByKey.get(key);
+        if (!fk) {
+          fk = {
+            name: String(row.name),
+            schema: String(row.parent_schema),
+            table: String(row.parent_table),
+            columns: [],
+            refSchema: String(row.ref_schema),
+            refTable: String(row.ref_table),
+            refColumns: [],
+          };
+          fkByKey.set(key, fk);
+          foreignKeys.push(fk);
+        }
+        fk.columns.push(String(row.parent_col));
+        fk.refColumns.push(String(row.ref_col));
+      }
+
+      return { tables, foreignKeys };
     });
   }
 
@@ -456,7 +797,7 @@ export class MssqlAdapter implements DatabaseAdapter {
 
       const endResultSet = () => {
         if (planRows) {
-          onChunk({ type: "plan", xml: planRows.join("") });
+          onChunk({ type: "plan", format: "showplan-xml", xml: planRows.join("") });
           planRows = null;
           return;
         }

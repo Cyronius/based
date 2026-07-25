@@ -1,0 +1,9 @@
+<svg viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Content squint: eyes shorten by ~2px, nothing more theatrical than that -->
+  <g id="eyes-happy">
+    <ellipse cx="143" cy="151" rx="13" ry="11" fill="#3B2A1E"/>
+    <circle cx="139" cy="147" r="4" fill="#FFFFFF"/>
+    <ellipse cx="257" cy="146" rx="13" ry="11" fill="#3B2A1E"/>
+    <circle cx="253" cy="142" r="4" fill="#FFFFFF"/>
+  </g>
+</svg>

@@ -89,7 +89,8 @@ export type QueryChunk =
   | { type: "resultset"; columns: ColumnInfo[] }
   | { type: "rows"; rows: WireValue[][] }
   | { type: "resultsetEnd"; rowCount: number; truncated: boolean }
-  | { type: "plan"; xml: string }
+  | { type: "plan"; format: "showplan-xml"; xml: string }
+  | { type: "plan"; format: "duckdb-json"; json: string }
   | { type: "message"; text: string }
   | { type: "error"; message: string; line?: number; code?: number }
   | { type: "cancelled" }
@@ -104,7 +105,7 @@ export interface TestResult {
   identity?: string;
 }
 
-export type TabKind = "query" | "table" | "routine";
+export type TabKind = "query" | "table" | "routine" | "diagram";
 
 export interface TabRecord {
   id: string;
@@ -126,29 +127,272 @@ export interface WindowState {
   schemaFilter: string;
 }
 
+export interface EngineCapabilities {
+  sql: boolean;
+  search: boolean;
+  write: boolean;
+  /** Server-side ORDER BY / WHERE on table browse (BASED-TABLE-ORDERBY). */
+  orderedBrowse: boolean;
+  /** Object DDL scripting (BASED-TABLE-DETAILS / BASED-SCRIPT-API). */
+  script: boolean;
+  /** FK-relationship introspection for the ER diagram (BASED-RELATIONS). */
+  relations: boolean;
+}
+
+// Traces: BASED-TABLE-DETAILS — mirrors core/src/db/types.ts
+export interface ScriptTableColumn extends TableColumn {
+  collation: string | null;
+  isIdentity: boolean;
+  identitySeed: number | null;
+  identityIncrement: number | null;
+  computedDefinition: string | null;
+  computedPersisted: boolean;
+}
+export interface TableIndex {
+  name: string;
+  typeDesc: string;
+  isUnique: boolean;
+  isPrimaryKey: boolean;
+  isUniqueConstraint: boolean;
+  filterDefinition: string | null;
+  keyColumns: Array<{ name: string; descending: boolean }>;
+  includedColumns: string[];
+}
+export interface TableForeignKey {
+  name: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+  onDelete: string;
+  onUpdate: string;
+  isDisabled: boolean;
+}
+export interface TableCheckConstraint {
+  name: string;
+  definition: string;
+  column: string | null;
+  isDisabled: boolean;
+}
+export interface TableDefaultConstraint {
+  name: string;
+  column: string;
+  definition: string;
+}
+export interface TableTrigger {
+  name: string;
+  isInsteadOf: boolean;
+  isDisabled: boolean;
+  events: string[];
+}
+export interface TableDetails {
+  schema: string;
+  name: string;
+  columns: ScriptTableColumn[];
+  indexes: TableIndex[];
+  foreignKeys: TableForeignKey[];
+  checkConstraints: TableCheckConstraint[];
+  defaultConstraints: TableDefaultConstraint[];
+  triggers: TableTrigger[];
+}
+
+export type ScriptAction = "create" | "drop" | "drop-create" | "alter" | "select" | "insert";
+
+// Traces: BASED-RELATIONS — mirrors core/src/db/types.ts
+export interface RelationsTable {
+  schema: string;
+  name: string;
+  columns: Array<{ name: string; type: string; isPrimaryKey: boolean; isForeignKey: boolean; nullable: boolean }>;
+}
+export interface RelationsForeignKey {
+  name: string;
+  schema: string;
+  table: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+}
+export interface RelationsGraph {
+  tables: RelationsTable[];
+  foreignKeys: RelationsForeignKey[];
+}
+
+// Traces: BASED-TABLE-ORDERBY — mirrors core/src/db/types.ts
+export type TableFilterOp = "eq" | "ne" | "gt" | "ge" | "lt" | "le" | "like" | "is-null" | "not-null";
+export interface TableFilter {
+  column: string;
+  op: TableFilterOp;
+  value?: string | number;
+}
+export interface TableSort {
+  column: string;
+  dir: "asc" | "desc";
+}
+
 export interface ConnectResponse {
   connectionId: string;
   database: string;
   databases: string[];
   schemas: string[];
   objects: DbObject[];
+  capabilities: EngineCapabilities;
+}
+
+export type LanceSearchMode = "text" | "vector" | "hybrid";
+
+export interface RerankerRunOptions {
+  topN?: number;
+  temperature?: number;
+}
+
+/** Unified vector/keyword/hybrid search request — mirrors core's LanceSearchRequest. */
+export interface LanceSearchRequest {
+  schema?: string;
+  table: string;
+  mode: LanceSearchMode;
+  query?: string;
+  vector?: number[];
+  where?: string;
+  columns?: string[];
+  sampleSize?: number;
+  keepSize?: number;
+  embeddingProfileId?: string;
+  rerankerProfileId?: string;
+  rerankerOptions?: RerankerRunOptions;
+  rerankTextColumn?: string;
+  floor?: number;
+  delta?: number;
+}
+
+export interface SearchRows {
+  columns: ColumnInfo[];
+  rows: WireValue[][];
+}
+
+// Traces: BASED-EMBED-VECTORS — JSON header of the binary /table-vectors response; the raw float
+// block rides alongside it (decoded in fetchTableVectors). Mirrors core's VectorSampleResult sans
+// `vectors`.
+export interface VectorSampleColumn {
+  name: string;
+  type: string;
+}
+
+export interface VectorSampleHeader {
+  dim: number;
+  count: number;
+  totalRows: number;
+  sampled: boolean;
+  columns: VectorSampleColumn[];
+  rows: WireValue[][];
+}
+
+// Traces: BASED-EMBED-LABELS-AI — one-shot cluster naming via the active AI profile.
+export interface LabelClustersRequest {
+  clusters: Array<{ id: number; hint?: string; samples: string[] }>;
+}
+
+export interface LabelClustersResponse {
+  labels: Array<{ id: number; label: string }>;
+  model: string;
+}
+
+export interface EmbeddingProfile {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmbeddingProfileInput extends Omit<EmbeddingProfile, "id" | "hasKey" | "createdAt" | "updatedAt"> {
+  id?: string;
+  apiKey?: string;
+}
+
+/** How a reranker profile's endpoint is called: the classic Cohere/TEI `/rerank` shape, or an
+ *  OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (Qwen3-Reranker style).
+ *  Absent = "rerank" (legacy profiles). */
+export type RerankerApi = "rerank" | "openai";
+
+export interface RerankerProfile {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model?: string;
+  api?: RerankerApi;
+  /** openai api only: Qwen3-Reranker task instruction override. */
+  instruction?: string;
+  hasKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RerankerProfileInput extends Omit<RerankerProfile, "id" | "hasKey" | "createdAt" | "updatedAt"> {
+  id?: string;
+  apiKey?: string;
 }
 
 export type ProviderKind = "openai-compatible" | "openai" | "azure-openai" | "anthropic";
 
-export interface AiConfig {
-  providerId: string;
+export interface AiProfile {
+  id: string;
+  name: string;
   kind: ProviderKind;
   baseUrl: string;
   model: string;
   deployment?: string;
+  /** Instruction set this agent runs against. "default" or a custom set id. */
+  instructionSetId: string;
+  /** Model parameter JSON (BASED-AI-PROFILE-PARAMS): call settings + provider options, no secrets. */
+  params?: Record<string, unknown>;
   hasKey: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiProfileInput extends Omit<AiProfile, "id" | "instructionSetId" | "hasKey" | "createdAt" | "updatedAt"> {
+  id?: string;
+  instructionSetId?: string;
+  apiKey?: string;
 }
 
 export interface AppSettings {
   theme: string;
   rowPageSize: number;
   fontScale: number;
+  activeAiProfileId: string | null;
+  /** Explorer double-click actions (BASED-EXPLORER-ACTION). */
+  explorerTableAction: "details" | "data" | "sql" | "script-create";
+  explorerRoutineAction: "details" | "script-create";
+}
+
+// Traces: BASED-HISTORY-UI — mirrors core/src/storage/history.ts
+export interface HistoryEntry {
+  id: number;
+  connectionId: string;
+  database: string;
+  sql: string;
+  startedAt: string;
+  durationMs: number | null;
+  status: "ok" | "error" | "cancelled";
+  error: string | null;
+}
+
+// Traces: BASED-HISTORY-UI — mirrors core/src/agent/audit.ts
+export interface AuditEntry {
+  id: number;
+  connectionId: string;
+  database: string;
+  kind: "read" | "mutation";
+  sql: string;
+  approved: boolean;
+  startedAt: string;
+  durationMs: number | null;
+  status: "ok" | "error";
+  error: string | null;
 }
 
 export interface InstructionSet {

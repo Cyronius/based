@@ -41,6 +41,18 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
   return runPwshDialog(script);
 }
 
+// Traces: BASED-DIALOG-OPEN-FILE — native open-file picker (CSV import).
+export function openFileDialog(filter: string): Promise<string | null> {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.OpenFileDialog
+$d.Filter = ${psSingleQuote(filter)}
+$d.CheckFileExists = $true
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.FileName) }
+`;
+  return runPwshDialog(script);
+}
+
 /** Native folder picker (e.g. for the LanceDB directory-path field). */
 export function openFolderDialog(startingFolder?: string): Promise<string | null> {
   // RootFolder=MyComputer stops WinForms from honoring SelectedPath (a long-standing

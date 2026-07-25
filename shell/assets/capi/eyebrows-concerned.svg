@@ -1,0 +1,7 @@
+<svg viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Inner ends dip ~3-6px toward the nose. Still barely a furrow. -->
+  <g id="eyebrows-concerned">
+    <path d="M123,118 Q143,116 164,124" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <path d="M236,124 Q257,116 277,118" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

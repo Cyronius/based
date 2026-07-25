@@ -1,6 +1,8 @@
-// Traces: BASED-ROUTINE-DETAILS, BASED-UI-EXPLORER (manual)
+// Traces: BASED-ROUTINE-DETAILS, BASED-UI-EXPLORER (manual), BASED-TABLE-DETAILS-UI (Script dropdown)
 import type { RoutineTabState } from "../store";
+import { useStore } from "../store";
 import { DefinitionBlock } from "./DefinitionBlock";
+import { ScriptDropdown } from "./ScriptDropdown";
 
 function ParametersTable({ tab }: { tab: RoutineTabState }) {
   return (
@@ -43,9 +45,11 @@ function ParametersTable({ tab }: { tab: RoutineTabState }) {
 }
 
 export function RoutineDetailsView({ tab }: { tab: RoutineTabState }) {
+  const capabilities = useStore((s) => s.capabilities);
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-ink-900">
       <div className="px-5 pt-4 pb-3 flex items-center gap-3 shrink-0">
+        {capabilities?.script && <ScriptDropdown schema={tab.schema} name={tab.name} type={tab.routineType} />}
         <h1 className="font-display text-xl text-paper">
           <span className="text-muted">{tab.schema}.</span>
           {tab.name}

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { openEvents } from "./api/client";
-import { activeQueryTab, useStore } from "./store";
+import { activeQueryTab, useStore, visibleTabs } from "./store";
 import monaco from "./monacoSetup";
 import { syncMonacoTheme } from "./theme";
 import { LeftRail } from "./components/LeftRail";
@@ -8,9 +8,11 @@ import { TabStrip } from "./components/TabStrip";
 import { QueryTabView } from "./components/QueryTabView";
 import { TableDetailsView } from "./components/TableDetailsView";
 import { RoutineDetailsView } from "./components/RoutineDetailsView";
+import { DiagramView } from "./components/DiagramView";
 import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { IconButton } from "./components/IconButton";
 
 function EmptyState() {
   const connections = useStore((s) => s.connections);
@@ -40,6 +42,9 @@ function EmptyState() {
 export function App() {
   const loadConnections = useStore((s) => s.loadConnections);
   const loadSettings = useStore((s) => s.loadSettings);
+  const loadEmbeddingProfiles = useStore((s) => s.loadEmbeddingProfiles);
+  const loadRerankerProfiles = useStore((s) => s.loadRerankerProfiles);
+  const loadAiProfiles = useStore((s) => s.loadAiProfiles);
   const restoreWindow = useStore((s) => s.restoreWindow);
   const theme = useStore((s) => s.theme);
   const setStatus = useStore((s) => s.setStatus);
@@ -53,6 +58,9 @@ export function App() {
 
   useEffect(() => {
     void loadSettings();
+    void loadEmbeddingProfiles();
+    void loadRerankerProfiles();
+    void loadAiProfiles();
     // BASED-WINDOW-RESTORE: reconnect to whatever this window last showed, once connections are loaded.
     void loadConnections().then(() => void restoreWindow());
     const es = openEvents((event) => {
@@ -70,7 +78,7 @@ export function App() {
       }
     });
     return () => es.close();
-  }, [loadConnections, loadSettings, restoreWindow, setStatus, resumeSession]);
+  }, [loadConnections, loadSettings, loadEmbeddingProfiles, loadRerankerProfiles, loadAiProfiles, restoreWindow, setStatus, resumeSession]);
 
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.
   useEffect(() => {
@@ -91,6 +99,24 @@ export function App() {
       } else if (e.key === "Pause" && e.ctrlKey) {
         e.preventDefault();
         if (tab?.running) void state.cancelQuery(tab.id);
+      } else if (e.key.toLowerCase() === "j" && e.ctrlKey) {
+        e.preventDefault();
+        state.toggleRightRail();
+      } else if (e.key.toLowerCase() === "t" && e.ctrlKey) {
+        e.preventDefault();
+        if (state.activeConnectionId) state.newQueryTab();
+      } else if (e.key.toLowerCase() === "w" && e.ctrlKey) {
+        e.preventDefault();
+        if (state.activeTabId) state.closeTab(state.activeTabId);
+      } else if ((e.key === "PageUp" || e.key === "PageDown") && e.ctrlKey) {
+        e.preventDefault();
+        const visible = visibleTabs(state);
+        if (visible.length > 1) {
+          const idx = visible.findIndex((t) => t.id === state.activeTabId);
+          const delta = e.key === "PageDown" ? 1 : -1;
+          const nextIdx = idx === -1 ? 0 : (idx + delta + visible.length) % visible.length;
+          state.activateTab(visible[nextIdx].id);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -107,9 +133,9 @@ export function App() {
           {banner && (
             <div className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
               <span className="flex-1 font-mono">{banner}</span>
-              <button className="text-muted hover:text-paper" onClick={() => setBanner(null)}>
+              <IconButton size="sm" title="Dismiss" aria-label="Dismiss" className="text-muted hover:text-paper" onClick={() => setBanner(null)}>
                 ✕
-              </button>
+              </IconButton>
             </div>
           )}
           {activeConnectionId ? (
@@ -118,6 +144,7 @@ export function App() {
               {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
               {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
               {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
+              {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
               {!activeTab && <div className="flex-1" />}
             </>
           ) : (

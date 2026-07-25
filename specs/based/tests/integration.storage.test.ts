@@ -128,6 +128,42 @@ describe("BASED-TABSTORE: tab persistence", () => {
     expect(rt.meta).toEqual({ schema: "dbo", name: "GetOrders", routineType: "procedure" });
     db.close();
   });
+
+  test("replaceForConnection mirrors the open set: prunes absent tabs of any kind, keeps order, scopes per connection, clears on empty, survives reopen", () => {
+    const path = tempDbPath();
+    let db = openDb(path);
+    let tabs = new TabStore(db);
+
+    const q1 = { id: "q1", connectionId: "c1", title: "Query 1", content: "SELECT 1", filePath: null, position: 0, kind: "query" as const, meta: null };
+    const tbl = { id: "tbl1", connectionId: "c1", title: "dbo.Orders", content: "", filePath: null, position: 1, kind: "table" as const, meta: { schema: "dbo", table: "Orders", objectType: "table", view: "data" } };
+    const rt = { id: "rt1", connectionId: "c1", title: "dbo.GetOrders", content: "", filePath: null, position: 2, kind: "routine" as const, meta: { schema: "dbo", name: "GetOrders", routineType: "procedure" } };
+    const other = { id: "o1", connectionId: "c2", title: "Other", content: "", filePath: null, position: 0, kind: "query" as const, meta: null };
+
+    tabs.upsert(q1);
+    tabs.upsert(tbl);
+    tabs.upsert(rt);
+    tabs.upsert(other);
+
+    // Replace c1 with a subset that drops the table tab and reorders — table tab must be pruned
+    // even though it is not a query tab (the bug: only query tabs were being deleted on close).
+    tabs.replaceForConnection("c1", [
+      { ...rt, position: 0 },
+      { ...q1, position: 1 },
+    ]);
+
+    db.close();
+    db = openDb(path);
+    tabs = new TabStore(db);
+
+    expect(tabs.list("c1").map((t) => t.id)).toEqual(["rt1", "q1"]);
+    expect(tabs.list("c2").map((t) => t.id)).toEqual(["o1"]); // other connection untouched
+
+    // Empty array clears the connection (closing every tab), leaving others intact.
+    tabs.replaceForConnection("c1", []);
+    expect(tabs.list("c1")).toEqual([]);
+    expect(tabs.list("c2").length).toBe(1);
+    db.close();
+  });
 });
 
 describe("BASED-WINDOW-RESTORE: window state persistence", () => {
@@ -166,6 +202,23 @@ describe("BASED-WINDOW-RESTORE: window state persistence", () => {
     windows.deleteByConnection("c1");
 
     expect(windows.list().map((w) => w.sid)).toEqual(["sidC"]);
+    db.close();
+  });
+
+  test("the shared 'default' sid is never persisted or offered back for restore", () => {
+    const db = openDb(tempDbPath());
+    const windows = new WindowStateStore(db);
+
+    windows.save("default", { connectionId: "unrelated-connection" });
+    expect(windows.list()).toEqual([]);
+
+    // even a pre-existing stray row (e.g. from before this fix) must not surface
+    db.run(
+      "INSERT INTO window_state (sid, connection_id, active_tab_id, schema_filter, updated_at) VALUES ('default', 'unrelated-connection', null, '', '2026-01-01T00:00:00Z')",
+    );
+    windows.save("sidD", { connectionId: "c3" });
+
+    expect(windows.list().map((w) => w.sid)).toEqual(["sidD"]);
     db.close();
   });
 });

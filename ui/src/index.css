@@ -126,6 +126,19 @@ body {
 .pane-handle[data-resize-handle-state="drag"] {
   background: color-mix(in srgb, var(--color-brass) 25%, transparent);
 }
+/* Handles in horizontal PanelGroups (side panels) are vertical bars, not horizontal ones. */
+.pane-handle[data-panel-group-direction="horizontal"] {
+  height: auto;
+  width: 5px;
+}
+.pane-handle[data-panel-group-direction="horizontal"]::after {
+  left: 2px;
+  right: auto;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  height: auto;
+}
 
 @keyframes fade-up {
   from {
@@ -152,4 +165,35 @@ body {
 }
 .pulse-soft {
   animation: pulse-soft 1.4s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes capy-breathe {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(1.012);
+  }
+}
+.capy-breathe {
+  animation: capy-breathe 4.5s ease-in-out infinite;
+  transform-origin: 50% 100%;
+}
+
+.capy-slot-pose {
+  opacity: 0;
+  transition: opacity 700ms ease;
+}
+.capy-slot-pose.active {
+  opacity: 1;
 }

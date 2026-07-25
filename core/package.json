@@ -3,7 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mssql": "./src/db/mssqlAdapter.ts",
+    "./lancedb": "./src/db/lanceAdapter.ts",
+    "./lancedb-sql": "./src/db/lanceSql.ts"
   },
   "scripts": {
     "dev": "bun run --watch src/dev.ts",
@@ -13,8 +16,12 @@
     "@ag-ui/core": "^0.0.57",
     "@ag-ui/encoder": "^0.0.57",
     "@ag-ui/mastra": "^1.1.1",
+    "@ai-sdk/anthropic": "^4.0.20",
+    "@ai-sdk/azure": "^4.0.21",
+    "@ai-sdk/openai": "^4.0.20",
     "@ai-sdk/openai-compatible": "^3.0.14",
     "@azure/identity": "^4.10.0",
+    "@duckdb/node-api": "^1.5.5-r.1",
     "@lancedb/lancedb": "^0.24.0",
     "@mastra/core": "^1.51.0",
     "@mastra/libsql": "^1.16.0",

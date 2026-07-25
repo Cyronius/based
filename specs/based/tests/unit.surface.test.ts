@@ -26,27 +26,37 @@ describe("BASED-LANCE-AGENT-SURFACE: engine-specific toolsets", () => {
     expect(names).toContain("run_query");
     expect(names).toContain("sample_rows");
     expect(names).toContain("get_schema");
+    // BASED-AGENT-READ-ROWS / BASED-AGENT-EXPORT / BASED-SCRIPT-OBJECT
+    expect(names).toContain("read_rows");
+    expect(names).toContain("export_data");
+    expect(names).toContain("script_object");
     expect(names).not.toContain("vector_search");
     expect(s.skillTags).toBeUndefined();
   });
 
-  test("LanceDB surface exposes search tools and no SQL query", () => {
+  test("LanceDB surface exposes search tools plus read-only SQL (BASED-LANCE-AGENT-SQL)", () => {
     const s = agentSurfaceFor("lancedb", deps());
     const names = Object.keys(s.tools);
     expect(names).toContain("vector_search");
     expect(names).toContain("text_search");
     expect(names).toContain("hybrid_search");
     expect(names).toContain("get_schema");
-    expect(names).not.toContain("run_query");
+    expect(names).toContain("run_query"); // DuckDB SQL over local Lance tables
+    // BASED-AGENT-READ-ROWS / BASED-AGENT-EXPORT / BASED-SCRIPT-OBJECT (lance flavor)
+    expect(names).toContain("read_rows");
+    expect(names).toContain("export_data");
+    expect(names).toContain("script_object");
+    expect(names).not.toContain("run_mutation"); // still read-only
     expect(s.skillTags).toEqual(["lancedb"]);
   });
 
   test("the two engines' toolsets do not match", () => {
     const mssql = new Set(Object.keys(agentSurfaceFor("mssql", deps()).tools));
     const lance = new Set(Object.keys(agentSurfaceFor("lancedb", deps()).tools));
-    // shared tools overlap, but each has tools the other lacks
+    // Since BASED-LANCE-AGENT-SQL the Lance surface is a superset (search tools + its own
+    // run_query); the sets still must not be identical.
     expect([...lance].some((n) => !mssql.has(n))).toBe(true);
-    expect([...mssql].some((n) => !lance.has(n))).toBe(true);
+    expect(lance.size).not.toBe(mssql.size);
   });
 
   test("the skill catalog is engine-filtered", () => {

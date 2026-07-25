@@ -62,6 +62,37 @@ const fixLibsqlNativeRequire = {
   },
 };
 
+// @duckdb/node-bindings loads its native binding via a switch of per-platform *static* require()
+// literals (duckdb.js) — unlike libsql's template-string require, each branch is individually
+// resolvable, so Bun's bundler dutifully tries to resolve EVERY branch (not just the one
+// `getRuntimePlatformArch()` would pick at runtime), including the platform-specific optional
+// dependency packages that were never installed for platforms other than the build host's:
+// "Could not resolve: @duckdb/node-bindings-<other-platform>/duckdb.node". Replace the whole file
+// with a single static require for the build host's target, so only that (installed) package is
+// ever referenced — same fix shape as fixLibsqlNativeRequire above.
+const DUCKDB_BINDING_TARGETS: Record<string, string> = {
+  "win32-x64": "win32-x64",
+  "win32-arm64": "win32-arm64",
+  "darwin-arm64": "darwin-arm64",
+  "darwin-x64": "darwin-x64",
+  "linux-x64": "linux-x64",
+  "linux-arm64": "linux-arm64",
+};
+const fixDuckdbNativeRequire = {
+  name: "fix-duckdb-native-require",
+  setup(build: import("bun").PluginBuilder) {
+    const target =
+      DUCKDB_BINDING_TARGETS[`${process.platform}-${process.arch}`] ?? "win32-x64";
+    build.onLoad(
+      { filter: /@duckdb[\\/]node-bindings[\\/]duckdb\.js$/ },
+      async () => {
+        const contents = `module.exports = require("@duckdb/node-bindings-${target}/duckdb.node");\n`;
+        return { contents, loader: "js" as const };
+      },
+    );
+  },
+};
+
 export default {
   app: {
     name: "based",
@@ -71,7 +102,7 @@ export default {
   build: {
     bun: {
       entrypoint: "src/bun/index.ts",
-      plugins: [fixNapiKeyringCreateRequire, fixLibsqlNativeRequire],
+      plugins: [fixNapiKeyringCreateRequire, fixLibsqlNativeRequire, fixDuckdbNativeRequire],
     },
     views: {
       mainview: {

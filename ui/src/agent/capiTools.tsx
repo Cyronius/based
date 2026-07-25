@@ -1,12 +1,17 @@
-// Traces: BASED-CHAT-UI, BASED-AGENT-MUTATION-GATE (frontend half)
-// The `run_mutation` frontend tool. The agent calls it with SQL it wants to run; we render an
-// approval card. Only the user's Approve reaches the gated /api/agent/mutation endpoint — the model
-// never executes DML itself. The async handler awaits the user's decision, then resolves the tool
-// result so the agent can report the outcome.
-import { useState } from "react";
+// Traces: BASED-CHAT-UI, BASED-AGENT-MUTATION-GATE (frontend half), BASED-AGENT-TAB-TOOLS
+// Frontend agent tools. `run_mutation`: the agent proposes SQL, we render an approval card, and
+// only the user's Approve reaches the gated /api/agent/mutation endpoint. `list_tabs`/`get_tab`:
+// read the workspace (tab list, a tab's SQL/results) from the store on demand. `open_query_tab`:
+// opens a real query tab, optionally runs it, and returns a summary — so user-facing results land
+// in a grid, not in chat. The new tab is aliased to the chat thread that created it
+// (BASED-AGENT-THREADS).
+import { useEffect, useState } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
-import { runAgentMutation } from "../api/client";
-import type { MutationResult } from "../api/types";
+import { api, inspectCsv, runAgentMutation, streamCsvImport, type CsvImportChunk } from "../api/client";
+import type { MutationResult, TableColumn } from "../api/types";
+import { useStore, type QueryTabState } from "../store";
+import { buildTabContext, serializeResultRows } from "./tabContext";
+import { getActiveChatThreadId } from "./threads";
 
 let pendingResolve: ((v: string) => void) | null = null;
 
@@ -78,7 +83,430 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
   );
 }
 
+const GET_TAB_DEFAULT_ROWS = 50;
+const GET_TAB_MAX_ROWS = 200;
+const OPEN_TAB_PREVIEW_ROWS = 10;
+const OPEN_TAB_RUN_TIMEOUT_MS = 15_000;
+const DEFINITION_CAP = 4_000;
+
+function clip(text: string | null | undefined): string | null {
+  if (text == null) return null;
+  return text.length > DEFINITION_CAP ? `${text.slice(0, DEFINITION_CAP)}\n-- …truncated…` : text;
+}
+
+/** "Opened <tab>" chip rendered under an open_query_tab call — click refocuses the tab. */
+function OpenedTabChip({ result }: { result: string }) {
+  let parsed: { tabId?: string; title?: string; status?: string } = {};
+  try {
+    parsed = JSON.parse(result) as typeof parsed;
+  } catch {
+    // unparseable result → no chip
+  }
+  if (!parsed.tabId) return null;
+  const tabId = parsed.tabId;
+  return (
+    <button
+      className="my-1 inline-flex items-center gap-1.5 rounded border border-brass/40 bg-brass/10 px-2.5 py-1 text-[length:var(--fs-sm)] text-brass hover:bg-brass/20"
+      onClick={() => useStore.getState().activateTab(tabId)}
+    >
+      <span>Opened</span>
+      <span className="font-semibold">{parsed.title ?? "tab"}</span>
+      {parsed.status === "running" && <span className="text-muted">(still running)</span>}
+    </button>
+  );
+}
+
+function summarizeQueryTab(tab: QueryTabState, previewRows: number) {
+  return {
+    tabId: tab.id,
+    title: tab.title,
+    status: tab.running ? "running" : (tab.stats?.status ?? "not_run"),
+    durationMs: tab.stats?.durationMs,
+    resultSets: tab.resultSets.map((rs) => ({ columns: rs.columns.map((c) => c.name), rowCount: rs.rowCount, truncated: rs.truncated })),
+    preview: tab.resultSets[0] ? serializeResultRows(tab.resultSets[0], previewRows) : null,
+    errors: tab.output.filter((l) => l.kind === "error").map((l) => l.text),
+  };
+}
+
+// Traces: BASED-AGENT-IMPORT — the gated import card. Import writes rows, so it follows the
+// run_mutation doctrine: the agent only PROPOSES (file → table, mapping); the card previews the
+// file and resolved mapping, and only the user's Approve drives the existing /api/import/csv/run
+// endpoint (which the server gates on capabilities.write).
+let pendingImportResolve: ((v: string) => void) | null = null;
+
+interface ImportArgs {
+  path?: string;
+  schema?: string;
+  table?: string;
+  hasHeader?: boolean;
+  mapping?: Array<{ csvIndex: number; column: string }>;
+  nullEmpty?: boolean;
+  skipBadRows?: boolean;
+  reason?: string;
+}
+
+/** Auto-map CSV columns to table columns: by header name (case-insensitive) when there's a header,
+ *  else by position. Returns the mapping plus any unmatched CSV column labels for the warning row. */
+function autoMapCsv(
+  header: string[],
+  hasHeader: boolean,
+  columns: TableColumn[],
+): { mapping: Array<{ csvIndex: number; column: string }>; unmatched: string[] } {
+  const mapping: Array<{ csvIndex: number; column: string }> = [];
+  const unmatched: string[] = [];
+  if (hasHeader) {
+    const byLower = new Map(columns.map((c) => [c.name.toLowerCase(), c.name]));
+    header.forEach((h, i) => {
+      const col = byLower.get(h.trim().toLowerCase());
+      if (col) mapping.push({ csvIndex: i, column: col });
+      else unmatched.push(h || `(column ${i + 1})`);
+    });
+  } else {
+    const n = Math.min(header.length, columns.length);
+    for (let i = 0; i < n; i++) mapping.push({ csvIndex: i, column: columns[i]!.name });
+  }
+  return { mapping, unmatched };
+}
+
+function ImportApprovalCard({ args }: { args: ImportArgs }) {
+  const [phase, setPhase] = useState<"loading" | "idle" | "running" | "done" | "rejected" | "invalid">("loading");
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ header: string[]; sampleRows: number } | null>(null);
+  const [mapping, setMapping] = useState<Array<{ csvIndex: number; column: string }>>([]);
+  const [unmatched, setUnmatched] = useState<string[]>([]);
+  const [progress, setProgress] = useState<{ inserted: number; totalRows: number } | null>(null);
+  const [outcome, setOutcome] = useState<string>("");
+
+  const schema = args.schema ?? "dbo";
+  const table = args.table ?? "";
+  const hasHeader = args.hasHeader !== false;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!args.path || !table) throw new Error("import_csv needs both a file path and a target table");
+        const caps = useStore.getState().capabilities;
+        if (caps && !caps.write) throw new Error("This connection is read-only — it does not support imports.");
+        const [{ header, rows }, columns] = await Promise.all([
+          inspectCsv(args.path),
+          api<TableColumn[]>(`/api/session/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`),
+        ]);
+        if (cancelled) return;
+        if (columns.length === 0) throw new Error(`No columns found for ${schema}.${table}`);
+        if (args.mapping?.length) {
+          const valid = new Set(columns.map((c) => c.name));
+          const bad = args.mapping.find((m) => !valid.has(m.column));
+          if (bad) throw new Error(`Proposed mapping targets unknown column "${bad.column}"`);
+          setMapping(args.mapping);
+        } else {
+          const auto = autoMapCsv(header, hasHeader, columns);
+          if (auto.mapping.length === 0) throw new Error("No CSV columns could be mapped to the table's columns");
+          setMapping(auto.mapping);
+          setUnmatched(auto.unmatched);
+        }
+        setPreview({ header, sampleRows: rows.length });
+        setPhase("idle");
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg);
+        setPhase("invalid");
+        pendingImportResolve?.(JSON.stringify({ approved: false, error: msg }));
+        pendingImportResolve = null;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot per card
+  }, []);
+
+  const approve = async () => {
+    setPhase("running");
+    let summary = "";
+    try {
+      let final: Extract<CsvImportChunk, { type: "done" }> | null = null;
+      const rowErrors: string[] = [];
+      await streamCsvImport(
+        {
+          path: args.path!,
+          schema,
+          table,
+          hasHeader,
+          mapping,
+          nullEmpty: args.nullEmpty !== false,
+          skipBadRows: args.skipBadRows === true,
+        },
+        (chunk) => {
+          if (chunk.type === "progress") setProgress({ inserted: chunk.inserted, totalRows: chunk.totalRows });
+          else if (chunk.type === "rowError") rowErrors.push(`row ${chunk.row}: ${chunk.error}`);
+          else final = chunk;
+        },
+      );
+      const doneChunk = final as Extract<CsvImportChunk, { type: "done" }> | null;
+      if (doneChunk?.status === "ok") {
+        summary = `Imported ${doneChunk.inserted} row(s) into ${schema}.${table} in ${doneChunk.durationMs} ms${doneChunk.failed > 0 ? `; ${doneChunk.failed} row(s) skipped` : ""}.`;
+      } else {
+        summary = `Import failed: ${doneChunk?.error ?? "unknown error"}${doneChunk?.inserted ? ` (${doneChunk.inserted} rows committed before the failure)` : ""}`;
+      }
+      setOutcome(summary);
+      setPhase("done");
+      pendingImportResolve?.(
+        JSON.stringify({
+          approved: true,
+          status: doneChunk?.status ?? "error",
+          inserted: doneChunk?.inserted ?? 0,
+          failed: doneChunk?.failed ?? 0,
+          summary,
+          rowErrors: rowErrors.slice(0, 10),
+        }),
+      );
+    } catch (err) {
+      summary = err instanceof Error ? err.message : String(err);
+      setOutcome(summary);
+      setPhase("done");
+      pendingImportResolve?.(JSON.stringify({ approved: true, status: "error", summary }));
+    }
+    pendingImportResolve = null;
+  };
+
+  const reject = () => {
+    setPhase("rejected");
+    pendingImportResolve?.(JSON.stringify({ approved: false }));
+    pendingImportResolve = null;
+  };
+
+  return (
+    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
+      <div className="ledger-label mb-1 text-brass">Import approval</div>
+      {args.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
+      <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">
+        <span className="font-mono break-all">{args.path}</span>
+        <span className="text-muted"> → </span>
+        <span className="font-semibold">
+          {schema}.{table}
+        </span>
+      </div>
+      {phase === "loading" ? (
+        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Reading the file…</div>
+      ) : phase === "invalid" ? (
+        <div className="text-[length:var(--fs-base)] text-err">{error}</div>
+      ) : (
+        <>
+          {preview && (
+            <div className="mb-2 text-[length:var(--fs-sm)] text-muted">
+              {mapping.length} column(s) mapped
+              {hasHeader ? ` from header (${preview.header.length} CSV columns)` : " by position"}
+              {unmatched.length > 0 && <span className="text-warn"> — unmapped: {unmatched.join(", ")}</span>}
+            </div>
+          )}
+          {mapping.length > 0 && phase === "idle" && (
+            <pre className="mb-2 overflow-x-auto rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft">
+              {mapping.map((m) => `csv[${m.csvIndex}] → ${m.column}`).join("\n")}
+            </pre>
+          )}
+          {phase === "idle" ? (
+            <div className="flex gap-2">
+              <button className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30" onClick={approve}>
+                Approve &amp; import
+              </button>
+              <button className="rounded bg-err/15 px-3 py-1 text-[length:var(--fs-base)] text-err border border-err/40 hover:bg-err/25" onClick={reject}>
+                Reject
+              </button>
+            </div>
+          ) : phase === "running" ? (
+            <div className="text-[length:var(--fs-base)] text-muted pulse-soft">
+              Importing…{progress ? ` ${progress.inserted}/${progress.totalRows} rows` : ""}
+            </div>
+          ) : phase === "rejected" ? (
+            <div className="text-[length:var(--fs-base)] text-err">Rejected — nothing was imported.</div>
+          ) : (
+            <div className="text-[length:var(--fs-base)] text-ok">{outcome}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export const capiTools: Record<string, ToolDefinition> = {
+  list_tabs: {
+    definition: {
+      name: "list_tabs",
+      description:
+        "List the user's open workspace tabs: the active tab id plus each tab's id, kind (query/table/routine/diagram), title, and result summary. Use get_tab to read a specific tab's SQL or results.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+    isFrontend: true,
+    handler: () => {
+      const state = useStore.getState();
+      const ctx = buildTabContext(state);
+      const tabs = ctx.openTabs.map((t) => {
+        const full = state.tabs.find((x) => x.id === t.id);
+        if (full?.kind === "query") {
+          return {
+            ...t,
+            running: full.running,
+            resultSets: full.resultSets.map((rs) => ({ rowCount: rs.rowCount, truncated: rs.truncated })),
+          };
+        }
+        return t;
+      });
+      return JSON.stringify({ activeTabId: state.activeTabId, tabs });
+    },
+  },
+
+  get_tab: {
+    definition: {
+      name: "get_tab",
+      description:
+        "Read one workspace tab: a query tab's SQL, run stats, output, and result rows (bounded); a table/routine tab's object identity and definition. Tab ids come from the workspace context or list_tabs.",
+      parameters: {
+        type: "object",
+        properties: {
+          tabId: { type: "string", description: "Tab id from workspace context or list_tabs" },
+          maxRows: { type: "number", description: "Rows to return per result set (default 50, max 200)" },
+        },
+        required: ["tabId"],
+      },
+    },
+    isFrontend: true,
+    handler: (args: { tabId?: string; maxRows?: number }) => {
+      const state = useStore.getState();
+      const tab = state.tabs.find((t) => t.id === args.tabId);
+      if (!tab) {
+        return JSON.stringify({
+          error: `Unknown tab "${args.tabId}"`,
+          validTabIds: state.tabs.filter((t) => !(t.kind === "query" && t.parentTabId)).map((t) => t.id),
+        });
+      }
+      if (tab.kind === "query") {
+        const maxRows = Math.max(1, Math.min(GET_TAB_MAX_ROWS, Math.floor(args.maxRows ?? GET_TAB_DEFAULT_ROWS)));
+        return JSON.stringify({
+          ...summarizeQueryTab(tab, maxRows),
+          sql: tab.content,
+          results: tab.resultSets.map((rs) => serializeResultRows(rs, maxRows)),
+          output: tab.output.map((l) => `${l.kind}: ${l.text}`),
+        });
+      }
+      if (tab.kind === "table") {
+        return JSON.stringify({
+          tabId: tab.id,
+          kind: tab.kind,
+          title: tab.title,
+          schema: tab.schema,
+          table: tab.table,
+          objectType: tab.objectType,
+          view: tab.view,
+          columns: tab.columns?.map((c) => ({ name: c.name, type: c.type, nullable: c.nullable, isPrimaryKey: c.isPrimaryKey })),
+          definition: clip(tab.definition),
+        });
+      }
+      if (tab.kind === "routine") {
+        return JSON.stringify({
+          tabId: tab.id,
+          kind: tab.kind,
+          title: tab.title,
+          schema: tab.schema,
+          name: tab.name,
+          routineType: tab.routineType,
+          parameters: tab.parameters,
+          definition: clip(tab.definition),
+        });
+      }
+      return JSON.stringify({ tabId: tab.id, kind: tab.kind, title: tab.title });
+    },
+  },
+
+  open_query_tab: {
+    definition: {
+      name: "open_query_tab",
+      description:
+        "Open a new query tab with the given SQL so the user sees results in a real results grid — the right way to SHOW data to the user (instead of pasting rows into chat). Runs immediately unless run is false. Returns the tab id, run status, result-set summaries, and a small preview for you to narrate from.",
+      parameters: {
+        type: "object",
+        properties: {
+          sql: { type: "string", description: "The SQL to place in the new query tab" },
+          run: { type: "boolean", description: "Run immediately (default true)" },
+          title: { type: "string", description: "Optional tab title" },
+        },
+        required: ["sql"],
+      },
+    },
+    isFrontend: true,
+    handler: async (args: { sql?: string; run?: boolean; title?: string }) => {
+      const sql = args.sql ?? "";
+      if (!sql.trim()) return JSON.stringify({ error: "sql is required" });
+      const store = useStore.getState();
+      const tabId = store.newQueryTabWithContent(args.title ?? null, sql);
+      if (!tabId) return JSON.stringify({ error: "This connection has no SQL editor (engine without SQL). Use the search tools instead." });
+      // Alias the new tab to the conversation that created it (BASED-AGENT-THREADS): clicking the
+      // tab shows this chat, and closing it never deletes the shared thread.
+      const threadId = getActiveChatThreadId();
+      if (threadId) useStore.getState().setTabOriginThread(tabId, threadId);
+      if (args.run === false) {
+        return JSON.stringify({ tabId, title: args.title ?? useStore.getState().tabs.find((t) => t.id === tabId)?.title, status: "not_run" });
+      }
+      const runPromise = useStore.getState().runQuery(tabId);
+      const timedOut = await Promise.race([
+        runPromise.then(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), OPEN_TAB_RUN_TIMEOUT_MS)),
+      ]);
+      const tab = useStore.getState().tabs.find((t) => t.id === tabId);
+      if (!tab || tab.kind !== "query") return JSON.stringify({ tabId, status: "unknown" });
+      if (timedOut && tab.running) {
+        return JSON.stringify({
+          tabId,
+          title: tab.title,
+          status: "running",
+          note: "The query is still executing; results will appear in the tab when it finishes.",
+        });
+      }
+      return JSON.stringify(summarizeQueryTab(tab, OPEN_TAB_PREVIEW_ROWS));
+    },
+    renderer: (_args, result) => <OpenedTabChip result={result} />,
+  },
+
+  import_csv: {
+    definition: {
+      name: "import_csv",
+      description:
+        "Propose importing a CSV file into a table. Shows the user an approval card previewing the file and the column mapping; the import runs only if the user approves. Requires a connection that supports writes. Omit `mapping` to auto-map by header names (or by position when hasHeader is false).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute path to the CSV file on the user's machine" },
+          table: { type: "string", description: "Target table name" },
+          schema: { type: "string", description: "Target schema (defaults to dbo)" },
+          hasHeader: { type: "boolean", description: "First row is a header (default true)" },
+          mapping: {
+            type: "array",
+            description: "Explicit csvIndex→column mapping; omit to auto-map",
+            items: {
+              type: "object",
+              properties: {
+                csvIndex: { type: "number", description: "0-based CSV column index" },
+                column: { type: "string", description: "Target table column name" },
+              },
+              required: ["csvIndex", "column"],
+            },
+          },
+          nullEmpty: { type: "boolean", description: "Import empty fields as NULL (default true)" },
+          skipBadRows: { type: "boolean", description: "Skip rows that fail coercion instead of aborting (default false)" },
+          reason: { type: "string", description: "Short explanation of why this import is needed" },
+        },
+        required: ["path", "table"],
+      },
+    },
+    isFrontend: true,
+    handler: () =>
+      new Promise<string>((resolve) => {
+        pendingImportResolve = resolve;
+      }),
+    renderer: (args) => <ImportApprovalCard args={args as ImportArgs} />,
+  },
+
   run_mutation: {
     definition: {
       name: "run_mutation",

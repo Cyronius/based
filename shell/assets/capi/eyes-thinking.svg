@@ -1,0 +1,11 @@
+<svg viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Same composure, pupils drift up-left ~2-3px and a faint lowered-lid line: he is "considering," not alarmed -->
+  <g id="eyes-thinking">
+    <circle cx="142" cy="148" r="13" fill="#3B2A1E"/>
+    <circle cx="138" cy="142" r="4" fill="#FFFFFF"/>
+    <circle cx="256" cy="143" r="13" fill="#3B2A1E"/>
+    <circle cx="252" cy="138" r="4" fill="#FFFFFF"/>
+    <path d="M130,140 Q143,135 156,140" stroke="#3B2A1E" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
+    <path d="M244,135 Q257,130 270,135" stroke="#3B2A1E" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
+  </g>
+</svg>

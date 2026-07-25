@@ -1,6 +1,6 @@
 // Thin, disposable shell (see plan): start the core server in-process, point windows at it.
 // No Electrobun RPC for app logic — everything rides localhost HTTP.
-import { BrowserWindow, ApplicationMenu } from "electrobun/bun";
+import { BrowserWindow } from "electrobun/bun";
 import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { startServer } from "@based/core";
@@ -71,17 +71,6 @@ function createWindow(existingSid?: string): void {
 // instead of starting a second backend against the same app.db/agent.db files.
 await initSingleInstance(() => createWindow());
 
-ApplicationMenu.setApplicationMenu([
-  {
-    label: "File",
-    submenu: [{ label: "New Window", action: "new-window", accelerator: "CommandOrControl+N" }],
-  },
-]);
-ApplicationMenu.on("application-menu-clicked", (event) => {
-  const action = (event as { data?: { action?: string } }).data?.action;
-  if (action === "new-window") createWindow();
-});
-
 // BASED-WINDOW-RESTORE: reopen one window per sid that was still open when the app last exited
 // (cleanly or via kill) — window_state rows for cleanly-closed windows are deleted on close, so
 // only windows that were genuinely left open come back. Falls back to a single fresh window when
@@ -90,8 +79,9 @@ type PersistedWindow = { sid: string };
 const persisted = await fetch(`${baseUrl}/api/windows?token=${apiToken}`)
   .then((r) => r.json() as Promise<PersistedWindow[]>)
   .catch(() => [] as PersistedWindow[]);
-if (persisted.length > 0) {
-  for (const w of persisted) createWindow(w.sid);
+const restorable = persisted.filter((w) => w.sid !== "default");
+if (restorable.length > 0) {
+  for (const w of restorable) createWindow(w.sid);
 } else {
   createWindow();
 }

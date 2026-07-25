@@ -4,7 +4,8 @@
 // Runs against the Phase 0 dev DB via AzureCliCredential. Read-only suites need only connect; the
 // table-edit suite additionally needs CREATE/DROP TABLE and self-skips when that permission is absent.
 import { describe, expect, test } from "bun:test";
-import { buildEditCommands, MssqlAdapter, testConnection } from "@based/core";
+import { buildEditCommands, testConnection } from "@based/core";
+import { MssqlAdapter } from "@based/core/mssql";
 import type { ConnectionConfig, ExecuteOptions, QueryChunk } from "@based/core";
 
 const cfg: ConnectionConfig = {
@@ -361,6 +362,205 @@ dw("table browse + transactional edit against a scratch table", () => {
       // deterministic across repeated page reads
       const p1again = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 2 });
       expect(p1again.rows).toEqual(p1.rows);
+    } finally {
+      await collect(adapter, `DROP TABLE dbo.[${tbl}]`).catch(() => {});
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
+  test("BASED-TABLE-DETAILS: full introspection — identity, computed, FK actions, filtered/INCLUDE index, default, check", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const parent = `based_spec_det_p_${Date.now()}`;
+    const tbl = `based_spec_det_${Date.now()}`;
+    try {
+      await collect(adapter, `CREATE TABLE dbo.[${parent}] (id int PRIMARY KEY)`);
+      const create = await collect(
+        adapter,
+        `CREATE TABLE dbo.[${tbl}] (
+           id int IDENTITY(5,2) NOT NULL,
+           region nvarchar(50) NOT NULL,
+           parent_id int NULL CONSTRAINT [FK_${tbl}] FOREIGN KEY REFERENCES dbo.[${parent}](id) ON DELETE CASCADE,
+           qty int NULL CONSTRAINT [CK_${tbl}] CHECK (qty >= 0),
+           created datetime2(3) NOT NULL CONSTRAINT [DF_${tbl}] DEFAULT (sysutcdatetime()),
+           total AS (qty * 2) PERSISTED,
+           CONSTRAINT [PK_${tbl}] PRIMARY KEY (id, region)
+         )`,
+      );
+      expect(create.status).toBe("ok");
+      await collect(adapter, `CREATE NONCLUSTERED INDEX [IX_${tbl}] ON dbo.[${tbl}] (qty) INCLUDE (created) WHERE qty > 0`);
+
+      const det = await adapter.getTableDetails("dbo", tbl);
+
+      const id = det.columns.find((c) => c.name === "id")!;
+      expect(id.isIdentity).toBe(true);
+      expect(id.identitySeed).toBe(5);
+      expect(id.identityIncrement).toBe(2);
+
+      const total = det.columns.find((c) => c.name === "total")!;
+      expect(total.computedDefinition).toContain("[qty]");
+      expect(total.computedPersisted).toBe(true);
+
+      const pk = det.indexes.find((i) => i.isPrimaryKey)!;
+      expect(pk.keyColumns.map((k) => k.name)).toEqual(["id", "region"]);
+
+      const ix = det.indexes.find((i) => i.name === `IX_${tbl}`)!;
+      expect(ix.keyColumns.map((k) => k.name)).toEqual(["qty"]);
+      expect(ix.includedColumns).toEqual(["created"]);
+      expect(ix.filterDefinition).toContain("[qty]");
+
+      const fk = det.foreignKeys.find((f) => f.name === `FK_${tbl}`)!;
+      expect(fk.columns).toEqual(["parent_id"]);
+      expect(fk.refTable).toBe(parent);
+      expect(fk.refColumns).toEqual(["id"]);
+      expect(fk.onDelete).toBe("CASCADE");
+
+      expect(det.checkConstraints.find((c) => c.name === `CK_${tbl}`)?.definition).toContain("[qty]");
+      const df = det.defaultConstraints.find((c) => c.name === `DF_${tbl}`)!;
+      expect(df.column).toBe("created");
+      expect(df.definition.toLowerCase()).toContain("sysutcdatetime");
+
+      // A plain table reports empty arrays, not errors
+      const plainDet = await adapter.getTableDetails("dbo", parent);
+      expect(plainDet.foreignKeys).toEqual([]);
+      expect(plainDet.checkConstraints).toEqual([]);
+      expect(plainDet.defaultConstraints).toEqual([]);
+      expect(plainDet.triggers).toEqual([]);
+
+      // The scripted CREATE from these details is runnable against the same DB (round-trip)
+      const { scriptCreateTable } = await import("@based/core");
+      const ddl = scriptCreateTable({ ...det, name: `${tbl}_rt` }).replaceAll(`[${tbl}]`, `[${tbl}_rt]`).replaceAll(`FK_${tbl}]`, `FK_${tbl}_rt]`).replaceAll(`CK_${tbl}]`, `CK_${tbl}_rt]`).replaceAll(`DF_${tbl}]`, `DF_${tbl}_rt]`).replaceAll(`PK_${tbl}]`, `PK_${tbl}_rt]`).replaceAll(`IX_${tbl}]`, `IX_${tbl}_rt]`);
+      const rt = await collect(adapter, ddl);
+      expect(rt.status).toBe("ok");
+      await collect(adapter, `DROP TABLE dbo.[${tbl}_rt]`).catch(() => {});
+    } finally {
+      await collect(adapter, `DROP TABLE dbo.[${tbl}]`).catch(() => {});
+      await collect(adapter, `DROP TABLE dbo.[${parent}]`).catch(() => {});
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
+  test("BASED-RELATIONS: bulk tables + FK edges in one call; schema scope keeps touching edges", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const parent = `based_spec_rel_p_${Date.now()}`;
+    const child = `based_spec_rel_c_${Date.now()}`;
+    try {
+      await collect(adapter, `CREATE TABLE dbo.[${parent}] (id int PRIMARY KEY, label nvarchar(20))`);
+      await collect(
+        adapter,
+        `CREATE TABLE dbo.[${child}] (id int PRIMARY KEY, parent_id int CONSTRAINT [FK_${child}] FOREIGN KEY REFERENCES dbo.[${parent}](id))`,
+      );
+
+      const graph = await adapter.getRelations("dbo");
+      const p = graph.tables.find((t) => t.name === parent)!;
+      const c = graph.tables.find((t) => t.name === child)!;
+      expect(p.columns.map((x) => x.name)).toEqual(["id", "label"]);
+      expect(p.columns[0]!.isPrimaryKey).toBe(true);
+      expect(c.columns.find((x) => x.name === "parent_id")?.isForeignKey).toBe(true);
+
+      const edge = graph.foreignKeys.find((f) => f.name === `FK_${child}`)!;
+      expect(edge.table).toBe(child);
+      expect(edge.columns).toEqual(["parent_id"]);
+      expect(edge.refTable).toBe(parent);
+      expect(edge.refColumns).toEqual(["id"]);
+
+      // unscoped call also contains both
+      const all = await adapter.getRelations();
+      expect(all.tables.some((t) => t.name === parent)).toBe(true);
+
+      // a scope that matches nothing returns empty tables but never throws
+      const none = await adapter.getRelations("based_spec_no_such_schema");
+      expect(none.tables).toEqual([]);
+    } finally {
+      await collect(adapter, `DROP TABLE dbo.[${child}]`).catch(() => {});
+      await collect(adapter, `DROP TABLE dbo.[${parent}]`).catch(() => {});
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
+  test("BASED-TABLE-ORDERBY: server-side sort + filters, validated columns, deterministic paging", async () => {
+    const adapter = new MssqlAdapter(cfg, noSecret);
+    const tbl = `based_spec_order_${Date.now()}`;
+    try {
+      await collect(adapter, `CREATE TABLE dbo.[${tbl}] (id int PRIMARY KEY, name nvarchar(50), qty int NULL)`);
+      await collect(
+        adapter,
+        `INSERT INTO dbo.[${tbl}] (id,name,qty) VALUES (1,'apple',10),(2,'banana',20),(3,'apricot',NULL),(4,'cherry',40),(5,'avocado',5)`,
+      );
+
+      // desc sort changes the first row vs the ascending default
+      const asc = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 5 });
+      const desc = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 5,
+        orderBy: [{ column: "qty", dir: "desc" }],
+      });
+      expect(desc.rows[0]![0]).not.toEqual(asc.rows[0]![0]);
+      expect(desc.rows[0]![2]).toBe(40);
+
+      // deterministic paging under a user sort: page 2 shares no ids with page 1
+      const s1 = await adapter.readTablePage("dbo", tbl, { offset: 0, limit: 2, orderBy: [{ column: "name", dir: "asc" }] });
+      const s2 = await adapter.readTablePage("dbo", tbl, { offset: 2, limit: 2, orderBy: [{ column: "name", dir: "asc" }] });
+      const ids1 = new Set(s1.rows.map((r) => r[0]));
+      expect(s2.rows.every((r) => !ids1.has(r[0]))).toBe(true);
+
+      // eq / like / is-null filters
+      const eq = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        filters: [{ column: "qty", op: "eq", value: 20 }],
+      });
+      expect(eq.rows.length).toBe(1);
+      expect(eq.rows[0]![1]).toBe("banana");
+
+      const like = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        filters: [{ column: "name", op: "like", value: "%ap%" }],
+      });
+      expect(like.rows.map((r) => r[1]).sort()).toEqual(["apple", "apricot"]);
+
+      const isNull = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        filters: [{ column: "qty", op: "is-null" }],
+      });
+      expect(isNull.rows.length).toBe(1);
+      expect(isNull.rows[0]![1]).toBe("apricot");
+
+      const notNull = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        filters: [{ column: "qty", op: "not-null" }],
+      });
+      expect(notNull.rows.length).toBe(4);
+
+      // gt with combined sort
+      const gt = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        orderBy: [{ column: "qty", dir: "asc" }],
+        filters: [{ column: "qty", op: "gt", value: 5 }],
+      });
+      expect(gt.rows.map((r) => r[2])).toEqual([10, 20, 40]);
+
+      // unknown columns throw before SQL runs (try/catch style — bun:test's rejects.toThrow
+      // matcher misreports this adapter rejection as its own internal timeout)
+      const badOrder = await adapter
+        .readTablePage("dbo", tbl, { offset: 0, limit: 5, orderBy: [{ column: "nope", dir: "asc" }] })
+        .then(() => null, (e: Error) => e);
+      expect(badOrder?.message ?? "").toMatch(/nope/);
+      const badFilter = await adapter
+        .readTablePage("dbo", tbl, { offset: 0, limit: 5, filters: [{ column: "nope; DROP", op: "eq", value: 1 }] })
+        .then(() => null, (e: Error) => e);
+      expect(badFilter).not.toBeNull();
+
+      // filter values are parameterized — hostile value narrows safely, no error
+      const hostile = await adapter.readTablePage("dbo", tbl, {
+        offset: 0,
+        limit: 10,
+        filters: [{ column: "name", op: "eq", value: "x' OR 1=1 --" }],
+      });
+      expect(hostile.rows.length).toBe(0);
     } finally {
       await collect(adapter, `DROP TABLE dbo.[${tbl}]`).catch(() => {});
       await adapter.disconnect();

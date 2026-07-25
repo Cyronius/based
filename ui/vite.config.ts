@@ -8,7 +8,8 @@ export default defineConfig({
   server: {
     port: 5183,
     proxy: {
-      "/api": { target: "http://127.0.0.1:7042", changeOrigin: false },
+      // ws: true so the /api/lsp WebSocket (BASED-LSP-UI) tunnels through the dev proxy too.
+      "/api": { target: "http://127.0.0.1:7042", changeOrigin: false, ws: true },
     },
   },
   build: {

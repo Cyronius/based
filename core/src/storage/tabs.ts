@@ -1,7 +1,8 @@
 // Traces: BASED-TABSTORE
 import type { Database } from "bun:sqlite";
 
-export type TabKind = "query" | "table" | "routine";
+// Traces: BASED-TABSTORE — kind set includes "diagram" (BASED-DIAGRAM-UI).
+export type TabKind = "query" | "table" | "routine" | "diagram";
 
 export interface TabRecord {
   id: string;
@@ -70,5 +71,20 @@ export class TabStore {
 
   delete(id: string): void {
     this.db.run("DELETE FROM tabs WHERE id = ?", [id]);
+  }
+
+  /** Replace the full tab set for a connection: prune rows absent from `tabs`, then upsert the
+   *  rest. Makes the persisted set a mirror of the open set (an empty array clears the
+   *  connection). Runs in a transaction so restore never sees a partial state. */
+  replaceForConnection(connectionId: string, tabs: Array<Omit<TabRecord, "updatedAt">>): TabRecord[] {
+    const run = this.db.transaction((list: Array<Omit<TabRecord, "updatedAt">>) => {
+      const keep = new Set(list.map((t) => t.id));
+      const existing = this.db
+        .query<{ id: string }, [string]>("SELECT id FROM tabs WHERE connection_id = ?")
+        .all(connectionId);
+      for (const row of existing) if (!keep.has(row.id)) this.db.run("DELETE FROM tabs WHERE id = ?", [row.id]);
+      return list.map((t) => this.upsert(t));
+    });
+    return run(tabs);
   }
 }

@@ -37,4 +37,52 @@ Three ways to run the app, fastest-feedback first:
   HMR** — run `bun run build:ui` after UI changes or you'll see a stale bundle. Set `BASED_DEV_URL` to point
   this same window at Vite instead (that's what `bun run dev` does under the hood).
 
+## Reranking with a local LLM (Qwen3-Reranker via LM Studio)
+
+> Interim home for this doc until the app has real documentation.
+
+Search over a LanceDB table can add an optional **rerank** step: after the vector/FTS/hybrid pass
+returns a candidate pool, an external model rescores each `(query, document)` pair and the results
+are re-sorted by that score (`_rerank_score`). A reranker reads the query and document *together*
+(cross-encoder), which is more accurate than comparing precomputed embeddings (bi-encoder) — and is
+why it can't be cached and runs per query.
+
+Reranker profiles (Settings → Search → Reranker profiles) support two API shapes:
+
+- **Rerank endpoint (Cohere/TEI)** — the classic `POST {baseUrl}/rerank {query, documents}` shape.
+  Use for Cohere, TEI/Infinity, or `llama-server --reranking` with a classification-head model
+  (bge-reranker, or a sequence-classification GGUF conversion of Qwen3-Reranker).
+- **OpenAI chat completions (yes/no logprobs)** — for servers with **no** `/rerank` endpoint, like
+  LM Studio. This exists because Qwen3-Reranker isn't a classic cross-encoder at all: it's the
+  Qwen3-0.6B causal LM prompted to judge "does this document match the query? answer yes or no",
+  and the relevance score is read off the logprobs of the first generated token:
+  `score = P(yes) / (P(yes) + P(no))`. Any OpenAI-compatible chat endpoint that returns
+  `top_logprobs` can therefore act as a reranker — based sends one `max_tokens: 1` request per
+  candidate document and computes the score itself.
+
+### Setup (LM Studio)
+
+1. In LM Studio, download and load a **Qwen3-Reranker-0.6B** GGUF as a normal text model, and start
+   the local server (default `http://localhost:1234`).
+2. In based: Settings (gear) → Search → Reranker profiles → `+` → set API to
+   "OpenAI chat completions (yes/no logprobs)", Base URL `http://localhost:1234/v1`, Model = the
+   LM Studio model identifier. API key stays empty for LM Studio. The optional Instruction field
+   overrides Qwen's default task instruction ("Given a web search query, retrieve relevant passages
+   that answer the query") — useful for domain-specific corpora.
+3. In a LanceDB connection's Data tab, pick the profile in the search toolbar and run a search.
+   Rows come back ordered by `_rerank_score` (0–1).
+
+### Caveats
+
+- **Latency is O(candidates)**: one HTTP call per candidate document (8 in flight at a time). With
+  the default 50-candidate pool that's 50 chat completions per search — fine for a 0.6B model
+  locally, but lower `sampleSize` if it feels slow.
+- **Scores are only comparable within one query.** Don't use a global `floor` cutoff tuned on one
+  query for another.
+- **If every search errors with "never put yes/no in its top logprobs"**: the GGUF's chat template
+  likely has Qwen3 *thinking* enabled, so the first generated token is `<think>` instead of
+  yes/no. Use a non-thinking template/conversion of the model.
+- **"returned no logprobs"**: the server doesn't support `logprobs` on chat completions — update
+  LM Studio, or use the Cohere/TEI api with a rerank-capable server instead.
+
 Phase 1 (classic core) is complete — see `specs/based/archive/phase1-classic-core.md`. Phase 2 is Ask Capi (Mastra agent + AG-UI in the right rail).

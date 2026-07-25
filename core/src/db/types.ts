@@ -93,7 +93,8 @@ export type QueryChunk =
   | { type: "resultset"; columns: ColumnInfo[] }
   | { type: "rows"; rows: WireValue[][] }
   | { type: "resultsetEnd"; rowCount: number; truncated: boolean }
-  | { type: "plan"; xml: string }
+  | { type: "plan"; format: "showplan-xml"; xml: string }
+  | { type: "plan"; format: "duckdb-json"; json: string }
   | { type: "message"; text: string }
   | { type: "error"; message: string; line?: number; code?: number }
   | { type: "cancelled" }
@@ -138,6 +139,100 @@ export interface TablePage {
   orderBy: string[];
 }
 
+// Traces: BASED-TABLE-DETAILS — full table introspection for the scripter + enriched Details view.
+export interface ScriptTableColumn extends TableColumn {
+  collation: string | null;
+  isIdentity: boolean;
+  identitySeed: number | null;
+  identityIncrement: number | null;
+  /** Non-null ⇒ computed column. */
+  computedDefinition: string | null;
+  computedPersisted: boolean;
+}
+export interface TableIndex {
+  name: string;
+  /** e.g. "CLUSTERED" | "NONCLUSTERED" | "NONCLUSTERED COLUMNSTORE". */
+  typeDesc: string;
+  isUnique: boolean;
+  isPrimaryKey: boolean;
+  isUniqueConstraint: boolean;
+  filterDefinition: string | null;
+  keyColumns: Array<{ name: string; descending: boolean }>;
+  includedColumns: string[];
+}
+export interface TableForeignKey {
+  name: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+  /** "NO_ACTION" | "CASCADE" | "SET_NULL" | "SET_DEFAULT". */
+  onDelete: string;
+  onUpdate: string;
+  isDisabled: boolean;
+}
+export interface TableCheckConstraint {
+  name: string;
+  definition: string;
+  /** Column-scoped check's column, or null for a table-level check. */
+  column: string | null;
+  isDisabled: boolean;
+}
+export interface TableDefaultConstraint {
+  name: string;
+  column: string;
+  definition: string;
+}
+export interface TableTrigger {
+  name: string;
+  isInsteadOf: boolean;
+  isDisabled: boolean;
+  events: string[];
+}
+export interface TableDetails {
+  schema: string;
+  name: string;
+  columns: ScriptTableColumn[];
+  indexes: TableIndex[];
+  foreignKeys: TableForeignKey[];
+  checkConstraints: TableCheckConstraint[];
+  defaultConstraints: TableDefaultConstraint[];
+  triggers: TableTrigger[];
+}
+
+// Traces: BASED-RELATIONS — bulk FK-relationship introspection for the ER diagram.
+export interface RelationsTable {
+  schema: string;
+  name: string;
+  columns: Array<{ name: string; type: string; isPrimaryKey: boolean; isForeignKey: boolean; nullable: boolean }>;
+}
+export interface RelationsForeignKey {
+  name: string;
+  schema: string;
+  table: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+}
+export interface RelationsGraph {
+  tables: RelationsTable[];
+  foreignKeys: RelationsForeignKey[];
+}
+
+// Traces: BASED-TABLE-ORDERBY — server-side sort + filter for table browse.
+export type TableFilterOp = "eq" | "ne" | "gt" | "ge" | "lt" | "le" | "like" | "is-null" | "not-null";
+export interface TableFilter {
+  column: string;
+  op: TableFilterOp;
+  /** Absent for is-null / not-null. Rides as a typed parameter, never interpolated. */
+  value?: string | number;
+}
+export interface TableSort {
+  column: string;
+  dir: "asc" | "desc";
+}
+
 export interface TestResult {
   ok: boolean;
   error?: string;
@@ -152,29 +247,123 @@ export interface SearchRows {
   rows: WireValue[][];
 }
 
-/** Vector (semantic) search. Supply `vector` (a raw query embedding) or `query` (text — requires the
- *  table to have a registered embedding function). `where` is an engine filter predicate, not SQL DML. */
-export interface VectorSearchParams {
+export type LanceSearchMode = "text" | "vector" | "hybrid";
+
+/** A resolved (secret-fetched) embedding backend — never carries a bare profile id past the server
+ *  route boundary; the wire request only ever has `embeddingProfileId`. */
+export interface ResolvedEmbeddingProfile {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+}
+
+/** How a reranker profile's endpoint is called (BASED-LANCE-RERANK-OPENAI). `rerank` = the classic
+ *  Cohere/TEI `POST {baseUrl}/rerank` shape; `openai` = one chat-completions call per document,
+ *  scoring yes/no logprobs (the Qwen3-Reranker causal-LM trick). Absent = `rerank` (legacy). */
+export type RerankerApi = "rerank" | "openai";
+
+/** A resolved reranker backend (Cohere/TEI rerank endpoint, or an OpenAI-compatible
+ *  chat-completions endpoint scored via logprobs — see RerankerApi). */
+export interface ResolvedRerankerProfile {
+  baseUrl: string;
+  model?: string;
+  apiKey?: string;
+  api?: RerankerApi;
+  /** openai api only: the Qwen3-Reranker task instruction (`<Instruct>:` line). Default:
+   *  "Given a web search query, retrieve relevant passages that answer the query". */
+  instruction?: string;
+}
+
+/** Per-run knobs for the external rerank call, independent of which profile is selected. */
+export interface RerankerRunOptions {
+  /** How many of the sampleSize candidates the endpoint scores/returns (Cohere/TEI `top_n`;
+   *  applied based-side after scoring in the openai api). */
+  topN?: number;
+  /** Passed through if the endpoint accepts it; harmless no-op otherwise. Ignored by the openai
+   *  api, which always scores at temperature 0. */
+  temperature?: number;
+}
+
+/** Wire-level unified search request (server route body + agent tool params) — carries profile
+ *  *ids*, not resolved secrets. Vector (semantic), full-text (keyword), and hybrid search all go
+ *  through this one shape; `where` is an engine filter predicate, not SQL DML, and applies to all
+ *  three modes. */
+export interface LanceSearchRequest {
+  schema?: string;
   table: string;
-  vector?: number[];
+  mode: LanceSearchMode;
+  /** Text query. Required for text/hybrid; for vector mode, required unless `vector` is given. */
   query?: string;
-  k?: number;
-  columns?: string[];
-  where?: string;
-}
-
-/** Full-text (keyword) search over an FTS index. */
-export interface TextSearchParams {
-  table: string;
-  query: string;
-  k?: number;
-  columns?: string[];
-}
-
-/** Hybrid search combines vector + full-text with reranking. `vector` is optional when the table has
- *  a registered embedding function (the text `query` is embedded natively). */
-export interface HybridSearchParams extends TextSearchParams {
+  /** Raw query embedding. If given for vector/hybrid, `embeddingProfileId` is not consulted. */
   vector?: number[];
+  /** Prefilter predicate (LanceDB `where`, not SQL DML) — supported on all three modes. */
+  where?: string;
+  columns?: string[];
+  /** Initial candidate pool fetched via the native search, before reranking. Default 50. */
+  sampleSize?: number;
+  /** Final row count after reranking/filtering (== k). Default 10, capped by sampleSize. */
+  keepSize?: number;
+  embeddingProfileId?: string;
+  rerankerProfileId?: string;
+  rerankerOptions?: RerankerRunOptions;
+  /** Column supplying "document" text sent to the rerank endpoint. Defaults to a heuristic
+   *  (first non-vector string column). */
+  rerankTextColumn?: string;
+  /** Drop rows whose final score is worse than this absolute threshold. */
+  floor?: number;
+  /** Drop rows whose final score trails the #1 result's score by more than this. */
+  delta?: number;
+  // Traces: BASED-LANCE-SEARCH-KNOBS — Lance SDK vector-query tuning knobs. Vector/hybrid modes
+  // only; combining any of them with mode:"text" throws before querying. All are no-ops on an
+  // unindexed column (exact search) except distanceRange, which always bounds.
+  /** Distance metric for the query. With an ANN index, the index's own metric governs — a
+   *  mismatched value gives surprising scores (see the lance-search skill). */
+  distanceType?: "l2" | "cosine" | "dot";
+  /** IVF partitions to probe — the primary recall/latency dial. */
+  nprobes?: number;
+  /** Re-rank this×k candidates with exact vectors — the standard recall fixup. */
+  refineFactor?: number;
+  /** HNSW candidate-list size (the HNSW equivalent of nprobes). */
+  ef?: number;
+  /** Apply `where` AFTER the ANN search instead of prefiltering. */
+  postfilter?: boolean;
+  /** Skip the ANN index entirely: exact ground-truth search. */
+  bypassVectorIndex?: boolean;
+  /** Engine-side score bounds (complements based-side floor/delta). */
+  distanceRangeLower?: number;
+  distanceRangeUpper?: number;
+}
+
+/** Adapter-level params: same shape as LanceSearchRequest, but with resolved embedding/reranker
+ *  backends instead of ids. Only server.ts (and the agent tools) build this from a request. */
+export interface LanceSearchParams extends Omit<LanceSearchRequest, "embeddingProfileId" | "rerankerProfileId"> {
+  embeddingProfile?: ResolvedEmbeddingProfile;
+  rerankerProfile?: ResolvedRerankerProfile;
+}
+
+// Traces: BASED-EMBED-VECTORS — a full-precision sample of one vector column plus the table's
+// non-vector cells, fetched for the Embeddings visualization. Unlike every other read path, the
+// vectors here are NOT summarized to a preview: `vectors` is the raw n×dim row-major float block.
+export interface VectorSampleColumn {
+  name: string;
+  type: string;
+}
+
+export interface VectorSampleResult {
+  /** Vector dimension (fixed-size-list size of the sampled column). */
+  dim: number;
+  /** Rows actually sampled (vectors.length / dim); rows with null/ragged vectors are skipped. */
+  count: number;
+  /** Total rows in the table, so the UI can say "5,000 of 182,340". */
+  totalRows: number;
+  /** True when count < totalRows (limit, row cap, or byte budget kicked in). */
+  sampled: boolean;
+  /** Non-vector columns included in `rows`, in cell order. */
+  columns: VectorSampleColumn[];
+  /** count × columns.length JSON-safe cells (strings capped to textCap). */
+  rows: unknown[][];
+  /** Row-major count×dim float block. Excluded from the JSON header on the wire. */
+  vectors: Float32Array;
 }
 
 /** What an engine can do. Consumers (server endpoints, UI affordances, the agent surface) gate on
@@ -184,14 +373,17 @@ export interface HybridSearchParams extends TextSearchParams {
 export interface EngineCapabilities {
   /** Arbitrary SQL via execute() and the raw-SQL editor. */
   sql: boolean;
-  /** Nearest-neighbour vector search. */
-  vectorSearch: boolean;
-  /** Full-text (keyword) search over an FTS index. */
-  fullTextSearch: boolean;
-  /** Combined vector + full-text search with reranking. */
-  hybridSearch: boolean;
+  /** Vector / keyword / hybrid search via search(). */
+  search: boolean;
   /** Row writes via runCommands() / the editable grid. */
   write: boolean;
+  /** Server-side ORDER BY / WHERE on readTablePage (BASED-TABLE-ORDERBY). False on unordered
+   *  engines (LanceDB) — the Data tab's headers stay non-interactive there. */
+  orderedBrowse: boolean;
+  /** Object DDL scripting: getTableDetails + the T-SQL scripter (BASED-TABLE-DETAILS). */
+  script: boolean;
+  /** FK-relationship introspection for the ER diagram (BASED-RELATIONS). */
+  relations: boolean;
 }
 
 export interface DatabaseAdapter {
@@ -207,10 +399,21 @@ export interface DatabaseAdapter {
   listObjects(): Promise<DbObject[]>;
   getTableColumns(schema: string, table: string): Promise<TableColumn[]>;
   /** Read a page of a table's rows ordered by a stable key (PK if present, else the first column),
-   *  capped by the adapter's row cap. */
-  readTablePage(schema: string, table: string, opts: { offset: number; limit: number }): Promise<TablePage>;
+   *  capped by the adapter's row cap. Engines with `orderedBrowse` additionally honor a user sort
+   *  (stable-key tiebreak appended) and parameterized filters (BASED-TABLE-ORDERBY). */
+  readTablePage(
+    schema: string,
+    table: string,
+    opts: { offset: number; limit: number; orderBy?: TableSort[]; filters?: TableFilter[] },
+  ): Promise<TablePage>;
   /** SQL definition text (CREATE VIEW/PROCEDURE/FUNCTION body). Present when capabilities.sql is true. */
   getObjectDefinition?(schema: string, name: string): Promise<string | null>;
+  /** Full table introspection for scripting + the enriched Details view (BASED-TABLE-DETAILS).
+   *  Present when capabilities.script is true. */
+  getTableDetails?(schema: string, name: string): Promise<TableDetails>;
+  /** Bulk tables + FK edges for the ER diagram (BASED-RELATIONS). Present when
+   *  capabilities.relations is true. */
+  getRelations?(schemaFilter?: string): Promise<RelationsGraph>;
   /** Stored procedure / function parameter list. Present when capabilities.sql is true. */
   getRoutineParameters?(schema: string, name: string): Promise<RoutineParameter[]>;
   /** Run parameterized commands in a single all-or-nothing transaction. On an engine without `write`
@@ -218,11 +421,15 @@ export interface DatabaseAdapter {
   runCommands(commands: DbCommand[]): Promise<CommandResult>;
   /** Stream a query. On an engine without `sql` capability this emits an error chunk rather than running. */
   execute(sql: string, onChunk: (chunk: QueryChunk) => void, opts?: ExecuteOptions): QueryExecution;
-  /** Nearest-neighbour vector search. Present when capabilities.vectorSearch is true. */
-  vectorSearch?(params: VectorSearchParams): Promise<SearchRows>;
-  /** Full-text (keyword) search. Present when capabilities.fullTextSearch is true. */
-  textSearch?(params: TextSearchParams): Promise<SearchRows>;
-  /** Combined vector + full-text search with reranking. Present when capabilities.hybridSearch is true. */
-  hybridSearch?(params: HybridSearchParams): Promise<SearchRows>;
+  /** Unified vector/keyword/hybrid search, with based-side prefiltering, optional external
+   *  reranking, and floor/delta score filtering. Present when capabilities.search is true. */
+  search?(params: LanceSearchParams): Promise<SearchRows>;
+  /** Full-precision sample of one vector column for the Embeddings visualization
+   *  (BASED-EMBED-VECTORS). Present only on engines that store vectors (LanceDB). */
+  readVectorSample?(
+    schema: string,
+    table: string,
+    opts: { column: string; limit: number; textCap?: number },
+  ): Promise<VectorSampleResult>;
   onStatus(cb: (status: ConnectionStatus, detail?: string) => void): void;
 }

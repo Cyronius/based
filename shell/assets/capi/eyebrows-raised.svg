@@ -1,0 +1,7 @@
+<svg viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Whole brow lifts ~4px. This is Capy's version of "surprised." -->
+  <g id="eyebrows-raised">
+    <path d="M123,116 Q143,104 163,116" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <path d="M237,112 Q257,100 277,112" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

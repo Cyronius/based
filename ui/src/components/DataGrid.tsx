@@ -1,32 +1,30 @@
-// Shared canvas grid: theme wiring, column resize + content-aware auto-fit, and a hover tooltip for
-// cells whose text is cut off by their column width. Used by both ResultGrid (SQL query results) and
-// TableDataGrid (Data tab, mssql + LanceDB). Selection state and cell-value semantics (NULL/dirty/
-// numeric formatting) stay with the caller — this component only owns grid chrome.
+// Shared canvas grid: theme wiring, column resize + content-aware auto-fit. Used by both ResultGrid
+// (SQL query results) and TableDataGrid (Data tab, mssql + LanceDB). Selection state and cell-value
+// semantics (NULL/dirty/numeric formatting) stay with the caller — this component only owns grid chrome.
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DataEditor,
-  measureTextCached,
   type DataEditorProps,
   type EditableGridCell,
   type GridCell,
   type GridColumn,
-  type GridMouseEventArgs,
   type GridSelection,
   type Item,
 } from "@glideapps/glide-data-grid";
 import { useStore } from "../store";
 import { gridThemeFromCss } from "../theme";
-import { computeAutoFitWidths, GRID_COL_MAX_WIDTH, GRID_COL_MIN_WIDTH, measureCtx } from "../gridAutoFit";
+import { computeAutoFitWidths, GRID_COL_MAX_WIDTH, GRID_COL_MIN_WIDTH } from "../gridAutoFit";
 
 export interface DataGridColumnDef {
   id: string;
   title: string;
+  /** Show Glide's header menu icon; clicks arrive via onHeaderMenuClick (BASED-GRID-FILTER). */
+  hasMenu?: boolean;
 }
 
-interface HoverTooltip {
-  x: number;
-  y: number;
-  text: string;
+/** Full display text for a cell, e.g. to show in the Cell viewer or feed into an activation handler. */
+export function cellDisplayText(cell: GridCell): string {
+  return "displayData" in cell && typeof cell.displayData === "string" ? cell.displayData : "";
 }
 
 const AUTOFIT_DEBOUNCE_MS = 200;
@@ -42,6 +40,9 @@ export function DataGrid({
   rowMarkers = "clickable-number",
   rowSelectionMode,
   onFitColumns,
+  onCellActivated,
+  onHeaderClicked,
+  onHeaderMenuClick,
 }: {
   columns: DataGridColumnDef[];
   rowCount: number;
@@ -57,14 +58,18 @@ export function DataGrid({
   /** Registration callback (same idiom as ResultGrid's onSelectionData): hands the caller a
    *  fit-to-content function to store and invoke from a toolbar button. */
   onFitColumns?: (fn: () => void) => void;
+  /** Fires on double-click, Enter, or Space on a cell — used to open the Cell viewer tab. */
+  onCellActivated?: (cell: Item) => void;
+  /** Header click (sort cycling — BASED-GRID-SORT). */
+  onHeaderClicked?: (colIndex: number) => void;
+  /** Header menu-icon click with the header's screen bounds (filter popover — BASED-GRID-FILTER). */
+  onHeaderMenuClick?: (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => void;
 }) {
   const themeId = useStore((s) => s.theme);
   const gridTheme = useMemo(() => gridThemeFromCss(), [themeId]);
 
   const [manualWidths, setManualWidths] = useState<Record<string, number>>({});
   const [autoWidths, setAutoWidths] = useState<Record<string, number>>({});
-  const [hover, setHover] = useState<HoverTooltip | null>(null);
-  const hoverKeyRef = useRef<string | null>(null);
   const manualWidthsRef = useRef<Record<string, number>>({});
   const prevSigRef = useRef<string | null>(null);
 
@@ -114,7 +119,13 @@ export function DataGrid({
   }, [columnsSig, dataVersion, recompute]);
 
   const gridColumns = useMemo<GridColumn[]>(
-    () => columns.map((c) => ({ id: c.id, title: c.title, width: manualWidths[c.id] ?? autoWidths[c.id] ?? GRID_COL_MIN_WIDTH })),
+    () =>
+      columns.map((c) => ({
+        id: c.id,
+        title: c.title,
+        width: manualWidths[c.id] ?? autoWidths[c.id] ?? GRID_COL_MIN_WIDTH,
+        hasMenu: c.hasMenu,
+      })),
     [columns, manualWidths, autoWidths],
   );
 
@@ -128,43 +139,8 @@ export function DataGrid({
     [columns],
   );
 
-  const clearHover = useCallback(() => {
-    if (hoverKeyRef.current === null) return;
-    hoverKeyRef.current = null;
-    setHover(null);
-  }, []);
-
-  const handleMouseMove = useCallback(
-    (args: GridMouseEventArgs) => {
-      if (args.kind !== "cell") {
-        clearHover();
-        return;
-      }
-      const [col, row] = args.location;
-      const key = `${col}:${row}`;
-      if (hoverKeyRef.current === key) return;
-      hoverKeyRef.current = key;
-      const cell = getCellContent([col, row]);
-      const text = "displayData" in cell && typeof cell.displayData === "string" ? cell.displayData : "";
-      if (!text) {
-        setHover(null);
-        return;
-      }
-      const available = args.bounds.width - horizontalPadding * 2;
-      const measured = measureTextCached(text, measureCtx(), bodyFont).width;
-      if (measured <= available) {
-        setHover(null);
-        return;
-      }
-      // args.bounds is viewport-relative (canvas.getBoundingClientRect()-based) — matches
-      // position:fixed's coordinate space directly, no wrapper-rect math needed.
-      setHover({ x: args.bounds.x, y: args.bounds.y + args.bounds.height + 4, text });
-    },
-    [getCellContent, bodyFont, horizontalPadding, clearHover],
-  );
-
   return (
-    <div className="relative h-full w-full" onMouseLeave={clearHover}>
+    <div className="relative h-full w-full">
       <DataEditor
         columns={gridColumns}
         rows={rowCount}
@@ -182,18 +158,11 @@ export function DataGrid({
         gridSelection={gridSelection}
         onGridSelectionChange={onGridSelectionChange}
         onColumnResize={handleColumnResize}
-        onMouseMove={handleMouseMove}
-        onVisibleRegionChanged={clearHover}
+        onCellActivated={onCellActivated}
+        onHeaderClicked={onHeaderClicked ? (colIndex) => onHeaderClicked(colIndex) : undefined}
+        onHeaderMenuClick={onHeaderMenuClick ? (col, bounds) => onHeaderMenuClick(col, bounds) : undefined}
         minColumnWidth={GRID_COL_MIN_WIDTH}
       />
-      {hover && (
-        <div
-          className="fixed z-50 pointer-events-none max-w-md px-2 py-1 rounded border border-line bg-ink-950 text-paper text-[length:var(--fs-sm)] font-mono shadow-lg shadow-black/40 whitespace-pre-wrap break-words"
-          style={{ left: hover.x, top: hover.y }}
-        >
-          {hover.text}
-        </div>
-      )}
     </div>
   );
 }

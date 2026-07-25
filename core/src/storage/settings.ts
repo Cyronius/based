@@ -10,12 +10,21 @@ export interface AppSettings {
   rowPageSize: number;
   /** App-wide font-size multiplier (see ui/src/theme.ts). */
   fontScale: number;
+  /** Active AI provider profile id (see BASED-AI-PROVIDER-PROFILES); null until one exists. */
+  activeAiProfileId: string | null;
+  /** Explorer double-click action for tables/views (BASED-EXPLORER-ACTION). */
+  explorerTableAction: "details" | "data" | "sql" | "script-create";
+  /** Explorer double-click action for procedures/functions (no Data view). */
+  explorerRoutineAction: "details" | "script-create";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "ledger",
   rowPageSize: 500,
   fontScale: 1,
+  activeAiProfileId: null,
+  explorerTableAction: "details",
+  explorerRoutineAction: "details",
 };
 
 export class SettingsStore {

@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { ObjectExplorer } from "./ObjectExplorer";
+import { HistoryPanel } from "./HistoryPanel";
 import { ThemePicker } from "./ThemePicker";
+import { IconButton } from "./IconButton";
 import type { AuthType, ConnectionConfig } from "../api/types";
 import { engineOf } from "../api/types";
 
 const WIDTH_KEY = "based:leftRailWidth";
+// Traces: BASED-HISTORY-UI — which lower-pane view the rail shows, persisted across restarts.
+const RAIL_VIEW_KEY = "based:leftRailView";
 const MIN_WIDTH = 220;
 const MAX_WIDTH = 560;
 const DEFAULT_WIDTH = 288;
@@ -94,16 +98,17 @@ function ConnectionSelector() {
                 <div className="truncate">{c.name}</div>
                 <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c)}</div>
               </button>
-              <button
+              <IconButton
                 title="Edit connection"
-                className="px-2 py-2 text-faint opacity-0 group-hover:opacity-100 hover:text-brass transition-opacity"
+                aria-label="Edit connection"
+                className="mr-1 text-faint opacity-0 group-hover:opacity-100 hover:text-brass"
                 onClick={() => {
                   setOpen(false);
                   setDialog({ mode: "edit", connection: c });
                 }}
               >
                 ✎
-              </button>
+              </IconButton>
             </div>
           ))}
           <button
@@ -131,14 +136,22 @@ export function LeftRail() {
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const status = useStore((s) => s.status);
   const connections = useStore((s) => s.connections);
+  const capabilities = useStore((s) => s.capabilities);
+  const openDiagramTab = useStore((s) => s.openDiagramTab);
   const activeConn = connections.find((c) => c.id === activeConnectionId);
+  // The database selector is genuinely MSSQL-shaped (Lance has one "database"); the schema filter
+  // also serves base-folder LanceDB, whose subfolders populate `schemas` (BASED-LANCE-SQL-GATING).
   const sqlEngine = !activeConn || engineOf(activeConn) === "mssql";
+  const showSchemaFilter = sqlEngine || schemas.length > 0;
 
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft disabled:opacity-40";
 
   const [width, setWidth] = useState(loadWidth);
   const [dragging, setDragging] = useState(false);
+  const [railView, setRailView] = useState<"objects" | "history">(() =>
+    localStorage.getItem(RAIL_VIEW_KEY) === "history" ? "history" : "objects",
+  );
 
   useEffect(() => {
     if (!dragging) return;
@@ -189,26 +202,61 @@ export function LeftRail() {
             ))}
           </select>
         )}
-        {sqlEngine && (
-          <select
-            className={selectCls}
-            value={schemaFilter}
-            disabled={!activeConnectionId || status !== "connected"}
-            onChange={(e) => setSchemaFilter(e.target.value)}
-            title="Schema filter"
-          >
-            <option value="">All schemas</option>
-            {schemas.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+        {showSchemaFilter && (
+          <div className="flex items-center gap-1.5">
+            <select
+              className={selectCls}
+              value={schemaFilter}
+              disabled={!activeConnectionId || status !== "connected"}
+              onChange={(e) => setSchemaFilter(e.target.value)}
+              title="Schema filter"
+            >
+              <option value="">All schemas</option>
+              {schemas.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+            {/* Traces: BASED-DIAGRAM-UI — opens the ER diagram scoped to the current schema filter. */}
+            {capabilities?.relations && (
+              <IconButton
+                title="View ER diagram"
+                aria-label="View ER diagram"
+                className="shrink-0 text-faint hover:text-brass"
+                disabled={status !== "connected"}
+                onClick={() => openDiagramTab(schemaFilter)}
+              >
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+                  <rect x="1.5" y="2" width="5" height="4" rx="0.5" />
+                  <rect x="9.5" y="2" width="5" height="4" rx="0.5" />
+                  <rect x="5.5" y="10" width="5" height="4" rx="0.5" />
+                  <path d="M4 6v2.5h4M12 6v2.5H8" strokeLinecap="round" />
+                </svg>
+              </IconButton>
+            )}
+          </div>
         )}
       </div>
 
-      <div className="mt-3 flex-1 min-h-0 border-t border-line-soft">
-        <ObjectExplorer />
+      <div className="mt-3 px-3 flex items-center gap-1">
+        {(["objects", "history"] as const).map((v) => (
+          <button
+            key={v}
+            className={`px-2 py-1 text-[length:var(--fs-sm)] border-b-2 ${
+              railView === v ? "border-brass text-brass font-semibold" : "border-transparent text-faint hover:text-muted"
+            }`}
+            onClick={() => {
+              setRailView(v);
+              localStorage.setItem(RAIL_VIEW_KEY, v);
+            }}
+          >
+            {v === "objects" ? "Objects" : "History"}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0 border-t border-line-soft">
+        {railView === "objects" ? <ObjectExplorer /> : <HistoryPanel />}
       </div>
     </aside>
   );

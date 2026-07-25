@@ -30,8 +30,13 @@ function toRecord(r: WindowStateRow): WindowStateRecord {
 export class WindowStateStore {
   constructor(private readonly db: Database) {}
 
+  // "default" is the sid client/server fall back to when a request carries none (e.g. a browser
+  // hit against the dev server directly, bypassing the shell's per-window sid) — it's a shared
+  // bucket, not a real window, so it must never be offered back for restore.
   list(): WindowStateRecord[] {
-    const rows = this.db.query<WindowStateRow, []>("SELECT * FROM window_state ORDER BY updated_at").all();
+    const rows = this.db
+      .query<WindowStateRow, []>("SELECT * FROM window_state WHERE sid != 'default' ORDER BY updated_at")
+      .all();
     return rows.map(toRecord);
   }
 
@@ -41,6 +46,11 @@ export class WindowStateStore {
   }
 
   save(sid: string, patch: Partial<Omit<WindowStateRecord, "sid" | "updatedAt">>): WindowStateRecord {
+    if (sid === "default") {
+      // Never persist the shared fallback sid — a sid-less request must not leave state behind
+      // for a later real launch to pick up as if it were a genuine window.
+      return { sid, connectionId: null, activeTabId: null, schemaFilter: "", updatedAt: new Date().toISOString() };
+    }
     const current = this.get(sid);
     const next: Omit<WindowStateRecord, "updatedAt"> = {
       sid,

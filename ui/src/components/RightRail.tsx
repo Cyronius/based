@@ -1,23 +1,31 @@
-// Traces: BASED-UI-LAYOUT, BASED-CHAT-UI
-// The right-hand rail now hosts Ask Capi (Phase 2). The agent provider stays mounted
-// while a connection is active so the thread survives collapse/expand.
-import { useEffect, useState } from "react";
+// Traces: BASED-UI-LAYOUT, BASED-CHAT-UI, BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS
+// The right-hand rail hosts Ask Capi. Chat is PER-TAB: each tab resolves to its own thread
+// (originThreadId ?? tab:{connectionId}:{tabId}, fallback conn:{connectionId}), and the chat
+// session remounts keyed on that thread id — the AgentClient's threadId is fixed at construction
+// (initialThreadId), so a keyed remount IS the thread switch. In-session switches restore from a
+// module-level message cache; cold starts seed from the server's thread-history endpoint. A switch
+// during a streaming run is deferred (banner) until the run finishes — never kill an in-flight run.
+// AI provider setup and agent instructions live in the gear-icon settings popover
+// (BASED-AI-PROVIDER-PROFILES).
+import { useEffect, useRef, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
-import {
-  token,
-  sessionId,
-  AGENT_BASE_URL,
-  aiGetConfig,
-  aiSaveConfig,
-  getAgentInstructions,
-  saveAgentInstructionSet,
-  setActiveAgentInstructionSet,
-  deleteAgentInstructionSet,
-} from "../api/client";
-import type { AiConfig, AgentInstructionsConfig, InstructionSet } from "../api/types";
+import { useActivity } from "../agent/activityStore";
+import { token, sessionId, AGENT_BASE_URL } from "../api/client";
 import { capiTools } from "../agent/capiTools";
+import { buildTabContext } from "../agent/tabContext";
+import {
+  agentThreadId,
+  deleteThread,
+  fetchThreadHistory,
+  pruneRestored,
+  resolveThreadId,
+  setActiveChatThreadId,
+  threadMessageCache,
+} from "../agent/threads";
+import { CapiAvatar } from "./CapiAvatar";
 import { CapiChat } from "./CapiChat";
+import { IconButton } from "./IconButton";
 
 const WIDTH_KEY = "based:rightRailWidth";
 const MIN_WIDTH = 280;
@@ -29,256 +37,163 @@ function loadWidth(): number {
   return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
 }
 
-function ConfigPanel({ onClose }: { onClose: () => void }) {
-  const [cfg, setCfg] = useState<AiConfig | null>(null);
-  const [key, setKey] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    void aiGetConfig().then(setCfg);
-  }, []);
-
-  if (!cfg) return null;
-  const save = async () => {
-    setSaving(true);
-    await aiSaveConfig({ ...cfg, key: key ? key : undefined }).catch(() => {});
-    setSaving(false);
-    onClose();
-  };
-
+function NewChatIcon() {
   return (
-    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[length:var(--fs-base)] space-y-2 fade-up">
-      <div className="ledger-label">AI provider</div>
-      <label className="block">
-        <span className="text-faint">Base URL</span>
-        <input
-          className="mt-0.5 w-full rounded border border-line bg-ink-950 px-2 py-1 text-paper"
-          value={cfg.baseUrl}
-          onChange={(e) => setCfg({ ...cfg, baseUrl: e.target.value })}
-        />
-      </label>
-      <label className="block">
-        <span className="text-faint">Model</span>
-        <input
-          className="mt-0.5 w-full rounded border border-line bg-ink-950 px-2 py-1 text-paper"
-          value={cfg.model}
-          onChange={(e) => setCfg({ ...cfg, model: e.target.value })}
-        />
-      </label>
-      <label className="block">
-        <span className="text-faint">API key {cfg.hasKey ? "(stored)" : "(optional)"}</span>
-        <input
-          type="password"
-          className="mt-0.5 w-full rounded border border-line bg-ink-950 px-2 py-1 text-paper"
-          placeholder={cfg.hasKey ? "•••••• — leave blank to keep" : "none needed for local"}
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-        />
-      </label>
-      <div className="flex gap-2 pt-1">
-        <button className="rounded bg-brass px-3 py-1 text-ink-950 disabled:opacity-40" onClick={() => void save()} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button className="rounded border border-line px-3 py-1 text-muted hover:text-paper" onClick={onClose}>
-          Cancel
-        </button>
-      </div>
-    </div>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
   );
 }
 
-/** A collapsible textarea box — Core/SQL Server persona/LanceDB persona can each be large, so they
- *  start collapsed rather than filling the panel (BASED-AGENT-INSTRUCTIONS-UI). */
-function InstructionsField({
-  label,
-  value,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  disabled: boolean;
-  onChange: (v: string) => void;
-}) {
+function CapiHeader({ toggle, onNewChat, newChatDisabled }: { toggle: () => void; onNewChat?: () => void; newChatDisabled?: boolean }) {
   return (
-    <details className="rounded border border-line">
-      <summary className="cursor-pointer select-none px-2 py-1 text-faint">{label}</summary>
-      <textarea
-        className="w-full resize-y rounded-b border-t border-line bg-ink-950 px-2 py-1 text-paper disabled:opacity-60"
-        rows={6}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </details>
-  );
-}
-
-function InstructionsPanel() {
-  const [cfg, setCfg] = useState<AgentInstructionsConfig | null>(null);
-  const [selectedId, setSelectedId] = useState<string>("default");
-  const [draft, setDraft] = useState<InstructionSet | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const applyConfig = (next: AgentInstructionsConfig, preferId?: string) => {
-    setCfg(next);
-    setSelectedId(preferId ?? next.activeId);
-  };
-
-  useEffect(() => {
-    void getAgentInstructions().then((c) => applyConfig(c));
-  }, []);
-
-  useEffect(() => {
-    const selected = cfg?.sets.find((s) => s.id === selectedId);
-    if (selected) setDraft(selected);
-  }, [cfg, selectedId]);
-
-  if (!cfg || !draft) return null;
-  const selected = cfg.sets.find((s) => s.id === selectedId)!;
-
-  const selectSet = async (id: string) => {
-    setBusy(true);
-    const next = await setActiveAgentInstructionSet(id).catch(() => cfg);
-    applyConfig(next, id);
-    setBusy(false);
-  };
-
-  const save = async () => {
-    setBusy(true);
-    const next = await saveAgentInstructionSet({
-      id: selected.id,
-      name: draft.name,
-      core: draft.core,
-      mssqlPersona: draft.mssqlPersona,
-      lancePersona: draft.lancePersona,
-    }).catch(() => cfg);
-    applyConfig(next, selectedId);
-    setBusy(false);
-  };
-
-  const duplicate = async () => {
-    setBusy(true);
-    const next = await saveAgentInstructionSet({
-      name: `${selected.name} copy`,
-      core: selected.core,
-      mssqlPersona: selected.mssqlPersona,
-      lancePersona: selected.lancePersona,
-    }).catch(() => cfg);
-    const created = next.sets.find((s) => s.editable && !cfg.sets.some((existing) => existing.id === s.id));
-    applyConfig(next, created?.id ?? next.activeId);
-    setBusy(false);
-  };
-
-  const remove = async () => {
-    setBusy(true);
-    const next = await deleteAgentInstructionSet(selected.id).catch(() => cfg);
-    applyConfig(next);
-    setBusy(false);
-  };
-
-  return (
-    <div className="border-b border-line-soft bg-ink-900 pl-3 pr-4 py-3 text-[length:var(--fs-base)] space-y-2 fade-up">
-      <div className="ledger-label">Agent instructions</div>
-      <label className="block">
-        <span className="text-faint">Set</span>
-        <select
-          className="mt-0.5 w-full rounded border border-line bg-ink-950 px-2 py-1 text-paper"
-          value={selectedId}
-          onChange={(e) => void selectSet(e.target.value)}
-          disabled={busy}
+    <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
+      <button
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-faint hover:bg-ink-800 hover:text-brass"
+        title="Collapse Capi"
+        onClick={toggle}
+      >
+        <span>›</span>
+      </button>
+      <span className="font-sans text-[length:var(--fs-md)] font-semibold text-faint">Ask Capi</span>
+      {onNewChat && (
+        <button
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-faint hover:bg-ink-800 hover:text-brass disabled:opacity-40"
+          title="New chat"
+          onClick={onNewChat}
+          disabled={newChatDisabled}
         >
-          {cfg.sets.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {!selected.editable && <p className="text-faint italic">Default instructions are read-only — duplicate to customize.</p>}
-      <InstructionsField
-        label="Core (shared)"
-        value={draft.core}
-        disabled={!selected.editable}
-        onChange={(v) => setDraft({ ...draft, core: v })}
-      />
-      <InstructionsField
-        label="SQL Server persona"
-        value={draft.mssqlPersona}
-        disabled={!selected.editable}
-        onChange={(v) => setDraft({ ...draft, mssqlPersona: v })}
-      />
-      <InstructionsField
-        label="LanceDB persona"
-        value={draft.lancePersona}
-        disabled={!selected.editable}
-        onChange={(v) => setDraft({ ...draft, lancePersona: v })}
-      />
-      <div className="flex flex-wrap gap-2 pt-1">
-        {selected.editable && (
-          <button
-            className="rounded bg-brass px-3 py-1 text-ink-950 disabled:opacity-40"
-            onClick={() => void save()}
-            disabled={busy}
-          >
-            Save
-          </button>
-        )}
-        <button className="rounded border border-line px-3 py-1 text-muted hover:text-paper disabled:opacity-40" onClick={() => void duplicate()} disabled={busy}>
-          Duplicate as new set
+          <NewChatIcon />
         </button>
-        {selected.editable && (
-          <button className="rounded border border-err/50 px-3 py-1 text-err hover:bg-err/10 disabled:opacity-40" onClick={() => void remove()} disabled={busy}>
-            Delete
-          </button>
-        )}
-      </div>
-    </div>
+      )}
+    </header>
   );
 }
 
-function CapiRail() {
+// One mounted chat session, pinned to a single thread id. Remounted (via key) to switch threads.
+function ChatSession({
+  toggle,
+  threadId,
+  connectionId,
+  onStreamingChange,
+  deferredTabTitle,
+}: {
+  toggle: () => void;
+  threadId: string;
+  connectionId: string;
+  onStreamingChange: (streaming: boolean) => void;
+  deferredTabTitle: string | null;
+}) {
   const [err, setErr] = useState<string | null>(null);
-  const [showConfig, setShowConfig] = useState(false);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
     agentId: "capi",
     tools: capiTools,
     tokenProvider: async () => token,
     sendFullHistory: false,
+    initialThreadId: threadId,
     configParams: { sid: sessionId },
+    // Traces: BASED-AGENT-TAB-CONTEXT — the workspace snapshot rides every send (runAgent AND the
+    // frontend-tool-runner's chained submitToolResults), rendered server-side into instructions.
+    buildForwardedProps: () => ({ tabContext: buildTabContext(useStore.getState()) }),
+    // Restored-history messages stay off the wire — the server already has them under real ids.
+    pruneOutboundMessages: pruneRestored,
     onError: (e) => setErr(e.message),
+    onLifecycleEvent: (e) => useActivity.getState().onLifecycle(e),
   });
+
+  const seededRef = useRef(false);
+  useEffect(() => {
+    setActiveChatThreadId(threadId);
+    const cached = threadMessageCache.get(threadId);
+    if (cached?.length) {
+      agent.setMessages(cached);
+      seededRef.current = true;
+    } else {
+      void fetchThreadHistory(threadId, connectionId).then((msgs) => {
+        // Don't clobber a conversation the user already started while history was in flight.
+        if (msgs.length > 0 && !seededRef.current && agent.messages.length === 0) agent.setMessages(msgs);
+        seededRef.current = true;
+      });
+    }
+    return () => setActiveChatThreadId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: the component is keyed by threadId
+  }, []);
+
+  // Mirror the live conversation into the cache so switching back to this tab is instant.
+  useEffect(() => {
+    if (agent.messages.length > 0) threadMessageCache.set(threadId, agent.messages);
+  }, [agent.messages, threadId]);
+
+  useEffect(() => {
+    onStreamingChange(agent.isStreaming);
+  }, [agent.isStreaming, onStreamingChange]);
+
+  const newChat = () => {
+    const state = useStore.getState();
+    const { activeTabId } = state;
+    useActivity.getState().clear();
+    if (activeTabId && threadId !== agentThreadId(connectionId, activeTabId)) {
+      // Aliased (agent-opened) tab: detach to its own fresh thread instead of wiping the shared
+      // conversation out from under the origin tab. The alias change remounts the session.
+      state.setTabOriginThread(activeTabId, null);
+      return;
+    }
+    // NOTE: never endSession() here — it would randomize the threadId; the tab's thread id is
+    // stable, so "New chat" = delete the server-side thread + clear the local view.
+    deleteThread(threadId);
+    agent.clearMessages();
+  };
 
   return (
     <AgentProvider value={agent}>
       <div className="flex flex-1 min-h-0 min-w-0 flex-col">
-        <header className="flex items-center justify-between border-b border-line-soft pl-3 pr-4 py-4">
-          <span className="flex items-center gap-2.5 font-sans text-[length:var(--fs-md)] font-semibold text-faint">
-            <img src="/capi.png" alt="" className="h-8 w-8 rounded-full object-cover" />
-            Ask Capi
-          </span>
-          <button className="text-faint hover:text-brass text-base" title="AI provider settings" onClick={() => setShowConfig((v) => !v)}>
-            ⚙
-          </button>
-        </header>
-        {showConfig && (
-          <>
-            <ConfigPanel onClose={() => setShowConfig(false)} />
-            <InstructionsPanel />
-          </>
+        <CapiHeader toggle={toggle} onNewChat={newChat} newChatDisabled={agent.isStreaming} />
+        {deferredTabTitle && (
+          <div className="border-b border-brass/30 bg-brass/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-brass">
+            Capi is finishing in <span className="font-semibold">{deferredTabTitle}</span> — the chat will follow when it's done.
+          </div>
         )}
         {err && (
           <div className="flex items-start gap-2 border-b border-err/30 bg-err/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-err">
             <span className="flex-1 font-mono break-words">{err}</span>
-            <button className="text-muted hover:text-paper" onClick={() => setErr(null)}>
+            <IconButton size="sm" title="Dismiss" aria-label="Dismiss error" className="text-muted hover:text-paper" onClick={() => setErr(null)}>
               ✕
-            </button>
+            </IconButton>
           </div>
         )}
         <CapiChat />
       </div>
     </AgentProvider>
+  );
+}
+
+function CapiRail({ toggle, connectionId }: { toggle: () => void; connectionId: string }) {
+  const tabs = useStore((s) => s.tabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const desiredThreadId = resolveThreadId(connectionId, tabs, activeTabId);
+  const [mountedThreadId, setMountedThreadId] = useState(desiredThreadId);
+  const [streaming, setStreaming] = useState(false);
+
+  // Follow the active tab's thread — but never mid-run: remounting would kill the stream, so a
+  // switch while streaming is deferred until the run settles (the banner names the busy tab).
+  useEffect(() => {
+    if (!streaming && mountedThreadId !== desiredThreadId) setMountedThreadId(desiredThreadId);
+  }, [streaming, desiredThreadId, mountedThreadId]);
+
+  const mountedTab = tabs.find((t) => resolveThreadId(connectionId, tabs, t.id) === mountedThreadId);
+  const deferredTabTitle = mountedThreadId !== desiredThreadId ? (mountedTab?.title ?? "another tab") : null;
+
+  return (
+    <ChatSession
+      key={mountedThreadId}
+      threadId={mountedThreadId}
+      connectionId={connectionId}
+      toggle={toggle}
+      onStreamingChange={setStreaming}
+      deferredTabTitle={deferredTabTitle}
+    />
   );
 }
 
@@ -320,29 +235,32 @@ export function RightRail() {
           }}
         />
       )}
-      <button
-        className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-        title={open ? "Collapse Capi" : "Expand Capi"}
-        onClick={toggle}
-      >
-        <span className="text-[length:var(--fs-sm)]">{open ? "›" : "‹"}</span>
-        {!open && (
-          <span className="ledger-label" style={{ writingMode: "vertical-rl" }}>
+      {!open && (
+        <button
+          className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
+          title="Expand Capi"
+          onClick={toggle}
+        >
+          <span className="text-[length:var(--fs-sm)]">‹</span>
+          <span className="ledger-label" style={{ writingMode: "vertical-rl", color: "var(--color-paper-dim)" }}>
             capi
           </span>
-        )}
-      </button>
+        </button>
+      )}
       {/* Kept mounted while connected so the chat thread survives collapse; hidden when closed. */}
       {connected ? (
         <div className={open ? "flex flex-1 min-w-0" : "hidden"}>
-          <CapiRail />
+          <CapiRail toggle={toggle} connectionId={connected} />
         </div>
       ) : (
         open && (
-          <div className="flex-1 min-w-0 p-4 pr-5 fade-up">
-            <img src="/capi.png" alt="" className="h-36 w-36 rounded-full object-cover overflow-visible mb-3" />
-            <div className="ledger-label mb-3">Capi</div>
-            <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
+          <div className="flex flex-1 min-w-0 flex-col fade-up">
+            <CapiHeader toggle={toggle} />
+            <div className="p-4 pr-5">
+              <CapiAvatar className="w-36 h-auto mb-3" />
+              <div className="ledger-label mb-3">Capi</div>
+              <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
+            </div>
           </div>
         )
       )}

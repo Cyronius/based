@@ -224,11 +224,12 @@ Every user-initiated execution shall append a history row (connection, database,
 **Applies to:** based (core)
 **Test category:** integration
 
-Tabs of every kind — query (content, optional file path), table/view (schema, table, object type, current sub-view), and routine (schema, name, routine type) — shall persist automatically, scoped by connection id and kind-specific metadata, so a restart restores each connection's full tab set.
+Tabs of every kind — query (content, optional file path), table/view (schema, table, object type, current sub-view), and routine (schema, name, routine type) — shall persist automatically, scoped by connection id and kind-specific metadata, so a restart restores each connection's full tab set. Persistence is a per-connection **replace**: saving a connection's tabs mirrors the currently-open set, pruning any previously-persisted tab (of any kind) that is no longer open, so restore never accumulates tabs beyond what was open at exit.
 
 **Acceptance criteria:**
 - Upsert one tab of each kind (query, table, routine) for a connection, each with its kind-specific `meta` → list for that connection returns all three in order with `kind` and `meta` intact after store reopen
 - Delete removes a tab; tabs are scoped per connection id
+- `replaceForConnection(connId, subset)` prunes persisted tabs absent from `subset` (of any kind) and keeps those present, in order; an empty array clears the connection; other connections are untouched; result survives store reopen
 
 ### BASED-WINDOW-RESTORE: Per-window session restore
 **Applies to:** based (core, ui, shell)
@@ -309,6 +310,93 @@ A result set shall export to a valid `.xlsx` (header row + data rows) that round
 
 ---
 
+## Import
+
+### BASED-IMPORT-CSV-PARSE: Streaming RFC-4180 CSV parser
+**Applies to:** based (core)
+**Test category:** unit
+
+A hand-rolled streaming parser (`core/src/import/csvParse.ts`, no dependency — mirrors the
+hand-rolled export side): `CsvParser.push(chunk)` yields completed rows, `finish()` flushes the
+last unterminated row. Handles quoted fields, `""` escapes, embedded commas/newlines, CRLF and LF,
+and fields/rows spanning chunk boundaries. Ragged rows are returned as-is (the runner validates
+width).
+
+**Acceptance criteria:**
+- `a,"b,1","he said ""hi"""\r\nc,,d` → two rows with the quoted comma, escaped quote, and empty
+  field intact
+- A quoted field containing `\r\n` stays one field; a row split across two `push` chunks (even
+  mid-quote) parses identically to one chunk
+- `finish()` emits a final row without a trailing newline; empty input → no rows
+
+### BASED-IMPORT-CSV-COERCE: Per-column value coercion
+**Applies to:** based (core)
+**Test category:** unit
+
+`coerceCsv(col, raw, { nullEmpty })` maps a CSV string to a wire value for the column type:
+numeric types parse to validated numbers (non-numeric → a descriptive error, not NaN); `bit`
+accepts 0/1/true/false (case-insensitive); an empty string becomes NULL when `nullEmpty` and the
+column is nullable, an error when the column is NOT NULL and non-defaulted otherwise passes as ""
+for string types; all other types pass through as strings (NVarChar implicit conversion — the
+established runCommands pattern).
+
+**Acceptance criteria:**
+- int `"42"` → 42; int `"x"` → error naming the column; decimal `"1.5"` → 1.5
+- bit `"true"`/`"1"` → 1; bit `"no"` → error
+- empty + nullable + nullEmpty → null; empty + nvarchar + !nullEmpty → ""
+
+### BASED-IMPORT-CSV-RUN: Batched transactional import
+**Applies to:** based (core)
+**Test category:** integration
+
+`POST /api/import/csv/inspect { path, sampleRows? }` returns the header row and a sample for the
+mapping UI. `POST /api/import/csv/run { path, schema, table, hasHeader, mapping, nullEmpty,
+skipBadRows }` streams NDJSON progress (`progress` / `rowError` / `done` chunks) while inserting
+via multi-row parameterized INSERTs built by a pure command builder
+(`buildInsertBatches` — rows per statement = `floor(2000 / mappedColumns)`, respecting SQL
+Server's 2,100-parameter limit; NULLs are parameters too). ≤ 5,000 total rows run as **one**
+transaction (all-or-nothing via `runCommands`); larger files run per-batch transactions (1,000
+rows) with progress. A coercion or SQL failure stops the import (reporting the 1-based CSV row)
+unless `skipBadRows`, which skips coercion-failed rows and reports each. Gated on
+`capabilities.write` + engine mssql; a summary history row is recorded.
+
+**Acceptance criteria:**
+- A valid CSV imports atomically; a read-back matches (scratch table, self-skips without perms)
+- A mid-file bad value in atomic mode → nothing committed, the error names the CSV row
+- `skipBadRows` imports the good rows and reports the bad ones with row numbers
+- The pure batch builder packs ≤ 2,000 params per statement (unit-covered within this
+  requirement's test file)
+
+### BASED-IMPORT-CSV-UI: Import stepper
+**Applies to:** based (ui)
+**Test category:** manual
+
+The Data tab toolbar of an editable table gains an "Import CSV" button (mssql tables only) opening
+a stepper dialog: pick file (native dialog) → column mapping (auto-map by case-insensitive name;
+warnings for unmapped non-nullable columns and identity targets) → coerced preview of the first
+rows with per-cell error highlighting → run with live progress + error list → summary, then the
+grid reloads.
+
+**Verification procedure:**
+1. Import a CSV whose headers match a scratch table → auto-mapped; preview shows coerced values;
+   run → progress → summary; the grid shows the rows; History records the import
+2. A CSV with a bad numeric value → the preview highlights it; running in atomic mode fails with
+   the row number and nothing commits; with "skip bad rows" the rest import and the report lists
+   the skipped rows
+3. Unmapping a NOT NULL column shows a warning before run
+4. The button is absent on views, PK-less (read-only) tables, and LanceDB connections
+
+### BASED-DIALOG-OPEN-FILE: Native open-file dialog
+**Applies to:** based (core)
+**Test category:** manual
+
+`POST /api/dialog/open-file { kind }` opens a native OpenFileDialog (PowerShell WinForms, like the
+existing save/folder dialogs) filtered per kind and returns `{ path }` or `{ path: null }` on
+cancel.
+
+**Verification procedure:** the import stepper's "Choose file" opens the native dialog filtered to
+`*.csv`; cancel returns to the stepper without error.
+
 ## Table data (browse + edit) — Phase 3
 
 ### BASED-TABLE-BROWSE: Paginated table data read
@@ -321,6 +409,48 @@ The adapter shall read a page of a table's rows ordered by a stable key, capped 
 - A known table returns ≤ pageSize rows for `{offset:0, limit:N}`; a second page (`offset:N`) returns different rows
 - Ordering is deterministic across page calls (PK if present, else first column)
 - Column metadata marks the PK column(s)
+
+### BASED-TABLE-ORDERBY: Server-side sort + filter for table browse
+**Applies to:** based (core)
+**Test category:** integration
+
+`readTablePage` accepts optional `orderBy: TableSort[]` (`{column, dir}`) and `filters:
+TableFilter[]` (`{column, op, value?}`, ops `eq|ne|gt|ge|lt|le|like|is-null|not-null`). Every
+referenced column is validated against the table's real column list (membership check — stronger
+than quoting alone) before being bracket-quoted; filter values ride as typed parameters (numbers
+for numeric column types, strings otherwise), never interpolated. The effective ORDER BY is the
+user sort followed by the stable key columns (PK else first column) not already present, so paging
+stays deterministic under any sort. `GET /api/session/table-data` passes `sort` and `filters` as
+URL-encoded JSON. A new `EngineCapabilities.orderedBrowse` flag gates the UI (mssql `true`,
+LanceDB `false` — unordered engine; amends BASED-CAPABILITIES-WIRE's flag list).
+
+**Acceptance criteria:**
+- `orderBy: [{column: c, dir: "desc"}]` returns a first row different from the ascending default,
+  and page 2 under that sort contains no rows from page 1 (deterministic tiebreak)
+- `filters: [{column, op: "eq", value}]` narrows to matching rows; `like` matches substrings via
+  the caller's pattern; `is-null`/`not-null` behave as in SQL
+- An `orderBy`/`filter` column not on the table throws before any SQL runs
+- Filter values are parameterized (a value containing `'` or `--` narrows safely, no error)
+
+### BASED-TABLE-FILTER-UI: Data-tab header sort + filter
+**Applies to:** based (ui)
+**Test category:** manual
+
+For engines with `orderedBrowse`, the Data tab's grid headers become interactive: header click
+cycles column sort asc → desc → none (` ▲`/` ▼` suffix), the header menu hosts the same filter
+input as the results grid (BASED-GRID-FILTER's mini-language, parsed client-side into structured
+`TableFilter`s), and applying either reloads from page 1 server-side. With pending edits, sort and
+filter are blocked with an inline notice ("commit or discard first") — a reload clears pending
+state and silently losing edits is unacceptable. LanceDB search-result mode and browse keep their
+existing non-interactive headers.
+
+**Verification procedure:**
+1. Open a big table's Data tab → click a column header → rows reload sorted; click again →
+   descending; again → default order
+2. Header menu → type `> 100` on a numeric column → rows reload filtered; a "filtered" chip shows
+   with a clear affordance; paging works within the filter
+3. Edit a cell (don't commit) → header click shows the pending-changes notice and does not reload
+4. A LanceDB table's Data tab headers are not sortable/filterable
 
 ### BASED-TABLE-DML: Pure edit→SQL builder
 **Applies to:** based (core)
@@ -347,6 +477,91 @@ A pure function shall turn a change set (row updates keyed by PK, inserts, delet
 - A failing command rolls the whole batch back (no partial write) and returns the error text
 - A history row is recorded for the commit
 - `preview: true` returns the built commands without executing; a no-PK edit returns 400
+
+### BASED-TABLE-DETAILS: Full table introspection
+**Applies to:** based (core)
+**Test category:** integration
+
+An optional adapter method `getTableDetails(schema, name)` (present when the new
+`capabilities.script` flag is true — mssql only) returns everything the scripter and the enriched
+Details view need in one parameterized multi-recordset batch over the `sys.*` catalog views:
+columns (the `TableColumn` fields plus collation, identity seed/increment, computed definition +
+persisted flag), indexes (type, unique/PK/unique-constraint flags, key columns with descending
+flags, INCLUDE columns, filter definition), foreign keys (per-column pairs, referenced
+schema/table/columns, delete/update actions, disabled flag), check constraints (definition,
+column-scoped or table-level, disabled), default constraints (column, definition), and triggers
+(events, AFTER/INSTEAD OF, disabled). Exposed at `GET /api/session/table-details?schema&table`,
+which also returns the server-computed `createScript` (BASED-SCRIPT-TSQL). `EngineCapabilities`
+gains `script` and `relations` flags (mssql both `true`, LanceDB both `false`; `relations` is
+consumed by BASED-RELATIONS) — amends BASED-CAPABILITIES-WIRE.
+
+**Acceptance criteria:**
+- A scratch table with an identity PK, an FK with ON DELETE CASCADE, a default, a check
+  constraint, a computed column, and a filtered/INCLUDE index reports every one of those pieces
+  with correct metadata (seed/increment, FK target columns + action, index key order/INCLUDE list,
+  filter text)
+- A plain table reports empty arrays (not errors) for the sections it lacks
+- The endpoint 400s on an engine without `capabilities.script`
+
+### BASED-SCRIPT-TSQL: Pure T-SQL scripter
+**Applies to:** based (core)
+**Test category:** unit
+
+A pure module (`core/src/db/scripter.ts`, no DB access) turns `TableDetails` /
+`getObjectDefinition` output into runnable T-SQL. Identifiers use its own `]]`-escaping bracket
+quote (any legal name — deliberately NOT `tableEdit.ts`'s strict `quoteIdent`, which stays an
+injection guard on the write path). `scriptCreateTable` emits SSMS-style DDL: columns with type
+(via `formatTypeTsql` — length/max/precision/scale), IDENTITY(seed,increment), computed `AS (expr)
+[PERSISTED]`, NULL/NOT NULL; inline PK and UNIQUE constraints (from the flagged indexes, DESC keys
+honored); then `ALTER TABLE … ADD` for defaults, checks (`WITH CHECK`/`NOCHECK` per disabled), and
+FKs with `ON DELETE/UPDATE` actions; then `CREATE [UNIQUE] INDEX` for the rest (INCLUDE + filter).
+Features outside v1 scope (partitioning, temporal, FILESTREAM, COLLATE) emit a `-- not scripted:`
+comment, never a silent drop. `scriptDropTable`/`scriptDropModule` use `DROP … IF EXISTS`.
+`rewriteCreateToAlter` (modules only) scans past leading whitespace and `--`/`/* */` comments and
+rewrites the first `CREATE [OR ALTER]` + module keyword to `ALTER`; no match → the original text
+with a leading warning comment (never corrupt DDL). SELECT and INSERT templates cover the SSMS
+"Script as SELECT/INSERT" affordances (INSERT omits identity/computed columns). A dispatcher
+`scriptObject(input, action)` routes and throws on invalid combos (`alter` on a table — SSMS
+parity); `joinScripts` joins with `GO` (module CREATE must be batch-first).
+
+**Acceptance criteria:**
+- Fixture with identity/computed/composite-PK/desc-key/filtered-index/INCLUDE/default/check/FK
+  actions round-trips into CREATE DDL containing each construct
+- `]` in an identifier doubles; `scriptDropTable` emits `DROP TABLE IF EXISTS`
+- `drop-create` = DROP + GO + CREATE in order
+- `alter` on a table throws; `alter` on a view/procedure rewrites CREATE→ALTER
+- INSERT template lists no identity/computed columns; SELECT template lists all columns
+
+### BASED-SCRIPT-MODULE-ALTER: CREATE→ALTER rewrite
+**Applies to:** based (core)
+**Test category:** unit
+
+`rewriteCreateToAlter(definition)` is comment- and case-aware: leading line comments (`--`) and
+block comments (`/* */`) are skipped, not searched, so the word CREATE inside a leading comment is
+never rewritten; `CREATE OR ALTER` collapses to `ALTER`; lowercase/mixed-case definitions rewrite
+correctly; a definition with no CREATE+module-keyword match returns the original text prefixed
+with a `-- based: could not rewrite to ALTER` warning comment.
+
+**Acceptance criteria:**
+- `/* CREATE VIEW note */ CREATE VIEW v AS …` rewrites only the real CREATE
+- `create or alter procedure p …` → `ALTER procedure p …` (keyword case preserved after ALTER)
+- A definition with no match comes back unchanged plus the warning comment
+
+### BASED-SCRIPT-API: Multi-object scripting endpoint
+**Applies to:** based (core)
+**Test category:** integration
+
+`POST /api/session/script` `{ objects: [{schema, name, type}], action }` returns `{ sql, errors }`:
+per object, tables/views route through `getTableDetails`+scripter or
+`getObjectDefinition`+scripter as appropriate for the action; results join in request order via
+`joinScripts`; a per-object failure (unknown object, invalid action for its type) lands in
+`errors` with that object's identity while the rest still script. Gated on `capabilities.script`
+(400 otherwise).
+
+**Acceptance criteria:**
+- Two known objects, action `create` → one GO-joined script containing both, request order
+- One good + one unknown object → `sql` has the good one, `errors` names the bad one
+- Engine without `script` capability → 400
 
 ### BASED-VIEW-DEFINITION: View/routine SQL definition text
 **Applies to:** based (core)
@@ -384,6 +599,33 @@ The table/view tab's header tabs (Details / Edit Data / SQL — see BASED-TABLE-
 6. A table with no PK → grid is read-only with a notice
 7. Break a value (bad type) → Commit shows the server error; grid still reflects pre-commit (uncommitted) state
 
+### BASED-TABLE-DETAILS-UI: Enriched Details view + Script dropdown
+**Applies to:** based (ui)
+**Test category:** manual
+
+For engines with `capabilities.script`, a table tab fetches `GET /api/session/table-details` in
+place of the plain columns call (its columns are a superset, so the existing columns table and
+Data-grid PK gating are unchanged; LanceDB keeps the old path). The Details sub-view gains
+ledger-styled sections, each omitted when empty: **Indexes** (name, type/unique, key columns with
+desc flags, INCLUDE list, filter), **Foreign keys** (columns → referenced table(columns), delete/
+update actions, disabled), **Constraints** (checks + defaults with definitions), **Triggers**
+(events, after/instead-of, disabled) — and, for tables, a **DDL** block showing the
+server-computed CREATE script (exactly how views already show their definition). A **Script ▾**
+dropdown sits next to the Details/Data/SQL sub-tab buttons (tables/views) and in the routine tab
+header (procedures/functions), offering the SSMS-parity action set per object type (no ALTER for
+tables; SELECT for tables/views; INSERT for tables only); each action opens the generated script
+in a new query tab (not run) via `POST /api/session/script`.
+
+**Verification procedure:**
+1. Open a table with an FK, an index, a default and a check constraint → Details shows all four
+   sections with correct metadata, plus its CREATE DDL block
+2. A plain table shows only its columns table + DDL (no empty sections)
+3. Script ▾ → "Script as create" opens `Script: schema.table` as a new query tab containing
+   runnable CREATE DDL; "drop and create" contains DROP + GO + CREATE
+4. A view's Script menu offers alter (rewritten from its definition); a procedure tab's header
+   Script menu works the same
+5. On a LanceDB connection no Script dropdown appears and Details renders exactly as before
+
 ### BASED-TABLE-SQL-VIEW: Prepopulated, autorun, cached SQL tab
 **Applies to:** based (ui)
 **Test category:** manual
@@ -399,6 +641,61 @@ A table/view tab's "SQL" tab (mssql connections only) is a full query-tab experi
 
 ---
 
+## ER diagram (mssql only)
+
+### BASED-RELATIONS: Bulk relations introspection
+**Applies to:** based (core)
+**Test category:** integration
+
+An optional adapter method `getRelations(schemaFilter?)` (present when `capabilities.relations`)
+returns, in **one** two-recordset batch (no N+1): every user table in scope with its columns
+(name, type, PK/FK/nullable flags) and every FK edge (constraint name, parent schema/table/columns,
+referenced schema/table/columns, per-column pairs in order). A schema scope filters the table list
+but keeps any edge touching the scope, so cross-schema references still render (referenced tables
+outside the scope appear as stubs on the edge only). Exposed at
+`GET /api/session/relations[?schema=]`, 400 on engines without `relations`.
+
+**Acceptance criteria:**
+- Two scratch tables with an FK → one call returns both tables with columns + the edge with
+  correct column pairs
+- `?schema=` scoping filters tables to the schema but keeps edges touching it
+- LanceDB → 400
+
+### BASED-DIAGRAM-LAYOUT: Pure diagram auto-layout
+**Applies to:** based (ui)
+**Test category:** unit
+
+`layoutDiagram(graph)` (`ui/src/diagramLayout.ts`, pure — dagre `rankdir: LR`, node height from
+column count) positions every table node with finite coordinates, emits one edge per FK
+referencing existing node ids, is deterministic for a fixed input, and handles cyclic FK graphs
+without throwing.
+
+**Acceptance criteria:**
+- Every input table gets a node with finite x/y; no two nodes share identical coordinates for a
+  multi-node graph
+- Edges reference existing node ids; a two-table cycle lays out without throwing
+- Same input twice → identical output
+
+### BASED-DIAGRAM-UI: ER diagram tab
+**Applies to:** based (ui)
+**Test category:** manual
+
+A new tab kind `diagram` (persisted/restored like other tabs — amends BASED-TABSTORE's kind set)
+renders the relations graph with React Flow: custom table nodes (schema.name header, column rows
+with the ⚿/⚷ glyphs, capped at ~25 rows with a "+N more" footer), smoothstep FK edges (name shown
+on selection in a detail card), pan/zoom/fitView/controls. A scope `<select>` (All schemas + each
+schema) in the diagram header refetches; >300 tables in scope shows a pick-a-schema prompt instead
+of the canvas. Entry points: a diagram icon button beside the left rail's schema filter (visible
+when `capabilities.relations`, opens with the current schema filter as scope) and the explorer
+context menu. Read-only v1 — no diagram-driven DDL. Not exposed for LanceDB.
+
+**Verification procedure:**
+1. Click the diagram button with a schema filter active → a diagram tab opens scoped to it; tables
+   render with PK/FK glyphs and FK edges; pan/zoom work; clicking an edge shows the FK name
+2. Switch the scope select to All schemas → refetches and re-lays-out
+3. Restart the app → the diagram tab restores with its scope
+4. On a LanceDB connection the button is absent
+
 ## Agent / AI (Phase 2 — Ask Capi)
 
 ### BASED-AI-PROVIDER: AI provider configuration & model resolution
@@ -412,7 +709,7 @@ Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, 
 - `setAiKey`/`getAiKey`/`deleteAiKey` round-trip through Credential Manager
 - The `openai-compatible` resolver returns a model for a reachable base URL
 
-**Implementation note (no spec impact):** `openai` / `azure-openai` / `anthropic` branches are stubbed pending the settings screen; any provider reachable via an OpenAI-compatible gateway works today. A single `zod@3.25.76` override reconciles the AI SDK's `zod/v4` subpath imports.
+**Implementation note (no spec impact):** the `openai` / `azure-openai` / `anthropic` branches are wired natively — see BASED-AI-PROVIDER-WIRED. A single `zod@3.25.76` override reconciles the AI SDK's `zod/v4` subpath imports.
 
 ### BASED-AGENT-RUNQUERY: Read-only `run_query` tool with row cap
 **Applies to:** based (core)
@@ -443,6 +740,119 @@ The agent `run_query` tool executes only read-only statements. A pure classifier
 **Acceptance criteria:**
 - Returns ≤ limit rows with the table's columns for a known table
 - An invalid identifier (`;`, brackets, quotes) is rejected without querying
+
+### BASED-AGENT-READ-ROWS: `read_rows` paging tool
+**Applies to:** based (core)
+**Test category:** unit
+
+An engine-neutral `read_rows({ table, schema?, offset?, limit? })` tool pages through a table via
+the adapter's `readTablePage` in a stable order, so the agent never has to pull a whole table at
+once. `limit` clamps to 1–200 (default 100); the result carries `{ columns, rows, orderBy, offset,
+returned, hasMore }` where `hasMore` is the `returned === limit` heuristic (`TablePage` has no total
+count; an exactly-full final page costs one extra empty read — documented, accepted). On engines
+with `orderedBrowse` (mssql) the tool additionally accepts `orderBy: [{column, dir}]` and
+`filters: [{column, op, value?}]`, passed straight through to `readTablePage`'s validated
+sort/filter path (BASED-TABLE-ORDERBY); on other engines those arguments return a descriptive
+error. Every call is audited as a read. `sample_rows` stays as the quick-peek affordance — the two
+tools cross-reference each other in their descriptions.
+
+**Acceptance criteria:**
+- `limit: 500` clamps to 200; omitted limit reads 100; `offset` forwards verbatim
+- A full page reports `hasMore: true`; a short page reports `hasMore: false`
+- Default schema is `dbo` on mssql and `""` on lancedb (same resolution as `get_schema`)
+- `orderBy`/`filters` forward to the adapter on an `orderedBrowse` engine and error gracefully
+  (no adapter call) on an engine without it
+- Both engine surfaces contain `read_rows`; each call writes an audit row
+
+### BASED-SCRIPT-OBJECT: Agent `script_object` tool
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+An engine-appropriate `script_object` agent tool returns DDL/description text — never executes it
+(execution stays on the BASED-AGENT-MUTATION-GATE approval path). On mssql
+(`capabilities.script`), `script_object({ name, schema?, action? })` resolves the object's type via
+`listObjects()` and routes through the existing scripter (BASED-SCRIPT-TSQL): tables via
+`getTableDetails` + `scriptObject({kind:"table"})`, views/procedures/functions via
+`getObjectDefinition` + `scriptObject({kind:"module"})`; `action` ∈
+create|drop|drop-create|alter|select|insert (default create), with the scripter's own invalid-combo
+errors surfaced as tool errors, not throws. On LanceDB, `script_object({ table, schema? })` returns
+a readable schema description (`describeLanceSchema`, a pure function): per-column name/type/
+nullability, vector columns as `vector[dim] of <elementType>` with the index metric when known
+(BASED-LANCE-VECTOR-METRIC), plus a `pyarrow` schema snippet (Lance tooling is Python-first).
+Unknown objects return `{ error }` with the valid-name list, mirroring `load_skill`. Calls are
+audited as reads.
+
+**Acceptance criteria:**
+- mssql: a table round-trips to a `CREATE TABLE` containing its PK; a view returns its `CREATE VIEW` text; `action: "alter"` on a table returns an error object (no throw)
+- lancedb: the seeded table's description names every column, renders the vector column as `vector[dim]`, and includes a `pa.schema` snippet
+- An unknown object name returns `{ error, validNames }` without calling the scripter
+- `describeLanceSchema` is pure (unit-tested with fixture columns, no DB)
+
+### BASED-AGENT-EXPORT: Agent `export_data` tool
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+An engine-neutral `export_data({ format, sql? | table?, schema?, fileName?, openAfter? })` tool
+writes a query result or a whole table to a CSV/XLSX file and returns `{ path, rowCount,
+truncated }`. Exactly one of `sql`/`table` is required. A `sql` source needs `capabilities.sql` and
+an `isReadOnly` pass (a mutating statement is refused without touching the adapter); a `table`
+source loops `readTablePage` in pages of 1,000 on any engine. Rows cap at `EXPORT_ROW_CAP`
+(100,000, `truncated: true` past it). The file writes server-side to the user's Downloads folder
+(fallback: temp dir) — no dialog mid-run — as `based-export-<name>-<timestamp>.<ext>`; `fileName`
+is sanitized (path separators and `..` rejected, extension enforced); `openAfter` shell-opens the
+result. Writers are the existing `toCsv`/`writeXlsx` (BASED-EXPORT-CSV/XLSX). Calls audit as
+reads. The agent-side **import** counterpart is BASED-AGENT-IMPORT (approval-gated, frontend).
+
+**Acceptance criteria:**
+- Table source: the paging loop stops on a short page; rows past `EXPORT_ROW_CAP` set `truncated`
+- SQL source: a mutating statement → `{ refused }`, adapter untouched
+- `fileName` containing `/`, `\`, or `..` is rejected; a missing extension is appended
+- End-to-end (lancedb integration): exporting the seeded table writes a real CSV whose header
+  matches the table's columns, returns its path, and appends a kind-`read` audit row
+
+### BASED-AGENT-IMPORT: Approval-gated agent CSV import
+**Applies to:** based (ui)
+**Test category:** manual
+
+The agent proposes imports; it never runs them. A frontend `import_csv({ path, table, schema?,
+hasHeader?, mapping?, nullEmpty?, skipBadRows?, reason? })` tool (pattern: `run_mutation`) renders
+an approval card that inspects the file (`/api/import/csv/inspect`) and the target's columns,
+resolves the mapping (explicit, else auto: case-insensitive header-name match when `hasHeader`,
+positional otherwise — unmapped CSV columns are shown as a warning), and previews `csv[i] → column`
+lines. Only the user's Approve drives the existing `/api/import/csv/run` NDJSON stream
+(BASED-IMPORT-CSV-RUN), with live inserted/total progress on the card; the server's
+`capabilities.write` gate still applies (a read-only connection invalidates the card before it ever
+offers Approve). Reject resolves `{ approved: false }` and nothing runs. The tool result carries
+the outcome summary (status, inserted/failed counts, first row errors) so the agent can narrate it.
+
+**Verification procedure:**
+1. Ask Capi to "import C:\...\file.csv into dbo.T" → an approval card shows the file → table, the
+   auto-resolved mapping, and any unmapped CSV columns
+2. Reject → nothing runs; the agent reports the rejection
+3. Approve on a valid file → progress counts up; the card shows the inserted-rows summary; the grid
+   shows the new rows; History records the import (BASED-IMPORT-CSV-RUN)
+4. Repeat on a LanceDB (read-only) connection → the card immediately shows the read-only error and
+   never offers Approve
+5. A mapping the agent proposes with an unknown column name invalidates the card (no Approve)
+
+### BASED-AGENT-TAB-CONTEXT: Workspace context injection
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+Each agent run can carry a workspace snapshot from the client in
+`RunAgentInput.forwardedProps.tabContext` (the AG-UI channel that reaches the server on every
+send — a client-injected `system` message would be dropped by the `@ag-ui/mastra` message
+converter, which only maps user/assistant/tool roles). A pure `renderTabContext(raw)` validates
+the loose shape and renders a `<workspace_context>` block — the active tab's identity, its SQL
+(≤4,000 chars), result-set *summaries* (columns/rowCount/truncated, never rows), and a one-line
+list of all open tabs (≤30) — hard-capped at 8,000 chars total; absent/malformed input returns
+`null`. `buildAgent` accepts an optional `contextNote` appended to the composed instructions, and
+`agentStream` wires the two together per request.
+
+**Acceptance criteria:**
+- `renderTabContext(null | garbage)` → `null`; a valid snapshot renders the active tab title, SQL, and open-tab list
+- Oversized SQL truncates at the cap; >30 tabs truncate with a "+N more" marker; total output ≤8,000 chars
+- `buildAgent({ contextNote })` includes the block in its instructions; omitting it reproduces the prior instructions exactly
 
 ### BASED-AGENT-MUTATION-GATE: Approval-gated mutations
 **Applies to:** based (core)
@@ -488,17 +898,37 @@ The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) 
 - `buildAgent(...)` yields an agent whose resolved default options have `maxSteps` of 30 (assert via `agent.getDefaultOptions(...)`)
 - Manual: "audit my tables" against the dev DB streams tool calls and ends with a final assistant text message before `RUN_FINISHED`
 
-### BASED-AGENT-THREADS: Per-connection thread persistence
-**Applies to:** based (core)
-**Test category:** integration
+### BASED-AGENT-THREADS: Per-tab thread persistence
+**Applies to:** based (core, ui)
+**Test category:** integration + unit
 
-Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), keyed by connection id (resourceId), so a thread's history survives a restart.
+Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), **one thread per tab**:
+the client derives `threadId` as `tab:{connectionId}:{tabId}` (the connectionId prefix guarantees
+global uniqueness — deterministic tab ids like `table:dbo.Users` repeat across connections), or
+`conn:{connectionId}` when no tab is active; `resourceId` stays the connection id. Switching tabs
+switches the visible conversation (BASED-AGENT-TAB-TOOLS).
+
+**Ownership & aliasing:** a user-opened tab *owns* its derived thread. A tab the agent opens
+(`open_query_tab`) instead *aliases* the thread that created it — the tab stores `originThreadId`
+(round-tripped through the persisted tab's `meta`), and thread resolution everywhere is
+`originThreadId ?? derived`. Closing a tab deletes a thread only when the tab owns it and no other
+open tab aliases it; "New chat" on an aliased tab detaches it (clears `originThreadId`) rather
+than clearing the shared conversation.
+
+**Endpoints:** `GET /api/agent/threads/:threadId/messages?resourceId=…` returns the thread's
+history as AG-UI messages via `Memory.recall` + a defensive mapper (`mapDbMessagesToAgui`:
+user/assistant text, assistant `tool-invocation` parts as `toolCalls` plus one synthetic
+`role:"tool"` message per resolved invocation, id-prefixed `hist_` so the client can exclude them
+from outbound sends; unknown parts/roles are skipped). Unknown thread → `[]`, never an error. It
+does not require a live DB connection. `DELETE /api/agent/threads/:threadId` removes the thread
+(`Memory.deleteThread`).
 
 **Acceptance criteria:**
 - Memory tables live in `agent.db`, not the bun:sqlite `app.db`
 - A run with a stable `threadId`/`resourceId` accumulates history in memory
-
-**Verification (this pass):** memory is wired and its store initialises to `agent.db`; multi-turn recall across restart is documented for manual confirmation once a healthy model backend is available (see plan).
+- The messages GET returns mapped history for a seeded thread and `[]` for an unknown one; after a DELETE, a subsequent GET returns `[]`
+- `mapDbMessagesToAgui` pairs a resolved tool invocation with a synthetic `hist_`-prefixed tool message and skips unknown part types (unit)
+- The client-side thread resolution (`originThreadId ?? derived`) and the owns-and-unaliased close rule are pure and unit-tested
 
 ### BASED-SKILL-REGISTRY: Skill registry & prompt catalog
 **Applies to:** based (core)
@@ -536,6 +966,12 @@ returns the active id plus every set (default first); `POST /api/agent/instructi
 active set; `DELETE /api/agent/instructions/:id` removes a custom set. All four reject `id: "default"`
 (create/update/delete) or an unknown id (activate) with a 400.
 
+Which set the **running agent** uses is not the store's own `activeId` — it is the set the active
+AI provider profile links to (`BASED-AI-PROVIDER-PROFILES`). `resolveById(id, engine)` returns a set's
+`{core, persona}` for the connected engine, falling back to the `"default"` set when `id` no longer
+resolves (e.g. the linked set was deleted). Instruction sets are thus authored/managed here but
+*assigned* to an agent from its profile, and remain reusable across profiles.
+
 **Acceptance criteria:**
 - Fresh store → `GET` returns exactly one set, `{ id: "default", editable: false, core: GENERIC_CORE, mssqlPersona: MSSQL_PERSONA, lancePersona: LANCE_PERSONA }`
 - `POST` with no `id` creates a custom set (`editable: true`); a subsequent `GET` (after store reopen) still returns it
@@ -543,6 +979,7 @@ active set; `DELETE /api/agent/instructions/:id` removes a custom set. All four 
 - `POST`/`DELETE` targeting `id: "default"` → 400, no change
 - Activating a set persists across a `GET`; deleting the active custom set falls back `activeId` to `"default"`
 - Activating an unknown id → 400
+- `resolveById(id, engine)` returns that set's `core` + the engine-appropriate persona (`mssqlPersona` for `mssql`, `lancePersona` otherwise); an unresolved `id` returns the `"default"` set's values
 
 ### BASED-AGENT-INSTRUCTIONS-COMPOSE: Instruction-set override wiring
 **Applies to:** based (core)
@@ -561,16 +998,31 @@ settings-driven.
 **Applies to:** based (ui)
 **Test category:** manual
 
-The gear icon next to Ask Capi opens, alongside the AI-provider fields, an "Agent instructions"
-section: a set picker (Default + any custom sets) and three collapsible boxes — Core (shared), SQL
-Server persona, LanceDB persona — editable only when the selected set isn't Default. Duplicate clones
-the selected set into a new editable one; Save persists edits; Delete removes a custom set.
+The Agent tab of the settings popover (gear icon, `ThemePicker`) hosts, below the AI provider profile
+list, an "Agent instructions" section that *authors* persona sets, shown as a row list (Default + any
+custom sets — a local editing list only, no runtime "active" switch) where each row shows the set
+name, whether it's built-in, how many profiles link to it, and Edit + duplicate icon buttons.
+
+Editing takes over the whole Agent tab: while a set (or an AI provider profile) is being edited, the
+profile and instruction-set lists are hidden and the editor is the tab's entire content; Save or
+Cancel returns to the lists. The set editor shows a "Name" field (editable sets only) and three
+collapsible boxes — Core (shared), SQL Server persona, LanceDB persona — open by default. The
+read-only Default set opens as a viewer (boxes disabled, note explaining why) with a
+"Duplicate to edit" action; row-level duplicate likewise opens the editor on an unsaved editable
+copy. Nothing is persisted until Save (which creates the set for an unsaved copy); Cancel discards
+the draft. Delete removes a custom set and is only offered for saved custom sets. Which set an agent
+*uses* is assigned per-profile: the AI provider profile Add/Edit form has an "Instructions" dropdown
+bound to the profile's `instructionSetId`, and each profile row shows its linked set name next to
+the model.
 
 **Acceptance criteria:**
-- Default's three boxes render read-only with a note explaining why; Duplicate creates an editable copy
+- Opening any editor (profile or set) hides everything else on the Agent tab; Save and Cancel both return to the full lists
+- Default's three boxes render read-only with a note explaining why; Duplicate (row icon or "Duplicate to edit") opens the editor on an editable unsaved copy named "<source> copy"
+- An unsaved copy shows Save but no Delete, and does not appear in the list after a reload unless Save was clicked; Cancel discards it
+- Renaming via the Name field and clicking Save persists the new name (the list shows it after reload)
 - Editing a custom set's boxes and clicking Save persists the change across a reload
-- Switching the active set persists; deleting a custom set falls back the selection to Default
-- A chat turn's behavior reflects whichever set is currently active
+- The set list is an editing list only (no active-set network call); each row's subtitle reflects how many profiles link to the set
+- A profile's "Instructions" dropdown lists Default + all custom sets and persists the chosen `instructionSetId` on Save; a chat turn's behavior reflects the active profile's linked set
 
 ### BASED-DIAGRAM-RENDER: Mermaid rendering in the rail
 **Applies to:** based (ui)
@@ -614,6 +1066,46 @@ Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Func
 
 **Verification procedure:** connect to dev DB → four groups with counts; collapse/expand works; double-click a table → details tab shows its columns with PK marked; double-click a stored procedure or function → routine tab shows its parameters and definition text (previously not double-clickable at all).
 
+### BASED-UI-SCRIPT-AS: Explorer multi-select + Script as
+**Applies to:** based (ui)
+**Test category:** manual
+
+Explorer rows support multi-select: plain click selects one, ctrl-click toggles, shift-click
+selects the visible range from the anchor **within the same group** — the selection is always
+type-homogeneous (clicking into another group resets it), which keeps the action menu coherent.
+Right-click opens a context menu (TabContextMenu-pattern popover; right-clicking outside the
+selection first selects that row alone): single-selection Open actions (Details / Data / SQL per
+capability for tables/views; Details for routines) and, gated on `capabilities.script`, the
+"Script as" set from BASED-TABLE-DETAILS-UI applied to **all** selected objects — one
+`POST /api/session/script` call, one new query tab (`Script: schema.name` / `Script: N objects`),
+GO-separated in selection order; per-object failures surface via the banner.
+
+**Verification procedure:**
+1. Ctrl-click three tables → right-click → "Script as create" → one query tab with all three
+   CREATEs GO-separated; the banner stays quiet
+2. Shift-click a range within Views → the range is selected; clicking a procedure resets the
+   selection to just it
+3. Right-click an unselected row → the selection becomes that row; its menu shows Open actions
+4. On a LanceDB connection the menu shows only Open actions (no Script section)
+
+### BASED-EXPLORER-ACTION: Configurable double-click action
+**Applies to:** based (ui + core settings)
+**Test category:** manual (settings persistence rides the BASED-SETTINGS integration round-trip)
+
+`AppSettings` gains `explorerTableAction` (`details | data | sql | script-create`, default
+`details`) and `explorerRoutineAction` (`details | script-create`) — edited via two selects in the
+settings General tab ("Double-click opens"). The explorer's double-click dispatches accordingly:
+table/view actions open the table tab at that sub-view (`openTableTab` gains an initial-view
+param; `sql` also triggers the autorun SQL view); `script-create` scripts the object into a query
+tab. Engines lacking the needed capability degrade to `details`.
+
+**Verification procedure:**
+1. Settings → General → set tables to "Data" → double-click a table → opens on the Data sub-view;
+   restart → the setting persists
+2. Set tables to "Script as create" → double-click → a script tab opens instead of a table tab
+3. Set routines to "Script as create" → double-click a procedure → its CREATE opens in a query tab
+4. On a LanceDB connection double-click always opens Details regardless of the setting
+
 ### BASED-UI-TABS: SQL tabs
 **Applies to:** based (ui)
 **Test category:** manual
@@ -638,6 +1130,49 @@ At the far left of the results toolbar, Grid/Text (and Plan, when a plan was cap
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
 5. Row-cap notice appears once fetched rows exceed the tab bar's fetch-size value
+
+### BASED-GRID-SORT: Client-side column sort in the query results grid
+**Applies to:** based (ui)
+**Test category:** unit (`ui/src/gridView.ts` view computation) + manual
+
+The query results grid sorts client-side over the fetched rows (they are fully client-side up to
+the row cap — no server round-trip). Clicking a column header cycles ascending → descending → none;
+the sorted column's title carries a ` ▲`/` ▼` suffix. Sorting is stable (equal keys keep arrival
+order) and type-aware via a pure `computeViewIndex(rows, columns, sort, filters)` in
+`ui/src/gridView.ts`: numeric column types compare numerically; temporal values compare by their
+SQL-style string form (lexical = chronological); `{$:"vec"/"bin"}` wire objects compare by their
+summary text; NULLs sort first ascending / last descending (SQL Server convention). Copy, CSV, and
+Excel export are WYSIWYG — they read the sorted/filtered view, not the arrival order. The
+truncation banner notes that sort applies to the fetched rows only.
+
+**Acceptance criteria (unit):**
+- Numeric column: `[3, 1, NULL, 2]` asc → `[NULL, 1, 2, 3]`; desc → `[3, 2, 1, NULL]`
+- Stability: rows with equal keys keep their original relative order
+- A `{$:"bin"}`/`{$:"vec"}` cell sorts by its `cellText` summary without throwing
+
+**Manual:** header click cycles the three states with the arrow suffix; Copy/CSV reflect the view.
+
+### BASED-GRID-FILTER: Per-column filters in the query results grid
+**Applies to:** based (ui)
+**Test category:** unit (filter mini-language) + manual
+
+Each results-grid column header carries a menu (Glide's header menu icon → a DOM popover) with sort
+actions and a filter input. The filter mini-language (`compileFilter(colType, expr)` in
+`ui/src/gridView.ts`): plain text = case-insensitive contains over the cell's display text; a
+leading `=`, `!=`/`<>`, `>`, `>=`, `<`, `<=` = typed compare (numeric on numeric columns or numeric
+cells, case-insensitive string otherwise); the literals `NULL` / `NOT NULL` match nullness.
+Operator filters never match NULL cells (SQL semantics). While any filter is active a chip row
+above the grid shows "N of M rows · Clear filters". Filtering composes with sort (filter first,
+then sort) and is WYSIWYG for copy/export (BASED-GRID-SORT).
+
+**Acceptance criteria (unit):**
+- `abc` on a text column matches `xABCy` (contains, case-insensitive); does not match NULL
+- `= 5` on an int column matches 5, not 50; `> 5` matches 6, not 5, never NULL
+- `!= x` matches `y` but not NULL; `NULL` matches only NULL; `NOT NULL` matches everything else
+- `computeViewIndex` composes filter-then-sort and returns original row indices
+
+**Manual:** the header menu opens positioned at the header; typing a filter narrows rows live; the
+chip row's count is correct and Clear filters restores everything.
 
 ### BASED-UI-GRID-COLUMNS: Resizable, auto-fit grid columns with hover tooltip and Data-tab export
 **Applies to:** based (ui)
@@ -680,30 +1215,169 @@ Errors (syntax, permissions, timeout) appear as readable text in the Output pane
 3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
 
 ### BASED-UI-SESSION-RESUME: Auto-resume a lost server session
+**Applies to:** based (ui), based (core)
+**Test category:** manual
+**External tests:** specs/based/tests/integration.server.test.ts (the 409 `session-lost` signal — `integration`)
+
+The based server keeps each window's session (active connection, adapter, tabs context) in memory; a server restart or crash wipes it while the browser tab stays open. The UI shall detect this and automatically re-establish the session (re-`connect()` to the same connection/database) with bounded exponential backoff, showing "reconnecting…" in the status strip, with open tabs/schema-filter/active-tab preserved throughout. Detection has two independent triggers, so resume fires whether or not the window is actively making requests when the server comes back:
+
+- **Push:** a `connection-status` SSE snapshot for a different/blank session arriving while the window still believes it's connected. A (re)connecting SSE client always receives such a snapshot up front, so a bare restart (which emits no other event) still trips this.
+- **Pull:** any session-scoped API request whose session is gone server-side returns **409 with body `{ error: "session-lost" }`** (distinct from a generic 500 and from the agent endpoint's "connect first" 409). The API client drives the same resume and, once reconnected, transparently retries the original request — so an in-flight action that raced the restart heals instead of surfacing "Not connected".
+
+Concurrent triggers collapse to a single in-flight resume attempt. If the backoff cap is exhausted the status settles on "disconnected" with a clear banner, and a **Reconnect** button appears in the status strip to retry on demand; the button never appears before a connection has actually been established (no connection picked yet).
+
+**Acceptance criteria (pull signal, integration-tested):**
+- A session-scoped request (e.g. `GET /api/session/objects`) for a sid with no live adapter responds `409` with `{ error: "session-lost" }`.
+
+**Verification procedure:**
+1. Connect, open a few tabs. Kill and restart the based server process; take no further action. Within the backoff window, status strip shows "reconnecting…" then "connected" again with no manual action — tabs/schema filter/active tab unchanged (push trigger via the SSE reconnect snapshot).
+2. Connect, then restart the server and immediately run a query or open a table. The action succeeds after a brief reconnect rather than erroring with "Not connected" (pull trigger + retry).
+3. Same as (1) but leave the server down past the backoff cap → status settles on "disconnected" with a banner, and a Reconnect button appears in the status strip.
+4. Bring the server back up, click Reconnect → status returns to "connected", tabs preserved.
+5. Fresh boot with no connection ever made → Reconnect button never appears.
+
+### BASED-HISTORY-UI: Query history panel
 **Applies to:** based (ui)
 **Test category:** manual
 
-The based server keeps each window's session (active connection, adapter, tabs context) in memory; a server restart or crash wipes it while the browser tab stays open. The UI shall detect this — a `connection-status` SSE snapshot for a different/blank session arriving while the window still believes it's connected — and automatically re-establish the session (re-`connect()` to the same connection/database) with bounded exponential backoff, showing "reconnecting…" in the status strip, with open tabs/schema-filter/active-tab preserved throughout. If the backoff cap is exhausted the status settles on "disconnected" with a clear banner, and a **Reconnect** button appears in the status strip to retry on demand; the button never appears before a connection has actually been established (no connection picked yet).
+The left rail's lower pane hosts a segmented **Objects | History** toggle (choice persisted in
+localStorage). History replaces the object explorer with a panel of two sub-tabs — **Queries**
+(BASED-HISTORY, `GET /api/history`) and **Agent** (BASED-AGENT-AUDIT, `GET /api/agent/audit`) —
+scoped to the active connection, most-recent-first, fetched on open with a manual refresh button.
+Each row shows a status dot (ok / error / cancelled), the first SQL line (mono, truncated), and
+relative time · duration · database. A search box filters client-side (substring over the SQL);
+status chips filter by outcome. Clicking a row expands it inline: full SQL, error text if any, and
+actions — **Insert** (into the active query tab via the existing `insertSqlIntoEditor`), **Open in
+new tab** (a fresh query tab with the SQL, not auto-run), **Copy**. The Agent sub-tab is read-only
+(kind read/mutation + approved badges; Copy only — never a re-run affordance, which would bypass
+the mutation gate).
 
 **Verification procedure:**
-1. Connect, open a few tabs. Kill and restart the based server process. Within the backoff window, status strip shows "reconnecting…" then "connected" again with no manual action — tabs/schema filter/active tab unchanged.
-2. Same scenario, but leave the server down past the backoff cap → status settles on "disconnected" with a banner, and a Reconnect button appears in the status strip.
-3. Bring the server back up, click Reconnect → status returns to "connected", tabs preserved.
-4. Fresh boot with no connection ever made → Reconnect button never appears.
+1. Run a few queries (one failing) → History → Queries lists them newest-first with correct status
+   dots; the failed row expands to show the error text
+2. Search narrows the list; a status chip shows only matching rows
+3. Insert appends the SQL to the active editor; Open in new tab creates a tab without running it;
+   Copy puts the SQL on the clipboard
+4. Ask Capi something that runs a read → Agent sub-tab lists it with kind "read"; no run affordance
+5. Switch connections → the panel shows only the new connection's history; toggle back to Objects →
+   explorer unchanged; the Objects/History choice survives an app restart
 
 ### BASED-CHAT-UI: Ask Capi panel
 **Applies to:** based (ui)
 **Test category:** manual
 
-The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail; a ⚙ panel edits base URL / model / key.
+The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail. `CapiAvatar` sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
 1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
 2. Ask for SQL → a highlighted SQL block appears with Insert / Run, labeled with the agent's purpose comment and the first statement line → Run opens a results tab
 3. Ask for an update → approval card renders; Reject = nothing runs; Approve = runs via the endpoint and an audit row appears
-4. Kill the app mid-thread, reopen, same connection → prior turns still shown
+4. Kill the app mid-thread, reopen, same connection → the same tab's prior turns are restored from server memory (per-tab restore — BASED-AGENT-THREADS)
+5. Capi's avatar renders to the left of the prompt textarea at the textarea's full height; clicking the send icon inside the textarea (or pressing Enter) sends the message; the icon dims while streaming
+6. After an answer settles, a subtle wall-clock readout of that turn (send→answer, e.g. `3.1s`) shows at the bottom of the thread; it clears when the next message is sent and is not persisted across reload (front-end only, `performance.now()` bracket around `runAgent`)
 
-**Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host.
+**Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host. The persona instructs the agent that user-facing SQL results live in tabs (`open_query_tab`), not pasted into chat — BASED-AGENT-TAB-TOOLS.
+
+### BASED-AGENT-TAB-TOOLS: Tab-aware chat — per-tab threads, workspace tools, results in tabs
+**Applies to:** based (ui)
+**Test category:** manual (pure builders: unit)
+
+The chat is tab-scoped and tab-aware:
+
+- **Per-tab conversations** (BASED-AGENT-THREADS): the rail's chat session is keyed on the active
+  tab's resolved thread id (`originThreadId ?? tab:{connectionId}:{tabId}`, fallback
+  `conn:{connectionId}`). The `useAgent` mount is remounted via a React `key` + `initialThreadId`
+  (the client's thread id is fixed at construction); a module-level per-thread message cache makes
+  in-session switches instant, and a cache miss seeds from the thread-history endpoint via
+  `setMessages`. Restored synthetic tool messages (`hist_` ids) are excluded from outbound sends
+  via `pruneOutboundMessages`. "New chat" deletes the thread server-side and clears messages — it
+  never calls `endSession()` (that would randomize the thread id). A tab switch during a streaming
+  run defers the remount until the run finishes, with a banner naming the tab the chat will follow.
+- **Workspace snapshot**: every send carries `forwardedProps.tabContext` built by a pure
+  `buildTabContext(state)` — active tab identity/SQL/result summaries + the open-tab list — which
+  the server renders into the instructions (BASED-AGENT-TAB-CONTEXT).
+- **Frontend tools** (pattern: `run_mutation`): `list_tabs` (active tab id + per-tab
+  id/kind/title/result summaries), `get_tab({ tabId, maxRows? })` (a query tab's SQL, output,
+  stats, and serialized result rows — default 50, max 200, cells truncated at 300 chars; table/
+  routine tabs return columns/definition; unknown id → `{ error, validTabIds }`), and
+  `open_query_tab({ sql, run?, title? })` — opens a real query tab via the store, `run !== false`
+  awaits completion (15 s race; on timeout reports `status: "running"` while the tab keeps
+  streaming) and returns `{ tabId, title, status, durationMs, resultSets, preview }` (10-row
+  preview). The agent-opened tab records `originThreadId` so its rail shows the conversation that
+  created it (aliasing — BASED-AGENT-THREADS).
+
+**Verification procedure (requires a healthy model backend):**
+1. Open two tabs; chat in each → each tab shows its own conversation; switching flips the thread
+2. Restart the app, reconnect → each tab's history is restored; a brand-new tab starts empty
+3. Close a tab → its thread is deleted (reopening the same table starts fresh); New chat clears only the current tab's thread
+4. Ask "show me the customers table" → the agent calls `open_query_tab`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows
+5. Click the agent-opened tab → the rail still shows the conversation that created it; closing that tab leaves the origin tab's chat intact; New chat on it starts a fresh thread for that tab only
+6. Switch tabs while a run is streaming → a banner names the busy tab; when the run ends the rail follows to the new tab's thread
+7. Ask "what's in my other tab?" → the agent calls `list_tabs`/`get_tab` and answers from the other tab's SQL/results
+
+### BASED-CHAT-ACTIVITY: Live agent activity feed
+**Applies to:** based (ui)
+**Test category:** manual
+
+While a Capi run is in flight the rail shows an abbreviated, live feed of the AG-UI event stream so the user can see what the agent is doing, not just a blank wait. The feed is driven by `useAgent`'s `onLifecycleEvent` (the one hook that fires across every run in a chained turn) captured into a small `activityStore`:
+- `run_started` → a **Thinking** step; each run resets the live feed so it only ever shows the *current* run (prior runs' calls are already committed to the thread as settled rows, so the two never double-show the same call).
+- `tool_used` → a step labeled with the tool name (snake_case rendered as spaced words, never uppercased — project UI rule).
+- `message_added` → drops a trailing Thinking placeholder once the answer text begins streaming.
+
+The last step in the feed carries a spinner (busy indicator); settled steps carry a check. When the run is busy but no event has landed yet and no text is streaming, a baseline **Working…** spinner shows, so a busy spinner is always visible during a run. The feed only renders while `isStreaming`; it is cleared when the user sends a new message and on New chat.
+
+Settled tool calls (backend tools, which have no bespoke frontend renderer — only `run_mutation` does) render in the thread as an **expandable** row: collapsed shows the tool name plus a one-line hint (first string argument); opened shows the full JSON arguments and the tool result. `run_mutation` keeps its approval-card renderer.
+
+**Verification procedure (requires a healthy model backend):**
+1. Ask Capi something that triggers a backend tool (e.g. "what tables are there?") → while it runs, a spinner + abbreviated steps (Thinking → tool name) appear live in the rail
+2. After the answer settles, each backend tool call shows as a collapsed row → click it → full arguments and the tool result expand; click again → collapses
+3. During a multi-step turn the live feed shows only the current step's activity (no duplicate of already-settled calls), and a busy spinner is visible the whole time the run is in flight
+4. Send a new message (or New chat) → the live feed resets
+
+### BASED-AI-PROVIDER-PROFILES: Named, user-configured AI provider (agent) profiles
+**Applies to:** based (core, ui)
+**Test category:** integration (CRUD + migration, `specs/based/tests/integration.agent.test.ts`); manual (active-profile switch actually changing which model the agent runs against, needs a live backend)
+
+Users configure one or more named AI provider profiles (`name`, `kind` — openai-compatible/openai/azure-openai/anthropic —, `baseUrl`, `model`, optional `deployment` for Azure, `instructionSetId`, optional API key) CRUD'd via `GET/POST /api/ai-profiles` and `DELETE /api/ai-profiles/:id`, persisted in `ai_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `ai:` prefix — same convention as `BASED-LANCE-EMBED-PROFILES`). Exactly one profile is active at a time, set via `POST /api/ai-profiles/active` and persisted as `activeAiProfileId` in `AppSettings`; the agent resolves and runs against whichever profile is active. Each profile carries an `instructionSetId` linking it to a reusable instruction set (`BASED-AGENT-INSTRUCTIONS`, default `"default"`); the running agent resolves its instructions from the **active profile's** linked set (via `AgentInstructionsStore.resolveById`), so selecting a profile selects both the model and its persona. A link to a set that no longer exists falls back to the `"default"` set at resolve time. On first use, if no profile exists yet, the legacy single `ai_config` row (or its built-in default) is migrated once into a profile named "Default" (linked to `"default"`) and marked active, carrying over its Credential Manager key. Profiles read from the store without a stored `instructionSetId` (legacy rows) default it to `"default"`.
+
+**Acceptance criteria:**
+- The migrated "Default" profile has `instructionSetId: "default"`
+- A profile saved with an explicit `instructionSetId` persists and round-trips via `GET`
+- A profile saved with no `instructionSetId` reads back as `"default"`
+
+**Verification procedure:**
+1. Settings (gear icon) → Agent tab → see the migrated "Default" profile (or an empty list on a fresh install) → Add a second profile (the form takes over the tab; see `BASED-AGENT-INSTRUCTIONS-UI`) pointing at a different local model, choose its Instructions set → Save returns to the list
+2. Click a profile row to mark it active (✓ appears next to its name) → ask Capi something → the request runs against the newly active profile's endpoint using that profile's linked instruction set
+3. Editing a profile with a blank API key field keeps the previously stored key; deleting a non-active profile removes it from the list and Credential Manager; deleting the active profile clears the active selection
+4. Point a profile's Instructions at a custom set, make it active → the agent's behavior reflects that persona; delete that set → the agent falls back to the Default persona instead of erroring
+
+### BASED-AI-PROVIDER-WIRED: Native openai / azure-openai / anthropic providers
+**Applies to:** based (core, ui)
+**Test category:** unit (branch resolution); manual (live round-trip)
+
+`resolveModel` shall construct a real AI SDK model for every `ProviderKind`: `openai` via `@ai-sdk/openai` (`createOpenAI`, optional custom base URL), `azure-openai` via `@ai-sdk/azure` (`createAzure` with `baseURL` = the full resource endpoint; the model that runs is the profile's `deployment`, which is required), and `anthropic` via `@ai-sdk/anthropic` (`createAnthropic`, optional custom base URL). These three kinds require a stored API key — a missing key throws an actionable error naming the provider (never the openai-compatible "not-needed" placeholder). The `openai-compatible` branch is unchanged except its provider instance name becomes the stable string `"openai-compatible"` so provider options have a predictable namespace (BASED-AI-PROFILE-PARAMS). All three packages ride the app's `ai@7` generation (`@ai-sdk/provider@4.x`); the Mastra (`ai@6`) transitive copies stay untouched.
+
+**Acceptance criteria:**
+- `openai` / `anthropic` with a key → a model whose `modelId` equals the profile's `model`; `azure-openai` → `modelId` equals the profile's `deployment`
+- `azure-openai` without `deployment` throws an error mentioning "deployment"
+- `openai` / `azure-openai` / `anthropic` with no key throw an error naming the provider kind
+- `openai-compatible` with no key still resolves (local LM Studio path unchanged)
+
+**UI (manual):** the profile form's field requirements are per-kind — base URL required for `openai-compatible` and `azure-openai` (labeled "Endpoint" for Azure, placeholder showing the resource-URL shape), optional for `openai`/`anthropic` (blank = provider default); `deployment` required for `azure-openai`. A profile pointed at a live provider with a real key streams a chat turn.
+
+### BASED-AI-PROFILE-PARAMS: Per-profile model parameter JSON
+**Applies to:** based (core, ui)
+**Test category:** unit (split logic); integration (persistence); manual (params observably reach the endpoint)
+
+`AiProfile` gains an optional `params` object (arbitrary JSON, persisted in the profile metadata store — it contains no secrets). A pure `resolveExecutionDefaults(kind, params)` splits it into Mastra execution defaults: recognized AI SDK call-settings keys (`temperature`, `topP`, `topK`, `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `stopSequences`, `seed`, `maxRetries`) become `modelSettings`; an explicit `providerOptions` key is taken verbatim and deep-merged; every other key lands under the kind's provider-options namespace — `"openai-compatible"` for openai-compatible, `"openai"` for both `openai` and `azure-openai` (the Azure provider rides the OpenAI models), `"anthropic"` for anthropic. The agent endpoint applies the result to the built agent's default options, so every run of the active profile carries its params (e.g. `reasoning_effort` for LM Studio / OpenAI-compatible gateways, which spread the namespace object into the request body).
+
+**Acceptance criteria:**
+- `{ temperature: 0.2, reasoning_effort: "low" }` with kind `openai-compatible` → `modelSettings: { temperature: 0.2 }`, `providerOptions: { "openai-compatible": { reasoning_effort: "low" } }`
+- Explicit + implicit merge: `{ providerOptions: { openai: { a: 1 } }, reasoning_effort: "low" }` with kind `openai` → `providerOptions.openai` carries both `a` and `reasoning_effort`
+- Empty/absent params → no `modelSettings`, no `providerOptions` (undefined, not `{}`)
+- A profile saved with `params` round-trips through the ai-profiles API and store reopen (integration)
+
+**UI (manual):** the profile Add/Edit form gains a "Model parameters (JSON)" textarea; invalid JSON blocks Save with an inline error; clearing it removes the params. A `reasoning_effort` value observably changes the request the model backend receives.
 
 ### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
 **Applies to:** based (ui + core)
@@ -737,7 +1411,7 @@ A second database engine behind the `DatabaseAdapter` interface: LanceDB, both *
 **Applies to:** based (core)
 **Test category:** integration
 
-`ConnectionConfig` carries an optional `engine` discriminator; `engineOf(cfg)` defaults an absent value to `"mssql"` so every legacy config stays valid with no migration. `createAdapter(cfg, getSecret, opts)` returns a `DatabaseAdapter` chosen by engine; `testConnection` is engine-agnostic (builds the adapter, runs its `probe()`). Session/tool code holds the interface, not a concrete class.
+`ConnectionConfig` carries an optional `engine` discriminator; `engineOf(cfg)` defaults an absent value to `"mssql"` so every legacy config stays valid with no migration. `createAdapter(cfg, getSecret, opts)` is **async** (BASED-LAZY-ENGINES: each branch dynamic-imports its adapter module) and resolves to a `DatabaseAdapter` chosen by engine; `testConnection` is engine-agnostic (builds the adapter, runs its `probe()`). Session/tool code holds the interface, not a concrete class.
 
 **Acceptance criteria:**
 - A config with no `engine` resolves to the MSSQL adapter; the full existing suite stays green (behaviour-preserving)
@@ -778,35 +1452,182 @@ A vector cell serializes to `{$:"vec", dim, preview}` (a short leading slice) ra
 **Applies to:** based (core)
 **Test category:** integration
 
-The adapter shall support nearest-neighbour vector search (`.nearestTo`/`.vectorSearch`, raw vector or a text query when the table has a registered embedding function), full-text search over an FTS index (`.fullTextSearch`), and hybrid search (both, reranked with reciprocal rank fusion). Score columns (`_distance`/`_relevance_score`) come back as ordinary numeric columns.
+The adapter's `search()` method (BASED-LANCE-SEARCH-UNIFIED) supports three modes through one call: nearest-neighbour vector search (`.vectorSearch`, a raw vector or a text query embedded via a configured embedding profile — BASED-LANCE-EMBED-COMPUTE), full-text search over an FTS index (`.fullTextSearch`), and hybrid search (both, fused internally with reciprocal rank fusion). A `where` prefilter predicate is supported uniformly on all three modes. Score columns (`_distance`/`_relevance_score`) come back as ordinary numeric columns.
 
 **Acceptance criteria:**
 - Vector search for a row's own vector returns that row first, with a distance column
 - Text search returns rows containing the keyword
-- Hybrid search returns reranked rows with a relevance/score column
+- Hybrid search returns fused rows with a relevance/score column
+- `where` narrows results on all three modes
+
+### BASED-LANCE-SEARCH-UNIFIED: One search pipeline for vector/keyword/hybrid, with optional rerank and floor/delta filtering
+**Applies to:** based (core)
+**Test category:** integration
+
+`DatabaseAdapter.search(params: LanceSearchParams)` is the single entry point for vector/text/hybrid search, replacing three separate methods. Pipeline: resolve `vector` from `query` via the selected embedding profile if needed (vector/hybrid modes) → fetch `sampleSize` native candidates for the chosen mode (prefiltered by `where`) → if a reranker profile is given, call it with the candidate documents and keep its scores as `_rerank_score`; otherwise sort by whichever native score column is present (`_distance` ascending, anything else descending) → apply `floor` (drop results worse than an absolute threshold) and `delta` (drop results trailing the #1 result's score by more than this) against the active score column → truncate to `keepSize`. `EngineCapabilities.search` (replacing the old `vectorSearch`/`fullTextSearch`/`hybridSearch` flags) gates whether an engine exposes this at all.
+
+**Acceptance criteria:**
+- `search({mode:"vector", vector, sampleSize, keepSize})` returns at most `keepSize` rows sorted by ascending `_distance`
+- `delta` drops rows whose `_distance` exceeds the top result's by more than the given delta
+- `floor` drops rows scoring worse than the given absolute threshold
+- A configured reranker profile reorders and truncates results to `keepSize` by `_rerank_score`, independent of the native score order
+- `mssqlAdapter.capabilities.search` is `false`; `lanceAdapter.capabilities.search` is `true`
 
 ### BASED-LANCE-AGENT-SURFACE: Per-engine agent tools + persona + skills
 **Applies to:** based (core)
 **Test category:** unit + integration
 
-The agent surface is a property of the engine. `agentSurfaceFor(engine, deps)` returns the engine's tools, persona fragment, and skill tags. SQL Server exposes `get_schema`/`sample_rows`/`run_query`; LanceDB exposes `get_schema`/`sample_rows`/`vector_search`/`text_search`/`hybrid_search`. The system prompt is a generic core + the engine persona + the engine-filtered skill catalog. `buildAgent` selects the surface by the session connection's engine.
+The agent surface is a property of the engine. `agentSurfaceFor(engine, deps)` returns the engine's tools, persona fragment, and skill tags. SQL Server exposes `get_schema`/`sample_rows`/`run_query`; LanceDB exposes `get_schema`/`sample_rows`/`vector_search`/`text_search`/`hybrid_search` — each a thin wrapper over the adapter's unified `search()`, additionally accepting `sampleSize`, `where`, `embeddingProfileId`, `rerankerProfileId`, `floor`, and `delta` — plus its own `run_query` for read-only DuckDB SQL on local connections (BASED-LANCE-AGENT-SQL). The system prompt is a generic core + the engine persona + the engine-filtered skill catalog. `buildAgent` selects the surface by the session connection's engine.
 
 **Acceptance criteria:**
-- The MSSQL surface contains `run_query` and no `vector_search`; the LanceDB surface contains `vector_search`/`text_search`/`hybrid_search` and no `run_query` — the two toolsets do not match
+- The MSSQL surface contains `run_query` and no `vector_search`; the LanceDB surface contains `vector_search`/`text_search`/`hybrid_search` (and its own `run_query` — BASED-LANCE-AGENT-SQL) but no `run_mutation` — the two toolsets do not match
 - The LanceDB surface carries `skillTags: ["lancedb"]`; `lance-search` appears only in a LanceDB catalog
 - The `vector_search` tool runs end-to-end against a live LanceDB table
+- The three tools accept `embeddingProfileId`/`rerankerProfileId`/`floor`/`delta` and pass them through to `search()`
+- Both engine surfaces additionally contain `read_rows` (BASED-AGENT-READ-ROWS), `export_data` (BASED-AGENT-EXPORT), and `script_object` (BASED-SCRIPT-OBJECT); the vector/hybrid search tools carry the tuning knobs of BASED-LANCE-SEARCH-KNOBS
 
 ### BASED-LANCE-UI: Engine selector, vector display, read-only browse, SQL gating
 **Applies to:** based (ui)
 **Test category:** manual
 
-The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB shows a Cloud/Local mode with URI/region/API-key or a directory path (SQL fields hidden). Vector columns render as `vector[dim] type`; vector cells render as `vec[dim] [v0, v1, …]`. LanceDB tables (no PK) browse read-only, and the SQL editor / new-query affordance is hidden for LanceDB connections.
+The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB shows a Cloud/Local mode with URI/region/API-key or a directory path (SQL fields hidden). Vector columns render as `vector[dim] type`; vector cells render as `vec[dim] [v0, v1, …]`. LanceDB tables (no PK) browse read-only. The SQL editor / new-query affordance is hidden for LanceDB **Cloud** connections only — local connections have a SQL editor via the embedded DuckDB (BASED-LANCE-SQL / BASED-LANCE-SQL-GATING). SQL-tab and Data-tab-search gating are both driven by the real `EngineCapabilities` from the connection response (BASED-CAPABILITIES-WIRE), not a hardcoded `engine === "mssql"` check.
 
 **Verification procedure:**
 1. New connection → Engine: LanceDB → Local → set a directory with a LanceDB table → Test → ok → Save
 2. Connect → object tree lists tables (no schemas/procs) → open one → the vector column shows `vector[dim]`; the grid is read-only; cells show `vec[dim] […]`
-3. The "+" new-query button is absent for the LanceDB connection
+3. The "+" new-query button is present for a local LanceDB connection and absent for a Cloud one (BASED-LANCE-SQL-GATING)
 4. Open the Capi rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` and renders results (needs a healthy model backend)
+
+### BASED-CAPABILITIES-WIRE: Real EngineCapabilities exposed end-to-end
+**Applies to:** based (core, ui)
+**Test category:** manual
+
+`GET /api/session/state` and `POST /api/session/connect`'s responses both carry `capabilities: EngineCapabilities | null` (the live adapter's `{sql, search, write, orderedBrowse}` — see BASED-TABLE-ORDERBY for `orderedBrowse` — or `null` when disconnected). The frontend store keeps a `capabilities` field set from every connect response and resets it to `null` on disconnect; `TableDetailsView`'s SQL-tab gate, `TableDataGrid`'s Browse/Search toggle, `TabStrip`'s "+" new-query button, and the store's `newQueryTab` guard all read it instead of hand-rolling `engineOf(conn) === "mssql"`. (Capabilities may be **dynamic per config**: the Lance adapter reports `sql: true` locally and `false` on Cloud.)
+
+**Verification procedure:**
+1. Connect to a SQL Server connection → the SQL tab is visible, no Search toggle appears in the Data tab
+2. Connect to a LanceDB Cloud connection → the SQL tab is hidden, a Browse/Search toggle appears in the Data tab; a local LanceDB connection shows both
+3. Disconnect → reconnecting to either engine re-derives the gating correctly (no stale capabilities from the prior connection)
+
+### BASED-LANCE-EMBED-PROFILES: Named, user-configured embedding profiles
+**Applies to:** based (core, ui)
+**Test category:** manual
+
+Users configure one or more named embedding profiles (`name`, `baseUrl`, `model`, optional API key) pointing at any OpenAI-compatible `/v1/embeddings` endpoint (LM Studio, OpenAI, etc.), CRUD'd via `GET/POST /api/embedding-profiles` and `DELETE /api/embedding-profiles/:id`, persisted in `embedding_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `embed:` prefix). A search picks one via `embeddingProfileId`.
+
+**Verification procedure:**
+1. Settings (gear icon) → Search tab → Embedding profiles → Add → name it, point `baseUrl` at a running LM Studio embeddings endpoint, set the model id → Save
+2. The profile appears in the Data tab's Search toolbar's embedding-profile dropdown for a LanceDB table
+3. Editing the profile with a blank API key field keeps the previously stored key; Delete removes it from both the list and Credential Manager
+
+### BASED-LANCE-RERANK-PROFILES: Named, user-configured reranker profiles
+**Applies to:** based (core, ui)
+**Test category:** manual
+
+Users configure one or more named reranker profiles (`name`, `baseUrl`, optional `model`, optional API key, optional `api`, optional `instruction`), CRUD'd via `GET/POST /api/reranker-profiles` and `DELETE /api/reranker-profiles/:id`, persisted the same way as embedding profiles (`reranker_profiles` table + Credential Manager `rerank:` prefix). `api` selects the endpoint shape: `"rerank"` (default, and what legacy api-less rows mean) is a generic Cohere/TEI-shape rerank endpoint (`POST {baseUrl}/rerank {query, documents, top_n?} -> [{index, relevance_score}]`); `"openai"` is an OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (BASED-LANCE-RERANK-OPENAI), for which the profile form requires `model` and offers the `instruction` override. A search picks a profile via `rerankerProfileId` plus optional `rerankerOptions` (`topN`, `temperature`).
+
+**Verification procedure:**
+1. Settings → Search tab → Reranker profiles → Add a profile pointing at a running rerank server → Save
+2. Run a search in the Data tab with that reranker selected → results are reordered/truncated by `_rerank_score` instead of the native distance/relevance score
+3. Add a second profile with API = "OpenAI chat completions (yes/no logprobs)", Base URL = an LM Studio `…/v1` running a non-thinking Qwen3-Reranker GGUF, Model = its LM Studio identifier → run the same search with this profile → rows carry `_rerank_score` in (0,1) and the order changes vs. the native score
+4. Editing either profile with a blank API key keeps the stored key; a legacy profile (saved before `api` existed) still calls `POST {baseUrl}/rerank`
+5. With a reranker selected, the search toolbar shows a "Rerank col" picker listing the table's string columns (default "auto" = the content-column heuristic); picking one sends it as `rerankTextColumn` and the rerank documents come from that column
+
+### BASED-LANCE-RERANK-OPENAI: OpenAI chat-completions scoring mode (yes/no logprobs)
+**Applies to:** based (core)
+**Test category:** integration
+
+When a resolved reranker profile has `api: "openai"`, the rerank step scores each candidate with one `POST {baseUrl}/chat/completions` request instead of a single `/rerank` call — the Qwen3-Reranker scheme: the model judges yes/no and relevance is the two-token softmax over the yes/no logprobs of the first generated token. Requests carry the Qwen judge system prompt, a user message `<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}` (instruction defaults to "Given a web search query, retrieve relevant passages that answer the query", overridable per profile), `model`, `max_tokens: 1`, `temperature: 0`, `logprobs: true`, `top_logprobs: 20`, and `authorization: Bearer` when the profile has a key. Calls are bounded to 8 concurrent. The result shape is identical to the `rerank` api (same `RerankResult[]`, same `_rerank_score` pipeline); `rerankerOptions.topN` is applied based-side (sort desc, slice) mirroring Cohere `top_n`; `rerankerOptions.temperature` is a documented no-op in this mode. Transient per-document failures (5xx, network error, or a 200 response missing `logprobs` — all observed intermittently from LM Studio under concurrent load) get one retry after a short backoff; if the retry also fails transiently, that document scores 0 and the search still completes. 4xx responses are misconfiguration and fail the rerank immediately, with any HTML error body stripped to text and truncated before it reaches the error message (both api paths).
+
+**Acceptance criteria:**
+- One chat-completions request per candidate document, each with the prompt/body shape above; results reorder by `_rerank_score`
+- Score = `pYes / (pYes + pNo)`, summing probability over all case/whitespace token variants of "yes"/"no" in `top_logprobs`; "no" absent from the returned top-k → score falls back to raw `pYes`; neither present → that document scores 0
+- `rerankerOptions.topN` truncates the scored set to the top N even when `keepSize` is larger
+- A missing-logprobs or 5xx response for a single document is retried once, then degrades that document to score 0 without aborting the search; healthy documents are not retried
+- Only when **no** document could be scored does the search fail: a server that never returns logprobs → descriptive error mentioning logprobs support
+- Every document scoring neither yes nor no (e.g. a thinking-enabled chat template emitting `<think>`) → descriptive error suggesting a non-thinking template
+- A 4xx response fails immediately (no retry/degrade) on both api paths, with HTML error bodies reduced to their text in the message
+
+### BASED-LANCE-RERANK-PIPELINE: External rerank is a separate, optional step from LanceDB's internal RRF
+**Applies to:** based (core)
+**Test category:** integration
+
+`search()`'s reranker profile step is a based-side, always-optional, always-external post-processing pass — distinct from the `RRFReranker` LanceDB's own `hybrid` mode uses internally to fuse vector+FTS candidates (which is never itself user-configured). When a reranker profile is given: build one "document" string per candidate — from `rerankTextColumn` when supplied, else a heuristic: a conventionally-named content column (`text`, `content`, `body`, `document`, `chunk`, `passage`, `summary`, `description`, `message`, case-insensitive) if present, else the string column with the longest values across the sampled candidates (so an id/ref column that happens to sort first can't win), else the first non-vector column. Document text is capped at 6000 characters before sending (over-long documents overflow small local rerankers' context windows, which then silently return no logprobs). POST the documents to the profile's rerank endpoint, attach the returned scores as `_rerank_score`, and resort/truncate by that score — for any of the three search modes, not just hybrid.
+
+**Acceptance criteria:**
+- A reranker profile applied to a plain `text` or `vector` search (not just `hybrid`) reorders results by `_rerank_score`
+- With no reranker profile, `hybrid` mode still fuses vector+FTS via LanceDB's internal RRF exactly as before
+- The rerank HTTP call handles both `{results:[...]}` (Cohere) and a bare-array response shape, and both `relevance_score`/`score` field names
+- A table whose first string column is an id/ref still sends the conventionally-named content column (e.g. `text`) as document text; with no conventional name, the string column with the longest sampled values wins; explicit `rerankTextColumn` always overrides the heuristic
+- Documents sent to the rerank endpoint are truncated to 6000 characters
+
+### BASED-LANCE-SEARCH-KNOBS: Vector-query tuning knobs end-to-end
+**Applies to:** based (core)
+**Test category:** integration
+
+`LanceSearchRequest` gains the Lance SDK's vector-query tuning knobs — `distanceType`
+(`l2|cosine|dot`), `nprobes`, `refineFactor`, `ef`, `postfilter`, `bypassVectorIndex`,
+`distanceRangeLower`/`distanceRangeUpper` — applied by the adapter (`applyVectorKnobs`) in the
+vector branch and in the hybrid branch (after `.nearestTo`, before the RRF `.rerank`). They are
+vector/hybrid-only: any of them combined with `mode: "text"` throws a descriptive error before
+querying. The HTTP route (`POST /api/session/lance-search`) forwards them via its existing spread.
+The agent search tools split their option fields: `vector_search`/`hybrid_search` expose all eight
+plus `rerankTopN`/`rerankTemperature`/`rerankTextColumn` (mapped to the adapter's existing
+`rerankerOptions`/`rerankTextColumn`); `text_search` exposes the rerank fields but none of the
+vector knobs (schema-level omission beats a runtime error). Deliberately not exposed:
+`fastSearch()` (silently drops unindexed rows — a recall footgun), `minimumNprobes`/
+`maximumNprobes` (near-duplicates of `nprobes`), `explainPlan()` (a diagnostic, not a search
+parameter — future work).
+
+**Acceptance criteria:**
+- `distanceRangeLower`/`Upper` bound results on the seeded (unindexed → exact search) table; `postfilter: true` with a selective `where` returns no more rows than the prefiltered equivalent
+- `nprobes`/`ef`/`refineFactor`/`bypassVectorIndex` on an unindexed table do not error (flat-search no-ops)
+- Any vector-only knob with `mode: "text"` errors descriptively without querying
+- Agent `vector_search` forwards `rerankTopN` to the rerank endpoint as `top_n` (observed by a fake rerank server)
+- `text_search`'s input schema contains no vector-knob fields
+
+### BASED-LANCE-VECTOR-METRIC: Vector index metric surfaced on columns
+**Applies to:** based (core)
+**Test category:** integration
+
+`getTableColumns` populates `TableColumn.vectorMetric` for an ANN-indexed vector column from
+`Table.listIndices()` + `indexStats().distanceType` (normalized to `l2|cosine|dot`; anything else
+or an unindexed column stays `null`). The lookup is memoized per `${schema}/${table}` for the
+connection's lifetime (cleared on `disconnect()`) — `getTableColumns` runs on every page read and
+search, and index metadata doesn't churn mid-session. Any introspection failure degrades to
+`null`, never an error.
+
+**Acceptance criteria:**
+- An indexed vector column reports the index's metric; unindexed columns report `null` *(test creates a small IVF index; self-skips if index training fails on the small fixture)*
+- A second `getTableColumns` call for the same table does not re-run the index introspection (memoized)
+
+### BASED-LANCE-SEARCH-UI: Data tab Browse/Search toggle and controls
+**Applies to:** based (ui)
+**Test category:** manual
+
+For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab's toolbar gains a Browse/Search toggle. Search mode replaces the browse toolbar with: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `sampleSize`/`keepSize`/`floor`/`delta` number inputs, a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
+
+**Verification procedure:**
+1. Open a LanceDB table's Data tab → click Search → the browse toolbar is replaced by search controls
+2. Pick vector mode, enter a query, pick an embedding profile, Run → results render in the grid, read-only
+3. Switch to Browse → the original paginated rows reappear unaffected
+4. Set `floor`/`delta`/`sampleSize`/`keepSize` and rerun → the result count and order change accordingly
+
+### BASED-LANCE-SEARCH-PROFILES-UI: Search tab in the settings popover
+**Applies to:** based (ui)
+**Test category:** manual
+
+The settings popover (gear icon in the left rail, `ThemePicker`) has four tabs — General, Theme, Search,
+Agent (`BASED-AI-PROVIDER-PROFILES`) — at a fixed width/height (480×560) that does not change when
+switching tabs; a tab whose content is taller than that scrolls internally. The Search tab lists
+embedding and reranker profiles with inline Add/Edit/Delete forms (`name`/`baseUrl`/`model`/API key,
+blank key on edit = keep stored).
+
+**Verification procedure:**
+1. Click the gear icon → Search tab → Add an embedding profile and a reranker profile
+2. Both appear in the Data tab's Search toolbar dropdowns for a LanceDB table
+3. Edit a profile leaving the API key blank → the previously stored key is preserved (verified by the search still authenticating successfully)
+4. Switch between General/Theme/Search/Agent repeatedly → the popover's width and height never change; a tab whose content overflows the fixed height scrolls internally instead of resizing the popover
 
 ### BASED-LANCE-FOLDER-BROWSE: native folder picker for the local directory path
 **Applies to:** based
@@ -832,8 +1653,240 @@ On a local connect, if the target directory has no LanceDB tables directly but c
 - `vectorSearch`/`textSearch`/`hybridSearch` given a table name that's unique across subfolders resolve it automatically; a name present in zero subfolders throws a "not found" error; a name present in more than one subfolder throws an "ambiguous" error naming the conflicting folders.
 - A directory with no LanceDB tables anywhere (not at the top level, not in any subfolder) makes `connect()` throw a descriptive error rather than silently connecting to nothing.
 
-### BASED-LANCE-EMBED-COMPUTE: based-side embeddings (future work — not built)
+### BASED-LANCE-EMBED-COMPUTE: based-side embeddings
 **Applies to:** based (core)
+**Test category:** integration
+
+`based` computes query embeddings itself rather than relying on LanceDB's native registered-embedding-function mechanism (which requires per-table setup outside based on a per-table basis). When `search()` is called in `vector`/`hybrid` mode with a `query` string and no raw `vector`, and an `embeddingProfile` is resolved (from a user-configured `EmbeddingProfile`, BASED-LANCE-EMBED-PROFILES), `embedQuery()` calls the profile's OpenAI-compatible `/v1/embeddings` endpoint via `@ai-sdk/openai-compatible`'s `embeddingModel()` + `ai`'s `embed()`, and the resulting vector is passed to LanceDB's `vectorSearch`/`nearestTo`. With no embedding profile and no raw vector, the call errors with a message pointing at the alternatives (supply a vector, use `text_search`, or configure a profile).
+
+**Acceptance criteria:**
+- `vector`/`hybrid` mode with `query` + a resolved embedding profile computes a vector and returns results ranked by it
+- `vector`/`hybrid` mode with `query` and no embedding profile and no raw `vector` throws a descriptive error rather than silently misusing the text as a vector
+
+## Lance SQL + LSP (Phase 4)
+
+Local LanceDB connections get a real SQL query tab — an embedded DuckDB (`@duckdb/node-api`) with the `lance` **core extension** scanning the connection's `.lance` storage directly via `ATTACH … (TYPE lance)` (pushdown, no materialization through JS; also exposes `lance_vector_search(path, column, vector, k, …)`/`lance_fts()` as SQL functions). Both editors gain real Language-Server-Protocol intelligence over a WebSocket transport: an in-house DuckDB language server (no LSP exists anywhere for the DuckDB/DataFusion dialect) and, for SQL Server, the external `sqls` server. Engine-specific native deps (`mssql`, `@lancedb/lancedb`, `@duckdb/node-api`) load lazily at connection time.
+
+### BASED-LAZY-ENGINES: Engine deps load on demand
+**Applies to:** based (core)
+**Test category:** integration
+
+Importing `@based/core` shall evaluate no engine module: `mssql`/tedious, `@lancedb/lancedb`, and `@duckdb/node-api` load only when a connection of that engine is used. `createAdapter` is async and dynamic-imports the adapter per engine branch; the barrel re-exports no concrete adapter class (tests import them via the `@based/core/mssql` / `@based/core/lancedb` / `@based/core/lancedb-sql` subpath exports).
+
+**Acceptance criteria:**
+- A fresh process that imports `@based/core` has no mssql/tedious, `@lancedb`, or `@duckdb` module in `require.cache`
+- `createAdapter` resolves the MSSQL class for `engine: "mssql"` and for an engine-less legacy config, and the LanceDB class for `engine: "lancedb"`
+- The full suite stays green
+
+### BASED-LANCE-SQL: DuckDB-backed SQL for local LanceDB
+**Applies to:** based (core)
+**Test category:** integration
+
+`LanceDbAdapter.capabilities` becomes dynamic: `sql: true` for local configs, `false` for Cloud (`db://`) — the lance extension reads storage, not the cloud API. Local `execute()` delegates to a per-adapter `LanceSqlBridge` (`core/src/db/lanceSql.ts`), created lazily on first SQL/LSP use (connecting/browsing never pays DuckDB startup or needs network): dynamic-import `@duckdb/node-api` → in-memory instance → `INSTALL lance; LOAD lance;` (downloads from extensions.duckdb.org into `%USERPROFILE%\.duckdb` on first ever use; failure becomes a descriptive error chunk naming the download, retried on the next run, never cached) → `ATTACH` the local dir (single-db mode gets `USE db` re-applied per query connection — USE is session-scoped while ATTACH is instance-scoped; base-folder mode attaches each subfolder as a namespace matching the explorer's schema names, double-quoted, names containing `"` rejected). Statements are split via `extractStatements` and streamed per result set through the standard `QueryChunk` contract; each query runs on its own connection so `cancel()` (flag + `interrupt()`) only aborts that query. Row cap: unlike MSSQL (which keeps counting the true total), scanning stops once the cap is exceeded — `truncated: true`, `rowCount` = rows seen. Value mapping: fixed-size FLOAT/DOUBLE arrays (Lance vectors) → the `{$:"vec",dim,preview}` wire form; BigInt → number when safe else string; blobs → `{$:"bin"}`; timestamps/decimals via their faithful string forms; lists/structs → JSON summaries.
+
+**Acceptance criteria:**
+- Local adapter `capabilities.sql === true`; cloud `false`, and cloud `execute()` emits a graceful error chunk
+- `execute("SELECT …")` against a temp-seeded dir emits `resultset`/`rows`/`resultsetEnd`/`done` with correct rows; multi-statement scripts emit one result set each
+- Base-folder mode: each subfolder is an attached namespace; a cross-namespace JOIN works
+- Vector columns serialize as `{$:"vec", dim, preview}`
+- `rowCap` truncates with `truncated: true`
+- `cancel()` on a long scan yields `status: "cancelled"` (best-effort)
+- A bridge boot failure (e.g. an unattachable folder name; the INSTALL-offline variant carries the same error copy but needs a blocked network — verified manually) emits a descriptive error chunk, and the next run retries the boot
+
+### BASED-LANCE-SQL-PLAN: Actual execution plan for local LanceDB SQL
+**Applies to:** based (core), based (ui)
+**Test category:** integration
+
+When `execute()` is called with `capturePlan`, the Lance bridge enables DuckDB JSON profiling (`SET enable_profiling='json'` + `profiling_mode='standard'` + `profiling_output=<temp file>`) and runs each statement **materialized** (`runAndReadAll`, not the streaming path): DuckDB only flushes the profile for a fully-executed pipeline, and a streamed non-blocking plan (e.g. a bare scan) never finalizes. After the statement executes (results still emitted, capped for display), the bridge reads the flushed profile and emits one `{type:"plan", format:"duckdb-json", json}` chunk **per statement** carrying the trimmed operator tree (`operator_type`, `operator_cardinality`, `operator_timing`, `extra_info`). The `plan` `QueryChunk` is a discriminated union keyed by `format` — `"showplan-xml"` (MSSQL) vs `"duckdb-json"` — and the shared UI `PlanView` graph renders both by parsing to a common `PlanOperator` tree (DuckDB self-timing is accumulated into `estimatedTotalSubtreeCost` so the existing cost% layout math holds). A metadata-only query (e.g. `count(*)`, `max(id)`) executes no pipeline, writes no profile, and emits no plan (skipped silently); the temp profile file is removed when the run ends. Capture settings can never leak between queries — each `execute()` uses its own connection, closed on completion.
+
+**Acceptance criteria:**
+- `capturePlan:true` on a pipeline SELECT (scan/aggregate) → exactly one `{type:"plan",format:"duckdb-json"}` chunk whose JSON parses to a non-empty operator tree naming the scanned table; the normal resultset is unaffected (no extra "Results" tab)
+- A 2-statement pipeline script with `capturePlan:true` → one plan chunk per statement
+- `capturePlan:false` → zero plan chunks
+- (unit) `parseDuckPlanJson` maps `operator_type`→humanized `physicalOp`, `operator_cardinality`→`actualRows`, `extra_info` Table/Filters/Estimated Cardinality, and sets cumulative subtree cost so layout cost% recovers each operator's self-timing share
+
+### BASED-LANCE-SQL-STATS: Client statistics for local LanceDB SQL
+**Applies to:** based (core)
+**Test category:** integration
+
+When `execute()` is called with `captureStats`, the bridge surfaces the same DuckDB profile's summary as an ordinary `{type:"message"}` chunk in the Output pane — total latency (ms), CPU time, rows returned, rows scanned, peak memory — mirroring how MSSQL client statistics arrive as messages (BASED-CLIENT-STATS). As with the plan, a metadata-only query yields no profile and thus no statistics message.
+
+**Acceptance criteria:**
+- `captureStats:true` on a pipeline SELECT → a message chunk containing recognizable text (`Client statistics`, `latency`, `rows returned`, `rows scanned`)
+- `captureStats:false` → no client-statistics message
+
+### BASED-LANCE-SQL-GATING: Capability-driven SQL affordances
+**Applies to:** based (ui)
 **Test category:** manual
 
-When a table lacks a registered embedding function, `based` could embed a text query itself via the configured `@ai-sdk/openai-compatible` provider and pass the raw vector to search. Deferred to keep v1 free of AI-provider coupling; text→vector currently relies on LanceDB's registered embedding functions or a caller-supplied vector.
+TabStrip's "+" new-query button and the store's `newQueryTab` guard key off `capabilities.sql` (amends BASED-CAPABILITIES-WIRE's reader list); the LeftRail schema filter also shows for base-folder Lance connections (subfolders populate `schemas`) while the database selector stays MSSQL-only; the connection dialog's engine copy is mode-aware (Local: has a SQL editor via DuckDB; Cloud: search only); `ensureSqlView`'s generated `SELECT` uses engine-appropriate quoting (`[s].[t]` for T-SQL; `"folder".main."table"` / bare name for Lance).
+
+**Verification procedure:**
+1. Connect a local base-folder Lance dir → "+" appears → new query tab → run a cross-folder JOIN → grid shows rows; vector cells render as `vec[dim] […]`
+2. Open a table → SQL sub-view → the generated SELECT uses double-quoted `folder.main.table` (no `[dbo]`), and runs
+3. Connect LanceDB Cloud → no "+" button, no SQL sub-view (BASED-LANCE-UI)
+4. Offline first-use: block network on a machine without a cached lance extension → running SQL shows the descriptive extension-download error in the Output pane; browse/search unaffected
+
+### BASED-LSP-TRANSPORT: WebSocket LSP endpoint
+**Applies to:** based (core)
+**Test category:** integration
+
+`/api/lsp` upgrades to a WebSocket (token via query param; `authorized()` applies) carrying LSP JSON-RPC, one message per text frame. One live connection per session id; the backend is chosen by the session's engine at upgrade time and torn down on session disconnect/close/server stop and on connection switch. Upgrades are refused (409) for un-connected sessions or engines without `capabilities.sql`. Backends are dynamic-imported per engine. Known Bun workarounds (Windows, Bun 1.3.14): session teardown uses `ws.terminate()` (a server-initiated graceful close wedges `server.stop(force)`), and `RunningServer.stop` bounds `server.stop(true)` with a 2s race after the LSP settle delay.
+
+**Acceptance criteria:**
+- Bad token and un-connected sid upgrades are refused (the client's socket errors, never opens)
+- A connected LanceDB session upgrades; `initialize` returns completion+hover capabilities
+- Disconnecting the session closes the socket server-side
+- `startServer().stop()` completes (no hang) after LSP sockets have existed
+
+### BASED-LSP-DUCKDB: In-house Lance/DuckDB language server
+**Applies to:** based (core)
+**Test category:** integration
+
+No language server exists for the DuckDB/DataFusion SQL dialect, so core implements one (`core/src/lsp/duckdbLsp.ts`): full-document sync, UTF-16 positions, completion (trigger chars `.`, `"`, space) and hover, sourced from the session's `LanceSqlBridge` DuckDB instance — `sql_auto_complete()` (the `autocomplete` extension, installed lazily; catalog-only fallback when unavailable) merged with `duckdb_tables()`/`duckdb_columns()`/`duckdb_functions()` (~5s cache) and a keyword list. Completions therefore see the exact attached Lance catalog. Hover describes tables (with column lists), columns (vector columns called out with dimension), and functions. No diagnostics in v1 (no safe parse-only API); the `publishDiagnostics` wire path exists client-side.
+
+**Acceptance criteria:**
+- Completion after `SELECT * FROM ` includes the seeded Lance table (and namespaces in base-folder mode)
+- Column completions after `table.`
+- Hover on a table/column returns type info; vector columns mention "vector"
+- Requests for unknown methods get JSON-RPC error responses, not silence
+
+### BASED-LSP-MSSQL: sqls language server for SQL Server — SUPERSEDED
+**Superseded by BASED-LSP-MSSQL-NATIVE** (2026-07-25). The external `sqls` binary bridge
+(sql-login-only — Entra/token auth was inexpressible as a go-mssqldb DSN — Windows-only download
+via System32 tar.exe, password-embedding DSN, child-process respawn machinery) is deleted; MSSQL
+sessions now get the in-house catalog-driven server, which serves **every** auth type by reusing
+the session's live authenticated adapter pool. See the STS feasibility memo
+(`.claude/plans/sts-intellisense-feasibility.md`) for why porting SqlToolsService's IntelliSense
+was rejected (its resolver/binder is a closed-source SMO binary, not in the repo).
+
+### BASED-LSP-MSSQL-NATIVE: In-house MSSQL language server
+**Applies to:** based (core)
+**Test category:** integration (JSON-RPC against the dev DB via azure-cli auth — the thing sqls
+could never test) + unit (pure context/alias helpers) + manual (editor procedure)
+
+MSSQL sessions get LSP from an in-house server (`core/src/lsp/mssqlLsp.ts`) mirroring the DuckDB
+server's shape: full-document sync, UTF-16 positions, completion (trigger chars `.`, `[`, space)
+and hover, **no diagnostics v1** (duckdb precedent; the client degrades gracefully). Data comes
+from the session's **live authenticated adapter** — `listObjects()` plus a new bulk
+`listAllColumns()` (one `sys.columns` join across all user tables, ~5s cache) — so every auth
+type works, including Entra (the adapter already handles token refresh), and no external binary,
+download, or DSN exists. Completion context is deliberately heuristic (sqls-grade, not a parser),
+implemented as exported pure functions: after `FROM`/`JOIN`/`APPLY`/`UPDATE`/`INTO`/`DELETE FROM`
+→ objects (schema-qualified; `dbo` members also offered bare); after `schema.` → that schema's
+objects; after `alias.` or `table.` → that object's columns (alias resolution by regex over the
+whole document, bracket-quoted names included); after `EXEC`/`EXECUTE` → procedures; otherwise →
+T-SQL keywords + objects + columns of objects referenced in the document. Hover: table/view →
+markdown column list (PK-flagged); column → type + owning table. Crash/HTTP failures degrade to
+keyword-only completions, never an error to the client.
+
+**Acceptance criteria:**
+- (integration) Against the dev DB via **azure-cli** auth: `initialize` advertises
+  completion+hover; after `SELECT * FROM ` completions include a known table; `alias.` after
+  `FROM <table> t` completes that table's columns; hover on the table returns markdown naming a
+  known column; unknown methods get JSON-RPC errors, not silence
+- (unit) The pure helpers: context detection for FROM/JOIN/EXEC/schema-dot/alias-dot; alias
+  resolution handles `AS` and bare aliases, bracketed identifiers, and multiple FROM/JOIN clauses
+- (manual) An Entra connection now gets schema-aware completions in the editor — previously the
+  degraded word-based path; a sql-login connection behaves identically (one code path)
+
+### BASED-LSP-UI: Thin Monaco LSP client
+**Applies to:** based (ui)
+**Test category:** manual
+
+The UI keeps plain `monaco-editor` (no monaco-languageclient/@codingame migration). `ui/src/lsp/`: `client.ts` (JSON-RPC over the `/api/lsp` WebSocket, initialize handshake, 10s request timeouts), `manager.ts` (opens/replaces/disposes the window's one client as `(status, capabilities.sql, activeConnectionId)` change; mirrors **all** query-tab Monaco models as LSP documents — didOpen on create/ready, 250ms-debounced full-text didChange, didClose on dispose, re-didOpen on reconnect; exponential backoff 1s→16s while the store still wants LSP), `providers.ts` (completion + hover providers registered once for language `"sql"`, LSP↔Monaco kind/range/0-vs-1-based mapping; `publishDiagnostics` → `setModelMarkers`). The Vite dev proxy tunnels the socket (`ws: true`). Graceful degradation is a hard requirement: server down / refused upgrade / dead backend / request timeout → providers return empty and the editor behaves exactly as pre-LSP.
+
+**Verification procedure:**
+1. Local Lance connection → query tab → typing `SELECT * FROM ` offers the connection's tables; hover a column shows its type
+2. Switch to a SQL Server connection → the socket reconnects and the sqls backend serves completions (sql-login)
+3. Stop the core server → editor keeps working with Monaco's built-in suggestions; restart → completions come back (backoff reconnect)
+4. LanceDB Cloud connection → no LSP socket is opened; editor unaffected
+
+### BASED-LANCE-AGENT-SQL: Agent run_query on local Lance
+**Applies to:** based (core)
+**Test category:** integration
+
+The LanceDB agent surface gains `run_query`: read-only DuckDB SQL over the attached Lance tables, gated by `isReadOnly` and, at execute time, by `capabilities.sql` (cloud sessions get a graceful error pointing at the search tools). Reuses the engine-agnostic `collectQuery` with `AGENT_ROW_CAP`; reads are audited. `LANCE_PERSONA` explains the DuckDB dialect, `folder.main.table` qualification, and that search tools remain the primary path. `run_mutation` still does not exist for Lance (`capabilities.write` false). The shared `get_schema` tool's default-schema fallback keys off the **engine** (`"dbo"` only for mssql), not `capabilities.sql`.
+
+**Acceptance criteria:**
+- The Lance surface contains `run_query` and no `run_mutation`
+- `run_query` executes a SELECT against a live seeded table and returns result sets; a mutating statement is refused
+- Reads appear in the audit log
+- `get_schema` with a bare table name on a base-folder connection searches subfolders (never guesses `dbo`)
+
+## Embeddings visualization — the Atlas view (Phase 5)
+
+An interactive scatter of a LanceDB table's vector space: full-precision vectors stream to the
+client once, dimensionality reduction and clustering run in a web worker, and deck.gl renders the
+layout live as UMAP converges. Home repo: based. Plan: `plans/lancedb-embeddings-viz.md` (archived
+on completion).
+
+### BASED-EMBED-WIRE: Binary vector-sample wire format
+**Applies to:** based (core)
+**Test category:** unit
+
+`encodeVectorSample`/`decodeVectorSample` (core/src/db/vectorWire.ts) carry a `VectorSampleResult` as `[u32 LE headerLen][JSON header, space-padded to 4-byte alignment][raw float32 block]`. The alignment guarantee lets the client construct a `Float32Array` view directly over the response buffer without copying.
+
+**Acceptance criteria:**
+- encode → decode round-trips all header fields and the exact float block
+- The float block offset (`4 + headerLen`) is always a multiple of 4, across header lengths and multibyte UTF-8 content
+- An empty sample (count 0) survives the round trip
+
+### BASED-EMBED-VECTORS: Full-precision vector sample endpoint
+**Applies to:** based (core)
+**Test category:** integration
+
+`LanceDbAdapter.readVectorSample(schema, table, {column, limit, textCap?})` returns raw n×dim vectors — the only read path that bypasses the `{$:"vec"}` preview cap — plus the table's non-vector cells (strings capped at `textCap`, default 2000). `GET /api/session/table-vectors?schema&table&column&limit` serves it as the BASED-EMBED-WIRE binary (octet-stream); engines without `readVectorSample` get a 400. The requested limit is clamped by the adapter row cap, a 128MB vector-byte budget, and the table size; when the table exceeds the effective limit, evenly-strided chunks sample across insert order and `sampled:true` is set. Rows with null or wrong-dimension vectors are skipped. A non-vector column name is rejected.
+
+**Acceptance criteria:**
+- Full-precision vectors (components past the 8-float preview) with correct `dim`/`count`/`totalRows`, non-vector cells aligned row-for-row with the float block
+- `limit < totalRows` → `sampled:true` and coverage past the first `limit` rows of insert order
+- Adapter `rowCap` clamps the request
+- Non-vector column → error mentioning "vector"
+- `textCap` truncates long text cells
+
+### BASED-EMBED-PIPELINE: Client-side reduction/cluster pipeline
+**Applies to:** based (ui)
+**Test category:** unit
+
+`ui/src/embeddings/pipeline.ts` is the pure, DOM-free math core (seeded mulberry32 RNG, Johnson-Lindenstrauss random projection, exact PCA via subspace iteration, k-means++ with Calinski-Harabasz auto-k, TF-IDF cluster terms, cosine kNN, aspect-preserving position normalization), all over flat Float32Arrays. The worker (`worker.ts`) composes them: project→PCA→UMAP (epoch-streamed via umap-js)→cluster→TF-IDF, with generation-token cancellation. Same table + same seed ⇒ identical layout.
+
+**Acceptance criteria:**
+- PCA recovers a planted dominant axis (|dot| > 0.99) and orders components by variance
+- k-means auto-k finds k=3 on three separated blobs; labels partition blob membership
+- Deterministic under a fixed seed; n<8 degrades to a single cluster
+- TF-IDF surfaces distinctive per-cluster terms, skipping stopwords; null docs tolerated
+- cosine kNN returns known neighbours in order, excluding the query row
+- normalizePositions maps into a centered [-extent, extent] box
+
+### BASED-EMBED-LABELS-AI: AI cluster naming
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+`POST /api/session/label-clusters` names clusters via the active AI profile's model in ONE `generateText` call (not the agent loop). Input is clamped server-side (≤24 clusters × ≤10 samples × ≤300 chars — truncated, never rejected; `clampClusters`). `buildLabelPrompt` renders id + TF-IDF hint + numbered samples; `parseLabelResponse` extracts the first JSON array from the reply (fences/prose tolerated) and falls back per-cluster to the hint. Empty cluster list → 400; model resolution failure → 400; 60s timeout. The UI keeps TF-IDF labels on any failure.
+
+**Acceptance criteria:**
+- Prompt lists every cluster with id, hint, samples; clamp limits enforced
+- Clean, fenced, and partially-garbage JSON replies all parse; unknown ids dropped; missing ids fall back to hints
+- Endpoint: empty clusters → 400; missing auth → 401; live naming (self-skips when the AI server is unreachable) returns a non-empty label per id
+
+### BASED-EMBED-UI: The Embeddings sub-view
+**Applies to:** based (ui)
+**Test category:** manual
+
+A fourth sub-view button, "Embeddings", appears on table tabs only when the engine is search-capable AND the table has a vector column. It renders a deck.gl scatter (ScatterplotLayer/Orthographic in 2D, PointCloudLayer/Orbit in 3D) themed from the live CSS variables, with: live epoch-streamed layout ("galaxy condensing"), cluster tints + legend chips (click dims a cluster), numbered callout-badge cluster labels tethered to their centroids by leader lines, always full-strength at any zoom (TF-IDF terms in legend tooltips; AI names on demand replace the numbers), hover tooltip, click → point details panel (a resizable side panel with the row cells + Find similar via client-side cosine kNN, neighbours ringed and the rest dimmed), lasso selection (2D) → ResultGrid panel with a Cell viewer tab (double-click/Enter on a cell), and a points/vector-column/text-column/seed toolbar. Layout state lives in a per-tab engine registry: switching sub-views mid-run does not kill the worker; closing the tab does.
+
+**Verification procedure:**
+1. Connect to a LanceDB database with an embeddings table (vector column + a text column); open the table → an "Embeddings" button appears beside Details/Data/SQL (absent on MSSQL tables and vector-less Lance tables).
+2. Open it → vectors fetch and the layout animates from noise into structure; the toolbar shows "N rows" (or "N of M rows" with sampling) and epoch progress while running.
+3. Toggle 3D → the same layout becomes an orbitable point cloud; drag rotates; toggle back.
+4. After clustering: points tint by cluster; numbered callout badges point at each centroid and legend-chip tooltips show the TF-IDF terms; click a legend chip → that cluster dims; zoom in → labels stay fully legible (the "labels" toggle hides them).
+5. Hover a point → tooltip with the text snippet and cluster name. Click → right panel opens with the row's cells; drag the panel's left edge to resize it; "Find similar" rings its nearest neighbours and dims the rest; "Clear similar" restores.
+6. Lasso (2D only): arm the Lasso button, drag a loop → bottom panel shows the enclosed rows in a grid with a Cell viewer pane underneath; click a cell → the pane shows its full value while the grid stays in view; drag the pane closed, then double-click (or Enter on) a cell → the pane re-expands; close the Selection tab to clear.
+7. "AI label" (requires a reachable AI profile) → clusters rename to short model-generated names; on failure an inline error shows and TF-IDF labels stay.
+8. Switch to Data and back mid-layout → the run continues (no restart). Close the tab → the worker terminates (no orphan in devtools).
+9. Switch among a dark, midtone, and light theme → canvas background, point tints, labels, and legend recolor live.
+10. Tiny table (<50 rows) → instant PCA layout with a "PCA (too few rows for UMAP)" note.
+
+Record: PASS/FAIL + date below.
+- 2026-07-25 PASS (automated Playwright pass against the dev app, steps 1-6 + 10-equivalent: 3-cluster fixture laid out, labels/legend/tooltip/click-details/find-similar/lasso-grid/2D-3D all verified by screenshot; found and fixed ortho depth-clipping and a lasso pointer-event crash). Steps 7 (AI label — LM Studio was down) and 8-9 (worker survival, theme sweep) pending a human pass.

@@ -63,6 +63,18 @@ export function openDb(path?: string): Database {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       json TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS embedding_profiles (
+      id TEXT PRIMARY KEY,
+      json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS reranker_profiles (
+      id TEXT PRIMARY KEY,
+      json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ai_profiles (
+      id TEXT PRIMARY KEY,
+      json TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS agent_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       connection_id TEXT NOT NULL,

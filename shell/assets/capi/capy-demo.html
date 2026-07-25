@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Capy — Composure Demo</title>
+<style>
+  :root {
+    --fur: #DDA05F;
+    --paper: #FBF6EE;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--paper);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+  }
+  h1 { font-size: 16px; color: #6b4f33; letter-spacing: .04em; text-transform: uppercase; margin: 0; }
+  .stage {
+    width: 320px;
+    height: 416px;
+    animation: breathe 4.5s ease-in-out infinite;
+    transform-origin: 50% 100%;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: scaleY(1); }
+    50% { transform: scaleY(1.012); }
+  }
+  /* Every expression state in a slot is stacked in the same place.
+     Only opacity/transform change — that's the entire animation model.
+     Crossfades are slow on purpose: Capy does not do quick reactions. */
+  .slot > g { opacity: 0; transition: opacity 700ms ease, transform 700ms ease; }
+  .slot > g.active { opacity: 1; }
+  .controls {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 480px;
+  }
+  .group { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .group span { font-size: 11px; color: #9a8265; text-transform: uppercase; letter-spacing: .06em; }
+  .group .row { display: flex; gap: 6px; }
+  button {
+    border: 1px solid #cbb190;
+    background: #fff;
+    color: #6b4f33;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.active { background: #DDA05F; color: #3B2A1E; border-color: #3B2A1E; }
+  button:hover { border-color: #6b4f33; }
+  .caption { font-size: 12px; color: #9a8265; max-width: 420px; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>Capy — absolute composure</h1>
+
+<svg class="stage" viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+
+  <!-- body.svg -->
+  <path d="M90,220 C52,265 42,350 62,412 C78,452 125,472 200,472 C275,472 322,452 338,412 C358,350 348,265 310,220 C295,250 255,268 200,270 C145,268 105,250 90,220 Z"
+    fill="#DDA05F" stroke="#3B2A1E" stroke-width="4" stroke-linejoin="round"/>
+  <ellipse cx="108" cy="458" rx="27" ry="20" fill="#7A4B2A" stroke="#3B2A1E" stroke-width="4"/>
+  <ellipse cx="292" cy="458" rx="27" ry="20" fill="#7A4B2A" stroke="#3B2A1E" stroke-width="4"/>
+  <path d="M112,295 C104,345 108,405 134,450 C140,460 152,462 158,454 C166,410 162,345 152,295 Z"
+    fill="#DDA05F"/>
+  <path d="M112,295 C104,345 108,405 134,450 C140,460 152,462 158,454 C166,410 162,345 152,295"
+    fill="none" stroke="#3B2A1E" stroke-width="4" stroke-linecap="round"/>
+  <path d="M288,295 C296,345 292,405 266,450 C260,460 248,462 242,454 C234,410 238,345 248,295 Z"
+    fill="#DDA05F"/>
+  <path d="M288,295 C296,345 292,405 266,450 C260,460 248,462 242,454 C234,410 238,345 248,295"
+    fill="none" stroke="#3B2A1E" stroke-width="4" stroke-linecap="round"/>
+  <ellipse cx="150" cy="460" rx="24" ry="18" fill="#7A4B2A" stroke="#3B2A1E" stroke-width="4"/>
+  <ellipse cx="250" cy="460" rx="24" ry="18" fill="#7A4B2A" stroke="#3B2A1E" stroke-width="4"/>
+
+  <!-- head.svg -->
+  <g transform="rotate(-15 118 55)">
+    <ellipse cx="118" cy="55" rx="34" ry="44" fill="#CB8F52" stroke="#3B2A1E" stroke-width="4"/>
+    <ellipse cx="118" cy="58" rx="17" ry="25" fill="#4A3323"/>
+  </g>
+  <g transform="rotate(12 282 50)">
+    <ellipse cx="282" cy="50" rx="32" ry="42" fill="#CB8F52" stroke="#3B2A1E" stroke-width="4"/>
+    <ellipse cx="282" cy="53" rx="16" ry="23" fill="#4A3323"/>
+  </g>
+  <path d="M200,30 C140,30 95,55 80,110 C68,155 70,205 90,235 C110,268 155,285 200,285 C245,285 290,268 310,235 C330,205 332,155 320,110 C305,55 260,30 200,30 Z"
+    fill="#DDA05F" stroke="#3B2A1E" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M150,160 C140,190 145,225 200,232 C255,225 260,190 250,160 C245,130 155,130 150,160 Z"
+    fill="#A97850" stroke="#3B2A1E" stroke-width="3.5" stroke-linejoin="round"/>
+  <ellipse cx="188" cy="182" rx="4" ry="6" fill="#3B2A1E"/>
+  <ellipse cx="212" cy="182" rx="4" ry="6" fill="#3B2A1E"/>
+  <g opacity="0.65">
+    <ellipse cx="128" cy="185" rx="20" ry="11" fill="#F0A98A"/>
+    <ellipse cx="272" cy="185" rx="20" ry="11" fill="#F0A98A"/>
+  </g>
+
+  <!-- eyebrows slot -->
+  <g class="slot" id="slot-eyebrows">
+    <g data-state="neutral" class="active">
+      <path d="M123,120 Q143,112 163,120" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <path d="M237,116 Q257,108 277,116" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+    </g>
+    <g data-state="raised">
+      <path d="M123,116 Q143,104 163,116" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <path d="M237,112 Q257,100 277,112" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+    </g>
+    <g data-state="concerned">
+      <path d="M123,118 Q143,116 164,124" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <path d="M236,124 Q257,116 277,118" stroke="#3B2A1E" stroke-width="5" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- eyes slot -->
+  <g class="slot" id="slot-eyes">
+    <g data-state="neutral" class="active">
+      <circle cx="143" cy="150" r="13" fill="#3B2A1E"/>
+      <circle cx="139" cy="145" r="4" fill="#FFFFFF"/>
+      <circle cx="257" cy="145" r="13" fill="#3B2A1E"/>
+      <circle cx="253" cy="140" r="4" fill="#FFFFFF"/>
+    </g>
+    <g data-state="thinking">
+      <circle cx="142" cy="148" r="13" fill="#3B2A1E"/>
+      <circle cx="138" cy="142" r="4" fill="#FFFFFF"/>
+      <circle cx="256" cy="143" r="13" fill="#3B2A1E"/>
+      <circle cx="252" cy="138" r="4" fill="#FFFFFF"/>
+      <path d="M130,140 Q143,135 156,140" stroke="#3B2A1E" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
+      <path d="M244,135 Q257,130 270,135" stroke="#3B2A1E" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
+    </g>
+    <g data-state="searching">
+      <circle cx="143" cy="150" r="13" fill="#3B2A1E"/>
+      <circle cx="147" cy="146" r="4" fill="#FFFFFF"/>
+      <circle cx="257" cy="145" r="13" fill="#3B2A1E"/>
+      <circle cx="261" cy="141" r="4" fill="#FFFFFF"/>
+    </g>
+    <g data-state="happy">
+      <ellipse cx="143" cy="151" rx="13" ry="11" fill="#3B2A1E"/>
+      <circle cx="139" cy="147" r="4" fill="#FFFFFF"/>
+      <ellipse cx="257" cy="146" rx="13" ry="11" fill="#3B2A1E"/>
+      <circle cx="253" cy="142" r="4" fill="#FFFFFF"/>
+    </g>
+  </g>
+
+  <!-- mouth slot -->
+  <g class="slot" id="slot-mouth">
+    <g data-state="neutral" class="active">
+      <path d="M175,205 Q187,215 200,205 Q213,215 225,205" stroke="#3B2A1E" stroke-width="4" fill="none" stroke-linecap="round"/>
+    </g>
+    <g data-state="smile">
+      <path d="M173,202 Q187,217 200,205 Q213,217 227,202" stroke="#3B2A1E" stroke-width="4" fill="none" stroke-linecap="round"/>
+    </g>
+    <g data-state="frown">
+      <path d="M175,207 Q187,213 200,208 Q213,213 225,207" stroke="#3B2A1E" stroke-width="4" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+
+</svg>
+
+<div class="controls">
+  <div class="group">
+    <span>Eyebrows</span>
+    <div class="row" data-slot="slot-eyebrows">
+      <button data-state="neutral" class="active">neutral</button>
+      <button data-state="raised">raised</button>
+      <button data-state="concerned">concerned</button>
+    </div>
+  </div>
+  <div class="group">
+    <span>Eyes</span>
+    <div class="row" data-slot="slot-eyes">
+      <button data-state="neutral" class="active">neutral</button>
+      <button data-state="thinking">thinking</button>
+      <button data-state="searching">searching</button>
+      <button data-state="happy">happy</button>
+    </div>
+  </div>
+  <div class="group">
+    <span>Mouth</span>
+    <div class="row" data-slot="slot-mouth">
+      <button data-state="neutral" class="active">neutral</button>
+      <button data-state="smile">smile</button>
+      <button data-state="frown">frown</button>
+    </div>
+  </div>
+</div>
+
+<p class="caption">Every button swaps one layer. The differences are 2–6px on purpose —
+Capy's whole personality is that nothing moves him much. Try "frown": that's what
+the database being on fire looks like on him.</p>
+
+<script>
+  document.querySelectorAll('.controls .row').forEach(row => {
+    const slotId = row.dataset.slot;
+    const slot = document.getElementById(slotId);
+    row.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const state = btn.dataset.state;
+        slot.querySelectorAll('g').forEach(g => {
+          g.classList.toggle('active', g.dataset.state === state);
+        });
+        row.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

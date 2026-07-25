@@ -1,9 +1,13 @@
 import { useMemo, useState } from "react";
 import { ReactFlow, Background, Controls, Handle, Position, type Node, type Edge, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { parsePlanXml, layoutPlan, NODE_WIDTH, NODE_HEIGHT, type LayoutNode } from "../planXml";
+import { parsePlanXml, layoutPlan, NODE_WIDTH, NODE_HEIGHT, type LayoutNode, type PlanOperator } from "../planXml";
+import { parseDuckPlanJson } from "../duckPlan";
+import type { PlanDoc } from "../store";
+import { IconButton } from "./IconButton";
 
 const OPERATOR_GLYPHS: Record<string, string> = {
+  // SQL Server showplan operators
   "Index Seek": "⌕",
   "Clustered Index Seek": "⌕",
   "Index Scan": "▤",
@@ -16,10 +20,25 @@ const OPERATOR_GLYPHS: Record<string, string> = {
   "Compute Scalar": "ƒ",
   Filter: "▽",
   "Stream Aggregate": "Σ",
+  // DuckDB profiling operators (humanized names from duckPlan.ts)
+  "Seq Scan": "▤",
+  "Hash Group By": "Σ",
+  "Perfect Hash Group By": "Σ",
+  "Ungrouped Aggregate": "Σ",
+  "Hash Join": "⋈",
+  "Piecewise Merge Join": "⋈",
+  "Order By": "⇅",
+  "Top N": "⇅",
+  Projection: "ƒ",
+  "Column Data Scan": "▤",
 };
 
 function glyphFor(physicalOp: string): string {
   return OPERATOR_GLYPHS[physicalOp] ?? "▢";
+}
+
+function parsePlanDoc(doc: PlanDoc): PlanOperator[] {
+  return doc.format === "duckdb-json" ? parseDuckPlanJson(doc.data) : parsePlanXml(doc.data);
 }
 
 function OperatorNode({ data }: NodeProps<Node<{ op: LayoutNode }>>) {
@@ -59,9 +78,9 @@ function DetailPanel({ op, onClose }: { op: LayoutNode; onClose: () => void }) {
     <div className="absolute top-2 right-2 w-72 max-h-[calc(100%-1rem)] overflow-auto rounded border border-line bg-ink-950/95 backdrop-blur-sm p-3 text-[length:var(--fs-sm)] shadow-lg">
       <div className="flex items-center justify-between mb-1.5">
         <div className="font-medium text-paper">{op.physicalOp}</div>
-        <button className="text-faint hover:text-paper" onClick={onClose}>
+        <IconButton size="sm" title="Close" aria-label="Close details" className="text-faint hover:text-paper" onClick={onClose}>
           ✕
-        </button>
+        </IconButton>
       </div>
       {row("Logical Op", op.logicalOp)}
       {row("Estimated Rows", op.estimateRows != null ? op.estimateRows.toLocaleString() : null)}
@@ -82,15 +101,15 @@ function DetailPanel({ op, onClose }: { op: LayoutNode; onClose: () => void }) {
   );
 }
 
-function SinglePlanCanvas({ xml }: { xml: string }) {
+function SinglePlanCanvas({ doc }: { doc: PlanDoc }) {
   const [selected, setSelected] = useState<LayoutNode | null>(null);
 
   const { nodes, edges } = useMemo(() => {
-    const roots = parsePlanXml(xml);
+    const roots = parsePlanDoc(doc);
     const root = roots[0];
     if (!root) return { nodes: [] as LayoutNode[], edges: [] as ReturnType<typeof layoutPlan>["edges"] };
     return layoutPlan(root);
-  }, [xml]);
+  }, [doc]);
 
   if (nodes.length === 0) {
     return <div className="h-full grid place-items-center text-faint text-[length:var(--fs-base)] italic">No plan operators found.</div>;
@@ -125,7 +144,7 @@ function SinglePlanCanvas({ xml }: { xml: string }) {
 
 /** Renders one or more captured execution plans (one per statement in the run). Multi-statement runs
  *  get a small nested tab strip above the canvas; single-statement runs skip it. */
-export function PlanView({ plans }: { plans: string[] }) {
+export function PlanView({ plans }: { plans: PlanDoc[] }) {
   const [active, setActive] = useState(0);
 
   if (plans.length === 0) return null;
@@ -150,7 +169,7 @@ export function PlanView({ plans }: { plans: string[] }) {
         </div>
       )}
       <div className="flex-1 min-h-0">
-        <SinglePlanCanvas key={active} xml={plans[active]!} />
+        <SinglePlanCanvas key={active} doc={plans[active]!} />
       </div>
     </div>
   );

@@ -103,8 +103,14 @@ export class AgentInstructionsStore {
   /** Resolve the active set's core + engine-appropriate persona for building the agent. Falls back
    *  to the default if the active id no longer resolves to a set (e.g. deleted from elsewhere). */
   resolveActive(engine: DbEngine): { core: string; persona: string } {
+    return this.resolveById(this.get().activeId, engine);
+  }
+
+  /** Resolve a specific set's core + engine-appropriate persona. Falls back to the default set if
+   *  `id` no longer resolves (e.g. the set a profile linked to was deleted). */
+  resolveById(id: string, engine: DbEngine): { core: string; persona: string } {
     const cfg = this.get();
-    const active = cfg.activeId === "default" ? DEFAULT_SET : cfg.customSets.find((s) => s.id === cfg.activeId) ?? DEFAULT_SET;
-    return { core: active.core, persona: engine === "mssql" ? active.mssqlPersona : active.lancePersona };
+    const set = id === "default" ? DEFAULT_SET : cfg.customSets.find((s) => s.id === id) ?? DEFAULT_SET;
+    return { core: set.core, persona: engine === "mssql" ? set.mssqlPersona : set.lancePersona };
   }
 }

@@ -1,10 +1,14 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { QueryTabState } from "../store";
 import { useStore } from "../store";
 import { EditorPane } from "./EditorPane";
 import { ResultsPane } from "./ResultsPane";
 import { OutputPane } from "./OutputPane";
+import { BottomTabPanel, type BottomTab } from "./BottomTabPanel";
+import { CellView } from "./CellView";
+
+type BottomTabId = "output" | "cell";
 
 export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const runQuery = useStore((s) => s.runQuery);
@@ -12,6 +16,42 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const saveTab = useStore((s) => s.saveTab);
   const status = useStore((s) => s.status);
   const outputRef = useRef<ImperativePanelHandle>(null);
+
+  const [openTabs, setOpenTabs] = useState<Set<BottomTabId>>(() => new Set(["output"]));
+  const [activeBottomTab, setActiveBottomTab] = useState<BottomTabId>("output");
+  const [cellText, setCellText] = useState<string | null>(null);
+
+  const toggleOutput = () => {
+    if (openTabs.has("output")) {
+      closeBottomTab("output");
+      return;
+    }
+    setOpenTabs(new Set(openTabs).add("output"));
+    setActiveBottomTab("output");
+    outputRef.current?.expand();
+  };
+
+  const openCellTab = (text: string) => {
+    setCellText(text);
+    if (!openTabs.has("cell")) setOpenTabs(new Set(openTabs).add("cell"));
+    setActiveBottomTab("cell");
+    outputRef.current?.expand();
+  };
+
+  const closeBottomTab = (id: BottomTabId) => {
+    const next = new Set(openTabs);
+    next.delete(id);
+    setOpenTabs(next);
+    if (next.size === 0) {
+      outputRef.current?.collapse();
+    } else if (activeBottomTab === id) {
+      setActiveBottomTab([...next][0]!);
+    }
+  };
+
+  const bottomTabs: BottomTab[] = [];
+  if (openTabs.has("output")) bottomTabs.push({ id: "output", label: "Output", content: <OutputPane tab={tab} /> });
+  if (openTabs.has("cell")) bottomTabs.push({ id: "cell", label: "Cell", content: <CellView text={cellText} /> });
 
   const canRun = status === "connected" && !tab.running && tab.content.trim().length > 0;
 
@@ -45,16 +85,10 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         </button>
         {tab.filePath && <span className="text-[length:var(--fs-sm)] text-faint font-mono truncate">{tab.filePath}</span>}
         <div className="flex-1" />
-        <button
-          className="px-2 py-1 text-[length:var(--fs-sm)] text-faint hover:text-paper"
-          title="Toggle output pane"
-          onClick={() => {
-            const p = outputRef.current;
-            if (p) p.isCollapsed() ? p.expand() : p.collapse();
-          }}
-        >
-          Output ⇕
-        </button>
+        <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-faint hover:text-paper cursor-pointer">
+          <input type="checkbox" checked={openTabs.has("output")} onChange={toggleOutput} />
+          Output
+        </label>
       </div>
 
       <PanelGroup direction="vertical" className="flex-1 min-h-0" autoSaveId={`panes:${tab.id}`}>
@@ -63,11 +97,11 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         </Panel>
         <PanelResizeHandle className="pane-handle" />
         <Panel defaultSize={40} minSize={10}>
-          <ResultsPane tab={tab} />
+          <ResultsPane tab={tab} onCellTextChange={setCellText} onCellActivate={openCellTab} />
         </Panel>
         <PanelResizeHandle className="pane-handle" />
         <Panel ref={outputRef} defaultSize={15} minSize={6} collapsible collapsedSize={0}>
-          <OutputPane tab={tab} />
+          <BottomTabPanel tabs={bottomTabs} activeId={activeBottomTab} onActivate={(id) => setActiveBottomTab(id as BottomTabId)} onClose={(id) => closeBottomTab(id as BottomTabId)} />
         </Panel>
       </PanelGroup>
     </div>

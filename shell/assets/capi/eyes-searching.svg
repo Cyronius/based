@@ -1,0 +1,9 @@
+<svg viewBox="0 0 400 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Pupils/highlights shift sideways as if scanning a room; the shift is the whole performance -->
+  <g id="eyes-searching">
+    <circle cx="143" cy="150" r="13" fill="#3B2A1E"/>
+    <circle cx="147" cy="146" r="4" fill="#FFFFFF"/>
+    <circle cx="257" cy="145" r="13" fill="#3B2A1E"/>
+    <circle cx="261" cy="141" r="4" fill="#FFFFFF"/>
+  </g>
+</svg>

@@ -1,0 +1,23 @@
+// Shared inline SVG icons for operations that have no reliable unicode glyph (unicode candidates
+// like ⧉ / 🗑 render inconsistently or emoji-styled on Windows). Same style as the existing
+// hand-rolled icons (GearIcon, NewChatIcon): stroke currentColor, strokeWidth 2, 24×24 viewBox.
+// Rendered as the child of an IconButton, which supplies the hit target and hover treatment.
+
+export function CopyIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+export function TrashIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}

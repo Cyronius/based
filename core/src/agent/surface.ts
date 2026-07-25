@@ -22,10 +22,10 @@ export interface EngineAgentSurface {
 export function agentSurfaceFor(engine: DbEngine, deps: ToolDeps): EngineAgentSurface {
   switch (engine) {
     case "mssql":
-      return { tools: { ...sharedTools(deps), ...mssqlTools(deps) }, persona: MSSQL_PERSONA };
+      return { tools: { ...sharedTools(deps, engine), ...mssqlTools(deps) }, persona: MSSQL_PERSONA };
     case "lancedb":
       return {
-        tools: { ...sharedTools(deps), ...lanceTools(deps) },
+        tools: { ...sharedTools(deps, engine), ...lanceTools(deps) },
         persona: LANCE_PERSONA,
         skillTags: ["lancedb"],
       };

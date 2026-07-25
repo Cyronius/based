@@ -9,6 +9,7 @@ import type { DbEngine } from "../db/types";
 import { agentSurfaceFor } from "./surface";
 import { type ToolDeps } from "./tools/shared";
 import { catalog as skillCatalog } from "./skills";
+import type { ExecutionDefaults } from "./provider";
 
 export const AGENT_ID = "capi";
 
@@ -24,7 +25,9 @@ export const GENERIC_CORE = `You are "Capi" — an assistant embedded in a datab
 
 Ground rules:
 - Work from the actual schema. Call get_schema to list objects, or get_schema with a table name to see its columns, before making claims about tables you have not inspected. Never invent table or column names.
-- You only ever see schema and, when you explicitly ask for them, small samples of rows. You do not have the full data.
+- You only ever see schema and, when you explicitly ask for them, small samples of rows. You do not have the full data. To read more than a sample, page with read_rows (offset/limit) rather than pulling a whole table.
+- You live next to the user's tab strip. When a <workspace_context> block is present it describes the active tab (its SQL and results) and every open tab; treat the active tab as the default subject of the conversation, and use list_tabs / get_tab to read another tab's SQL or results when the user refers to it.
+- When the user asks to SEE data ("show me…", "list the…"), call open_query_tab so the results land in a real results grid — do not paste large row sets into chat. run_query/read_rows are for your own analysis; keep their raw output out of your answer unless it is small.
 - Answer in concise markdown. Explain briefly what a query or search does; don't narrate every tool call.`;
 
 /** Compose the system prompt: core + the engine's persona + the (engine-filtered) skill
@@ -52,17 +55,28 @@ export function buildAgent(opts: {
   core?: string;
   /** Override for the engine's persona fragment; defaults to the engine surface's persona. */
   persona?: string;
+  /** Per-profile model params split into Mastra execution defaults (BASED-AI-PROFILE-PARAMS). */
+  executionDefaults?: ExecutionDefaults;
+  /** Per-run workspace snapshot (rendered <workspace_context> block, BASED-AGENT-TAB-CONTEXT),
+   *  appended after the composed instructions. Omitted → instructions identical to before. */
+  contextNote?: string;
 }): Agent {
   const surface = agentSurfaceFor(opts.engine, opts.toolDeps);
+  const { modelSettings, providerOptions } = opts.executionDefaults ?? {};
+  const baseInstructions = agentInstructions(opts.core ?? GENERIC_CORE, opts.persona ?? surface.persona, surface.skillTags);
   return new Agent({
     id: AGENT_ID,
     name: "based capi",
-    instructions: agentInstructions(opts.core ?? GENERIC_CORE, opts.persona ?? surface.persona, surface.skillTags),
+    instructions: opts.contextNote ? `${baseInstructions}\n\n${opts.contextNote}` : baseInstructions,
     // `as never`: the AI SDK model spec and Mastra's bundled copy are structurally identical but
     // nominally distinct across package boundaries (version skew) — runtime-compatible (spike-proven).
     model: opts.model as never,
     tools: surface.tools as never,
     memory: opts.memory as never,
-    defaultOptions: { maxSteps: AGENT_MAX_STEPS },
+    defaultOptions: {
+      maxSteps: AGENT_MAX_STEPS,
+      ...(modelSettings ? { modelSettings: modelSettings as never } : {}),
+      ...(providerOptions ? { providerOptions: providerOptions as never } : {}),
+    },
   });
 }

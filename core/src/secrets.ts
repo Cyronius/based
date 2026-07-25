@@ -47,3 +47,49 @@ export function deleteAiKey(providerId: string): void {
     // no key stored — fine
   }
 }
+
+// Traces: BASED-LANCE-EMBED-PROFILES — embedding profile API keys, keyed by profile id.
+const EMBED_ACCOUNT_PREFIX = "embed:";
+
+export function setEmbeddingKey(profileId: string, key: string): void {
+  new Entry(SERVICE, EMBED_ACCOUNT_PREFIX + profileId).setPassword(key);
+}
+
+export function getEmbeddingKey(profileId: string): string | null {
+  try {
+    return new Entry(SERVICE, EMBED_ACCOUNT_PREFIX + profileId).getPassword();
+  } catch {
+    return null;
+  }
+}
+
+export function deleteEmbeddingKey(profileId: string): void {
+  try {
+    new Entry(SERVICE, EMBED_ACCOUNT_PREFIX + profileId).deletePassword();
+  } catch {
+    // no key stored — fine
+  }
+}
+
+// Traces: BASED-LANCE-RERANK-PROFILES — reranker profile API keys, keyed by profile id.
+const RERANK_ACCOUNT_PREFIX = "rerank:";
+
+export function setRerankerKey(profileId: string, key: string): void {
+  new Entry(SERVICE, RERANK_ACCOUNT_PREFIX + profileId).setPassword(key);
+}
+
+export function getRerankerKey(profileId: string): string | null {
+  try {
+    return new Entry(SERVICE, RERANK_ACCOUNT_PREFIX + profileId).getPassword();
+  } catch {
+    return null;
+  }
+}
+
+export function deleteRerankerKey(profileId: string): void {
+  try {
+    new Entry(SERVICE, RERANK_ACCOUNT_PREFIX + profileId).deletePassword();
+  } catch {
+    // no key stored — fine
+  }
+}

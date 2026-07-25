@@ -5,23 +5,48 @@ import {
   getSettings,
   saveSettings,
   fetchObjectDefinition,
+  fetchRelations,
   fetchRoutineParameters,
+  fetchTableDetails,
+  postScript,
   fetchWindowState,
   saveWindowState,
+  listEmbeddingProfiles,
+  saveEmbeddingProfile as apiSaveEmbeddingProfile,
+  deleteEmbeddingProfile as apiDeleteEmbeddingProfile,
+  listRerankerProfiles,
+  saveRerankerProfile as apiSaveRerankerProfile,
+  deleteRerankerProfile as apiDeleteRerankerProfile,
+  listAiProfiles,
+  saveAiProfile as apiSaveAiProfile,
+  deleteAiProfile as apiDeleteAiProfile,
+  setActiveAiProfile as apiSetActiveAiProfile,
+  setSessionHealer,
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
+import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
 import type {
+  AiProfile,
+  AiProfileInput,
   ColumnInfo,
   ConnectResponse,
   ConnectionConfig,
   ConnectionInput,
   ConnectionStatus,
   DbObject,
+  EmbeddingProfile,
+  EmbeddingProfileInput,
+  EngineCapabilities,
+  RelationsGraph,
+  RerankerProfile,
+  RerankerProfileInput,
   RoutineParameter,
+  ScriptAction,
   TabKind,
   TabRecord,
   TableColumn,
+  TableDetails,
   TestResult,
   WireValue,
 } from "./api/types";
@@ -40,6 +65,13 @@ export interface OutputLine {
   text: string;
 }
 
+/** One captured execution plan, tagged by source format so PlanView dispatches to the right parser
+ *  (SQL Server showplan XML vs DuckDB profiling JSON). `data` is the raw payload for that format. */
+export interface PlanDoc {
+  format: "showplan-xml" | "duckdb-json";
+  data: string;
+}
+
 export interface QueryTabState {
   kind: "query";
   id: string;
@@ -53,14 +85,19 @@ export interface QueryTabState {
   activeResult: number;
   output: OutputLine[];
   stats: { durationMs: number; status: "ok" | "error" | "cancelled" } | null;
-  /** Actual execution plan XML captured for this run (one entry per statement in the batch), or
-   *  null when Execution Plan wasn't toggled on for the run. */
-  plan: string[] | null;
+  /** Actual execution plans captured for this run (one entry per statement in the batch), or null
+   *  when Execution Plan wasn't toggled on. Each doc is engine-tagged so PlanView picks the right
+   *  parser: SQL Server showplan XML vs DuckDB profiling JSON. */
+  plan: PlanDoc[] | null;
   /** bumped on streaming row appends so memoized grids re-read */
   version: number;
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
+  /** Set when the AGENT opened this tab (open_query_tab): the chat thread it was created from.
+   *  The rail resolves a tab's thread as `originThreadId ?? derived`, so the agent-opened tab
+   *  shows the conversation that produced it (BASED-AGENT-THREADS aliasing). Persisted in meta. */
+  originThreadId?: string;
 }
 
 export interface TableTabState {
@@ -73,10 +110,19 @@ export interface TableTabState {
   columns: TableColumn[] | null;
   /** View definition text (CREATE VIEW body). Only fetched for objectType "view". */
   definition: string | null;
+  /** Full introspection for the enriched Details view (BASED-TABLE-DETAILS-UI); engines with
+   *  capabilities.script only, null otherwise/until fetched. */
+  details: TableDetails | null;
+  /** Server-computed CREATE TABLE script (tables only). */
+  createScript: string | null;
   error: string | null;
-  /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query view. */
-  view: "details" | "data" | "sql";
+  /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query
+   *  view; Embeddings = the vector scatter (BASED-EMBED-UI, vector tables only). */
+  view: TableViewId;
 }
+
+/** Sub-views of a table tab. "embeddings" renders only for tables with a vector column. */
+export type TableViewId = "details" | "data" | "sql" | "embeddings";
 
 export interface RoutineTabState {
   kind: "routine";
@@ -90,15 +136,31 @@ export interface RoutineTabState {
   error: string | null;
 }
 
-export type TabState = QueryTabState | TableTabState | RoutineTabState;
+// Traces: BASED-DIAGRAM-UI — ER diagram tab (mssql only, capabilities.relations).
+export interface DiagramTabState {
+  kind: "diagram";
+  id: string;
+  title: string;
+  /** "" = whole database. */
+  schemaScope: string;
+  graph: RelationsGraph | null;
+  error: string | null;
+}
+
+export type TabState = QueryTabState | TableTabState | RoutineTabState | DiagramTabState;
 
 export type DialogState = { mode: "closed" } | { mode: "new" } | { mode: "edit"; connection: ConnectionConfig };
 
-interface AppState {
+export interface AppState {
   connections: ConnectionConfig[];
   activeConnectionId: string | null;
   status: ConnectionStatus;
   statusDetail: string | null;
+  capabilities: EngineCapabilities | null;
+  embeddingProfiles: EmbeddingProfile[];
+  rerankerProfiles: RerankerProfile[];
+  aiProfiles: AiProfile[];
+  activeAiProfileId: string | null;
   databases: string[];
   database: string | null;
   schemas: string[];
@@ -112,6 +174,9 @@ interface AppState {
   theme: string;
   rowPageSize: number;
   fontScale: number;
+  /** Explorer double-click actions (BASED-EXPLORER-ACTION). */
+  explorerTableAction: "details" | "data" | "sql" | "script-create";
+  explorerRoutineAction: "details" | "script-create";
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -120,12 +185,23 @@ interface AppState {
   setTheme(id: string): void;
   setFontScale(n: number): void;
   setRowPageSize(n: number): void;
+  setExplorerActions(table: AppState["explorerTableAction"], routine: AppState["explorerRoutineAction"]): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
   loadConnections(): Promise<void>;
   saveConnection(input: ConnectionInput): Promise<ConnectionConfig>;
   deleteConnection(id: string): Promise<void>;
   testConnection(input: ConnectionInput): Promise<TestResult>;
+  loadEmbeddingProfiles(): Promise<void>;
+  saveEmbeddingProfile(input: EmbeddingProfileInput): Promise<EmbeddingProfile>;
+  deleteEmbeddingProfile(id: string): Promise<void>;
+  loadRerankerProfiles(): Promise<void>;
+  saveRerankerProfile(input: RerankerProfileInput): Promise<RerankerProfile>;
+  deleteRerankerProfile(id: string): Promise<void>;
+  loadAiProfiles(): Promise<void>;
+  saveAiProfile(input: AiProfileInput): Promise<AiProfile>;
+  deleteAiProfile(id: string): Promise<void>;
+  setActiveAiProfile(id: string): Promise<void>;
   connect(connectionId: string, database?: string): Promise<void>;
   disconnect(): Promise<void>;
   setDatabase(database: string): Promise<void>;
@@ -133,15 +209,21 @@ interface AppState {
   refreshObjects(): Promise<void>;
   setStatus(status: ConnectionStatus, detail?: string | null): void;
   /** BASED-UI-SESSION-RESUME: the based server lost this window's session (process restart) while
-   *  the UI still thought it was connected. Re-establishes it with bounded backoff, preserving tabs. */
-  resumeSession(): void;
+   *  the UI still thought it was connected. Re-establishes it with bounded backoff, preserving tabs.
+   *  Resolves true once reconnected, false if the backoff cap was exhausted. Concurrent callers
+   *  (SSE snapshot + a healing API retry) share one in-flight attempt. */
+  resumeSession(): Promise<boolean>;
 
   newQueryTab(): void;
-  openTableTab(schema: string, table: string, objectType: "table" | "view"): Promise<void>;
-  setTableView(id: string, view: "details" | "data" | "sql"): void;
+  /** `view` sets the initial sub-view on creation (BASED-EXPLORER-ACTION); an existing tab is
+   *  activated as-is. */
+  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId): Promise<void>;
+  setTableView(id: string, view: TableViewId): void;
   openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<void>;
   closeTab(id: string): void;
+  closeTabs(ids: string[]): void;
   activateTab(id: string): void;
+  reorderTab(draggedId: string, targetId: string, position: "before" | "after"): void;
   setContent(id: string, content: string): void;
   setActiveResult(id: string, index: number): void;
   runQuery(id: string): Promise<void>;
@@ -151,7 +233,21 @@ interface AppState {
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
   insertSqlIntoEditor(sql: string): void;
-  runSqlInNewTab(sql: string): Promise<void>;
+  /** Returns the new tab's id (so the agent's open_query_tab can report/alias it). */
+  runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
+  /** Open a fresh query tab with the given content WITHOUT running it (history "Open in new tab",
+   *  Script-as output). `title` null → next "Query N". Returns the new tab's id, or null when the
+   *  engine has no SQL surface. */
+  newQueryTabWithContent(title: string | null, content: string): string | null;
+  /** Stamp an agent-opened tab with the chat thread that created it (BASED-AGENT-THREADS aliasing);
+   *  null detaches the alias ("New chat" on an aliased tab starts the tab's own thread). */
+  setTabOriginThread(tabId: string, threadId: string | null): void;
+  /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
+  scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
+  /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database. */
+  openDiagramTab(scope: string): void;
+  /** Change a diagram tab's schema scope and refetch its graph. */
+  setDiagramScope(id: string, scope: string): void;
   /** BASED-WINDOW-RESTORE: called once at boot — reconnects this window to whatever connection/tab/
    *  schema-filter it last showed, if any. */
   restoreWindow(): Promise<void>;
@@ -162,7 +258,7 @@ interface TableTabMeta {
   schema: string;
   table: string;
   objectType: "table" | "view";
-  view: "details" | "data" | "sql";
+  view: TableViewId;
 }
 
 /** Kind-specific fields persisted alongside a routine tab (BASED-TABSTORE). */
@@ -172,9 +268,22 @@ interface RoutineTabMeta {
   routineType: "procedure" | "function";
 }
 
-function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | null {
+/** Kind-specific fields persisted alongside a diagram tab (BASED-DIAGRAM-UI). */
+interface DiagramTabMeta {
+  schemaScope: string;
+}
+
+/** Kind-specific fields persisted alongside a query tab — only the thread alias for agent-opened
+ *  tabs (BASED-AGENT-THREADS); ordinary query tabs keep a null meta. */
+interface QueryTabMeta {
+  originThreadId: string;
+}
+
+function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
   if (t.kind === "table") return { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
   if (t.kind === "routine") return { schema: t.schema, name: t.name, routineType: t.routineType };
+  if (t.kind === "diagram") return { schemaScope: t.schemaScope };
+  if (t.kind === "query" && t.originThreadId) return { originThreadId: t.originThreadId };
   return null;
 }
 
@@ -198,7 +307,9 @@ const connectionCache = new Map<string, ConnectionSnapshot>();
 const RESUME_MAX_ATTEMPTS = 6;
 const RESUME_BASE_DELAY_MS = 1000;
 const RESUME_MAX_DELAY_MS = 8000;
-let resumingSession = false;
+// The single in-flight resume attempt, shared by every caller (an SSE divergent-snapshot trigger and
+// any number of session-lost API retries) so a burst of failed requests collapses to one reconnect.
+let resumePromise: Promise<boolean> | null = null;
 
 function resumeDelay(attempt: number): Promise<void> {
   const ms = Math.min(RESUME_BASE_DELAY_MS * 2 ** (attempt - 1), RESUME_MAX_DELAY_MS);
@@ -237,7 +348,12 @@ export const useStore = create<AppState>((set, get) => {
     const { tabs, activeConnectionId } = get();
     if (!activeConnectionId) return;
     const payload = buildTabPayload(tabs, activeConnectionId);
-    if (payload.length > 0) void api("/api/tabs", { method: "POST", body: JSON.stringify({ tabs: payload }) }).catch(() => {});
+    // Always POST (even an empty set) so the server can prune closed tabs — the persisted set
+    // mirrors the open set. connectionId is sent explicitly so an empty payload still scopes.
+    void api("/api/tabs", {
+      method: "POST",
+      body: JSON.stringify({ connectionId: activeConnectionId, tabs: payload }),
+    }).catch(() => {});
   }
 
   function persistTabsSoon(): void {
@@ -279,10 +395,20 @@ export const useStore = create<AppState>((set, get) => {
   function ensureSqlView(tableTab: TableTabState): void {
     const linkedId = `sql:${tableTab.id}`;
     if (get().tabs.some((t) => t.id === linkedId)) return;
+    const { connections, activeConnectionId } = get();
+    const conn = connections.find((c) => c.id === activeConnectionId);
+    // Engine-appropriate quoting: T-SQL brackets for mssql; DuckDB double-quotes for lancedb,
+    // where `schema` is the base-folder namespace (or empty for a single-db dir) (BASED-LANCE-SQL-GATING).
+    const content =
+      conn && engineOf(conn) === "lancedb"
+        ? tableTab.schema
+          ? `SELECT * FROM "${tableTab.schema}".main."${tableTab.table}"`
+          : `SELECT * FROM "${tableTab.table}"`
+        : `SELECT * FROM [${tableTab.schema}].[${tableTab.table}]`;
     const linked: QueryTabState = {
       ...freshQueryTab(`SQL: ${tableTab.title}`),
       id: linkedId,
-      content: `SELECT * FROM [${tableTab.schema}].[${tableTab.table}]`,
+      content,
       parentTabId: tableTab.id,
     };
     set({ tabs: [...get().tabs, linked] });
@@ -294,11 +420,16 @@ export const useStore = create<AppState>((set, get) => {
   function fetchTableTabDetails(id: string, schema: string, table: string, objectType: "table" | "view"): Promise<void> {
     const patchTab = (patch: Partial<TableTabState>) =>
       set({ tabs: get().tabs.map((t) => (t.id === id && t.kind === "table" ? { ...t, ...patch } : t)) });
-    const columnsFetch = api<TableColumn[]>(
-      `/api/session/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
-    )
-      .then((columns) => patchTab({ columns }))
-      .catch((err) => patchTab({ error: err instanceof Error ? err.message : String(err) }));
+    // Traces: BASED-TABLE-DETAILS-UI — engines with `script` get the full introspection in one call
+    // (its columns are a superset of TableColumn, so they patch `columns` too); others keep the
+    // plain columns path (LanceDB unchanged).
+    const columnsFetch = get().capabilities?.script
+      ? fetchTableDetails(schema, table)
+          .then(({ details, createScript }) => patchTab({ details, createScript, columns: details.columns }))
+          .catch((err) => patchTab({ error: err instanceof Error ? err.message : String(err) }))
+      : api<TableColumn[]>(`/api/session/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`)
+          .then((columns) => patchTab({ columns }))
+          .catch((err) => patchTab({ error: err instanceof Error ? err.message : String(err) }));
     const definitionFetch =
       objectType === "view"
         ? fetchObjectDefinition(schema, table)
@@ -337,6 +468,8 @@ export const useStore = create<AppState>((set, get) => {
           objectType: meta.objectType,
           columns: null,
           definition: null,
+          details: null,
+          createScript: null,
           error: null,
           view: meta.view,
         };
@@ -357,19 +490,48 @@ export const useStore = create<AppState>((set, get) => {
         };
         return tab;
       }
-      return { ...freshQueryTab(r.title), id: r.id, content: r.content, filePath: r.filePath };
+      if (r.kind === "diagram") {
+        const meta = r.meta as DiagramTabMeta;
+        const tab: DiagramTabState = {
+          kind: "diagram",
+          id: r.id,
+          title: r.title,
+          schemaScope: meta?.schemaScope ?? "",
+          graph: null,
+          error: null,
+        };
+        return tab;
+      }
+      const queryMeta = r.meta as QueryTabMeta | null;
+      return {
+        ...freshQueryTab(r.title),
+        id: r.id,
+        content: r.content,
+        filePath: r.filePath,
+        ...(queryMeta?.originThreadId ? { originThreadId: queryMeta.originThreadId } : {}),
+      };
     });
     if (tabs.length === 0) tabs.push(freshQueryTab("Query 1"));
     return { tabs, activeTabId: tabs[0]!.id };
   }
 
-  // Kicks off the lazy per-kind detail fetch for each restored table/routine tab; query tabs need
-  // nothing further.
+  // Kicks off the lazy per-kind detail fetch for each restored table/routine/diagram tab; query
+  // tabs need nothing further.
   function hydrateTabDetails(tabs: TabState[]): void {
     for (const t of tabs) {
       if (t.kind === "table") void fetchTableTabDetails(t.id, t.schema, t.table, t.objectType);
       else if (t.kind === "routine") void fetchRoutineTabDetails(t.id, t.schema, t.name);
+      else if (t.kind === "diagram") void fetchDiagramGraph(t.id, t.schemaScope);
     }
+  }
+
+  // Traces: BASED-DIAGRAM-UI — fetch + patch a diagram tab's relations graph.
+  function fetchDiagramGraph(id: string, scope: string): Promise<void> {
+    const patch = (p: Partial<DiagramTabState>) =>
+      set({ tabs: get().tabs.map((t) => (t.id === id && t.kind === "diagram" ? { ...t, ...p } : t)) });
+    return fetchRelations(scope || undefined)
+      .then((graph) => patch({ graph, error: null }))
+      .catch((err) => patch({ error: err instanceof Error ? err.message : String(err) }));
   }
 
   return {
@@ -377,6 +539,11 @@ export const useStore = create<AppState>((set, get) => {
     activeConnectionId: null,
     status: "disconnected",
     statusDetail: null,
+    capabilities: null,
+    embeddingProfiles: [],
+    rerankerProfiles: [],
+    aiProfiles: [],
+    activeAiProfileId: null,
     databases: [],
     database: null,
     schemas: [],
@@ -390,6 +557,8 @@ export const useStore = create<AppState>((set, get) => {
     theme: themeHint(),
     rowPageSize: 500,
     fontScale: fontScaleHint(),
+    explorerTableAction: "details",
+    explorerRoutineAction: "details",
     capturePlan: false,
     captureStats: false,
 
@@ -400,7 +569,14 @@ export const useStore = create<AppState>((set, get) => {
         const s = await getSettings();
         applyTheme(s.theme);
         applyFontScale(s.fontScale);
-        set({ theme: s.theme, rowPageSize: s.rowPageSize, fontScale: s.fontScale });
+        set({
+          theme: s.theme,
+          rowPageSize: s.rowPageSize,
+          fontScale: s.fontScale,
+          activeAiProfileId: s.activeAiProfileId,
+          explorerTableAction: s.explorerTableAction ?? "details",
+          explorerRoutineAction: s.explorerRoutineAction ?? "details",
+        });
       } catch {
         // keep the hinted theme if the server is unreachable
       }
@@ -421,6 +597,11 @@ export const useStore = create<AppState>((set, get) => {
     setRowPageSize(n) {
       set({ rowPageSize: n });
       void saveSettings({ rowPageSize: n }).catch(() => {});
+    },
+
+    setExplorerActions(table, routine) {
+      set({ explorerTableAction: table, explorerRoutineAction: routine });
+      void saveSettings({ explorerTableAction: table, explorerRoutineAction: routine }).catch(() => {});
     },
 
     toggleCapturePlan() {
@@ -450,6 +631,57 @@ export const useStore = create<AppState>((set, get) => {
 
     async testConnection(input) {
       return api<TestResult>("/api/connections/test", { method: "POST", body: JSON.stringify(input) });
+    },
+
+    async loadEmbeddingProfiles() {
+      set({ embeddingProfiles: await listEmbeddingProfiles() });
+    },
+
+    async saveEmbeddingProfile(input) {
+      const saved = await apiSaveEmbeddingProfile(input);
+      await get().loadEmbeddingProfiles();
+      return saved;
+    },
+
+    async deleteEmbeddingProfile(id) {
+      await apiDeleteEmbeddingProfile(id);
+      await get().loadEmbeddingProfiles();
+    },
+
+    async loadRerankerProfiles() {
+      set({ rerankerProfiles: await listRerankerProfiles() });
+    },
+
+    async saveRerankerProfile(input) {
+      const saved = await apiSaveRerankerProfile(input);
+      await get().loadRerankerProfiles();
+      return saved;
+    },
+
+    async deleteRerankerProfile(id) {
+      await apiDeleteRerankerProfile(id);
+      await get().loadRerankerProfiles();
+    },
+
+    async loadAiProfiles() {
+      set({ aiProfiles: await listAiProfiles() });
+    },
+
+    async saveAiProfile(input) {
+      const saved = await apiSaveAiProfile(input);
+      await get().loadAiProfiles();
+      return saved;
+    },
+
+    async deleteAiProfile(id) {
+      await apiDeleteAiProfile(id);
+      await get().loadAiProfiles();
+      if (get().activeAiProfileId === id) set({ activeAiProfileId: null });
+    },
+
+    async setActiveAiProfile(id) {
+      const s = await apiSetActiveAiProfile(id);
+      set({ activeAiProfileId: s.activeAiProfileId });
     },
 
     async connect(connectionId, database) {
@@ -487,6 +719,7 @@ export const useStore = create<AppState>((set, get) => {
             objects: res.objects,
             tabs: cached.tabs,
             activeTabId: cached.activeTabId,
+            capabilities: res.capabilities,
           });
           return;
         }
@@ -501,6 +734,7 @@ export const useStore = create<AppState>((set, get) => {
           objects: res.objects,
           tabs,
           activeTabId,
+          capabilities: res.capabilities,
         });
         hydrateTabDetails(tabs);
       } catch (err) {
@@ -521,6 +755,7 @@ export const useStore = create<AppState>((set, get) => {
         objects: [],
         tabs: [],
         activeTabId: null,
+        capabilities: null,
       });
     },
 
@@ -540,6 +775,7 @@ export const useStore = create<AppState>((set, get) => {
           schemas: res.schemas,
           schemaFilter: "",
           objects: res.objects,
+          capabilities: res.capabilities,
         });
       } catch (err) {
         set({ status: "connected", banner: err instanceof Error ? err.message : String(err) });
@@ -561,16 +797,15 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     resumeSession() {
-      if (resumingSession) return;
+      if (resumePromise) return resumePromise;
       const { activeConnectionId, database } = get();
-      if (!activeConnectionId) return;
-      resumingSession = true;
+      if (!activeConnectionId) return Promise.resolve(false);
       set({ status: "reconnecting", statusDetail: "server connection lost" });
-      void (async () => {
+      resumePromise = (async () => {
         try {
           for (let attempt = 1; attempt <= RESUME_MAX_ATTEMPTS; attempt++) {
             await get().connect(activeConnectionId, database ?? undefined);
-            if (get().status === "connected") return;
+            if (get().status === "connected") return true;
             if (attempt < RESUME_MAX_ATTEMPTS) {
               set({ status: "reconnecting", statusDetail: "server connection lost" });
               await resumeDelay(attempt);
@@ -580,23 +815,25 @@ export const useStore = create<AppState>((set, get) => {
             status: "disconnected",
             banner: "Lost connection to the based server and couldn't reconnect automatically. Click Reconnect to try again.",
           });
+          return false;
         } finally {
-          resumingSession = false;
+          resumePromise = null;
         }
       })();
+      return resumePromise;
     },
 
     newQueryTab() {
-      const { tabs, connections, activeConnectionId } = get();
-      const conn = connections.find((c) => c.id === activeConnectionId);
-      // LanceDB has no SQL editor; the object browser + agent search are the query surface.
-      if (conn && engineOf(conn) === "lancedb") return;
+      const { tabs, capabilities } = get();
+      // Traces: BASED-LANCE-SQL-GATING — capability-driven: only an engine without SQL (e.g.
+      // LanceDB Cloud) has no query editor; local LanceDB runs SQL via the embedded DuckDB.
+      if (capabilities && !capabilities.sql) return;
       const tab = freshQueryTab(nextQueryTitle(tabs));
       set({ tabs: [...tabs, tab], activeTabId: tab.id });
       persistTabsSoon();
     },
 
-    async openTableTab(schema, table, objectType) {
+    async openTableTab(schema, table, objectType, view) {
       const id = `table:${schema}.${table}`;
       const existing = get().tabs.find((t) => t.id === id);
       if (existing) {
@@ -612,11 +849,14 @@ export const useStore = create<AppState>((set, get) => {
         objectType,
         columns: null,
         definition: null,
+        details: null,
+        createScript: null,
         error: null,
-        view: "details",
+        view: view ?? "details",
       };
       set({ tabs: [...get().tabs, tab], activeTabId: id });
       persistTabsSoon();
+      if (tab.view === "sql") get().setTableView(id, "sql");
       await fetchTableTabDetails(id, schema, table, objectType);
     },
 
@@ -653,27 +893,55 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     closeTab(id) {
-      const { tabs, activeTabId } = get();
-      const closing = tabs.find((t) => t.id === id);
-      const linked = tabs.filter((t): t is QueryTabState => t.kind === "query" && t.parentTabId === id);
-      const idsToRemove = new Set([id, ...linked.map((t) => t.id)]);
-      const remaining = tabs.filter((t) => !idsToRemove.has(t.id));
+      get().closeTabs([id]);
+    },
+
+    closeTabs(ids) {
+      if (ids.length === 0) return;
+      const { tabs, activeTabId, activeConnectionId } = get();
+      const idSet = new Set(ids);
+      for (const t of tabs) {
+        if (t.kind === "query" && t.parentTabId && idSet.has(t.parentTabId)) idSet.add(t.id);
+      }
+      const remaining = tabs.filter((t) => !idSet.has(t.id));
+      if (remaining.length === tabs.length) return;
       let nextActive = activeTabId;
-      if (activeTabId === id) {
-        const idx = tabs.findIndex((t) => t.id === id);
+      if (activeTabId && idSet.has(activeTabId)) {
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
         nextActive = remaining[Math.min(idx, remaining.length - 1)]?.id ?? null;
       }
       set({ tabs: remaining, activeTabId: nextActive });
-      if (closing?.kind === "query") {
-        disposeModel(id);
-        void api(`/api/tabs/${id}`, { method: "DELETE" }).catch(() => {});
+      for (const t of tabs) {
+        if (idSet.has(t.id) && t.kind === "query") disposeModel(t.id);
       }
-      for (const l of linked) disposeModel(l.id);
+      // Traces: BASED-AGENT-THREADS — a closed tab's OWNED chat thread dies with it, unless another
+      // open tab still aliases it (agent-opened tabs never delete their aliased target).
+      if (activeConnectionId) {
+        for (const threadId of threadsToDeleteOnClose(activeConnectionId, tabs, [...idSet])) deleteThread(threadId);
+      }
+      // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
+      // query), so restore no longer accumulates every table ever opened.
+      persistTabsSoon();
     },
 
     activateTab(id) {
       set({ activeTabId: id });
       void saveWindowState({ activeTabId: id }).catch(() => {});
+    },
+
+    reorderTab(draggedId, targetId, position) {
+      if (draggedId === targetId) return;
+      const { tabs } = get();
+      const fromIndex = tabs.findIndex((t) => t.id === draggedId);
+      if (fromIndex === -1) return;
+      const next = [...tabs];
+      const [moved] = next.splice(fromIndex, 1);
+      let targetIndex = next.findIndex((t) => t.id === targetId);
+      if (targetIndex === -1) return;
+      if (position === "after") targetIndex += 1;
+      next.splice(targetIndex, 0, moved);
+      set({ tabs: next });
+      persistTabsSoon();
     },
 
     setContent(id, content) {
@@ -718,9 +986,14 @@ export const useStore = create<AppState>((set, get) => {
               case "start":
                 patch({ queryId: chunk.queryId });
                 break;
-              case "plan":
-                patch({ plan: [...(t.plan ?? []), chunk.xml] });
+              case "plan": {
+                const doc: PlanDoc =
+                  chunk.format === "duckdb-json"
+                    ? { format: "duckdb-json", data: chunk.json }
+                    : { format: "showplan-xml", data: chunk.xml };
+                patch({ plan: [...(t.plan ?? []), doc] });
                 break;
+              }
               case "resultset": {
                 const sets = [...t.resultSets, { columns: chunk.columns, rows: [], rowCount: 0, truncated: false, complete: false }];
                 patch({ resultSets: sets, version: t.version + 1 });
@@ -831,14 +1104,89 @@ export const useStore = create<AppState>((set, get) => {
       get().setContent(target.id, next);
     },
 
-    // Open a fresh query tab with the given SQL and run it immediately (chat "Run" affordance).
-    async runSqlInNewTab(sql) {
+    // Open a fresh query tab prefilled with content but not run (BASED-HISTORY-UI, BASED-UI-SCRIPT-AS).
+    newQueryTabWithContent(title, content) {
       const state = get();
-      const tab: QueryTabState = { ...freshQueryTab(nextQueryTitle(state.tabs)), content: sql };
+      if (state.capabilities && !state.capabilities.sql) return null;
+      const tab: QueryTabState = { ...freshQueryTab(title ?? nextQueryTitle(state.tabs)), content };
+      set({ tabs: [...state.tabs, tab], activeTabId: tab.id });
+      const model = getModel(tab.id, content);
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: content }], () => null);
+      persistTabsSoon();
+      return tab.id;
+    },
+
+    // Traces: BASED-UI-SCRIPT-AS — script the objects server-side; the result lands in one new
+    // query tab (not run); per-object failures surface via the banner.
+    async scriptObjects(objects, action) {
+      try {
+        const { sql, errors } = await postScript(objects, action);
+        const title =
+          objects.length === 1 ? `Script: ${objects[0]!.schema}.${objects[0]!.name}` : `Script: ${objects.length} objects`;
+        if (sql.trim()) get().newQueryTabWithContent(title, sql);
+        if (errors.length > 0) {
+          get().setBanner(`Could not script ${errors.map((e) => `${e.schema}.${e.name}`).join(", ")}: ${errors[0]!.message}`);
+        }
+      } catch (err) {
+        get().setBanner(err instanceof Error ? err.message : String(err));
+      }
+    },
+
+    // Traces: BASED-DIAGRAM-UI — one diagram tab per scope, deduped like openTableTab.
+    openDiagramTab(scope) {
+      if (!get().capabilities?.relations) return;
+      const id = `diagram:${scope || "*"}`;
+      const existing = get().tabs.find((t) => t.id === id);
+      if (existing) {
+        set({ activeTabId: id });
+        return;
+      }
+      const tab: DiagramTabState = {
+        kind: "diagram",
+        id,
+        title: scope ? `Diagram: ${scope}` : "Diagram",
+        schemaScope: scope,
+        graph: null,
+        error: null,
+      };
+      set({ tabs: [...get().tabs, tab], activeTabId: id });
+      persistTabsSoon();
+      void fetchDiagramGraph(id, scope);
+    },
+
+    setDiagramScope(id, scope) {
+      set({
+        tabs: get().tabs.map((t) =>
+          t.id === id && t.kind === "diagram"
+            ? { ...t, schemaScope: scope, title: scope ? `Diagram: ${scope}` : "Diagram", graph: null, error: null }
+            : t,
+        ),
+      });
+      persistTabsSoon();
+      void fetchDiagramGraph(id, scope);
+    },
+
+    // Open a fresh query tab with the given SQL and run it immediately (chat "Run" affordance and
+    // the agent's open_query_tab tool). Returns the new tab's id.
+    async runSqlInNewTab(sql, title) {
+      const state = get();
+      const tab: QueryTabState = { ...freshQueryTab(title ?? nextQueryTitle(state.tabs)), content: sql };
       set({ tabs: [...state.tabs, tab], activeTabId: tab.id });
       const model = getModel(tab.id, sql);
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text: sql }], () => null);
       await get().runQuery(tab.id);
+      return tab.id;
+    },
+
+    // Traces: BASED-AGENT-THREADS — alias an agent-opened tab to the conversation that created it
+    // (or detach with null).
+    setTabOriginThread(tabId, threadId) {
+      set({
+        tabs: get().tabs.map((t) =>
+          t.id === tabId && t.kind === "query" ? { ...t, originThreadId: threadId ?? undefined } : t,
+        ),
+      });
+      persistTabsSoon();
     },
 
     async restoreWindow() {
@@ -857,7 +1205,19 @@ export const useStore = create<AppState>((set, get) => {
   };
 });
 
+// BASED-UI-SESSION-RESUME: let the API client heal a session-lost (409) response by driving the same
+// bounded-backoff resume the SSE trigger uses, then reporting whether the session came back so the
+// client can retry the failed request.
+setSessionHealer(() => useStore.getState().resumeSession());
+
 export function activeQueryTab(state: AppState): QueryTabState | null {
   const tab = state.tabs.find((t) => t.id === state.activeTabId);
   return tab?.kind === "query" ? tab : null;
+}
+
+/** Tabs shown in the tab strip, in strip order — excludes the hidden SQL-view tabs `ensureSqlView`
+ *  creates behind a table/view tab's "SQL" mode (see QueryTabState.parentTabId). Shared by
+ *  TabStrip, the Ctrl+PageUp/PageDown handler, and TabContextMenu so "tab order" has one definition. */
+export function visibleTabs(state: AppState): TabState[] {
+  return state.tabs.filter((t) => !(t.kind === "query" && t.parentTabId));
 }

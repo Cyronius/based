@@ -57,6 +57,27 @@ describe("BASED-SETTINGS: app settings persistence", () => {
     db.close();
   });
 
+  // Traces: BASED-EXPLORER-ACTION — the double-click action keys ride the same merge-over-defaults row.
+  test("explorer double-click actions default to details and round-trip", async () => {
+    const fresh = (await (await api("/api/settings")).json()) as {
+      explorerTableAction: string;
+      explorerRoutineAction: string;
+    };
+    expect(fresh.explorerTableAction).toBe("details");
+    expect(fresh.explorerRoutineAction).toBe("details");
+
+    const saved = (await (
+      await api("/api/settings", { method: "POST", body: JSON.stringify({ explorerTableAction: "data", explorerRoutineAction: "script-create" }) })
+    ).json()) as { explorerTableAction: string; explorerRoutineAction: string; rowPageSize: number };
+    expect(saved.explorerTableAction).toBe("data");
+    expect(saved.explorerRoutineAction).toBe("script-create");
+    expect(saved.rowPageSize).toBe(1000); // prior test's value — untouched by this patch
+
+    const db = openDb(dbPath);
+    expect(new SettingsStore(db).get().explorerTableAction).toBe("data");
+    db.close();
+  });
+
   test("a partial patch merges over existing settings", () => {
     const db = openDb(dbPath);
     const store = new SettingsStore(db);
