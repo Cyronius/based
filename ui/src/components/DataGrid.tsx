@@ -43,6 +43,8 @@ export function DataGrid({
   onCellActivated,
   onHeaderClicked,
   onHeaderMenuClick,
+  onCellContextMenu,
+  onHeaderContextMenu,
 }: {
   columns: DataGridColumnDef[];
   rowCount: number;
@@ -64,6 +66,10 @@ export function DataGrid({
   onHeaderClicked?: (colIndex: number) => void;
   /** Header menu-icon click with the header's screen bounds (filter popover — BASED-GRID-FILTER). */
   onHeaderMenuClick?: (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => void;
+  /** Cell right-click with the mouse's screen position (context menu — BASED-GRID-CONTEXT-MENU). */
+  onCellContextMenu?: (cell: Item, pos: { x: number; y: number }) => void;
+  /** Header right-click with the header's screen bounds — opens the same menu as the menu icon. */
+  onHeaderContextMenu?: (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => void;
 }) {
   const themeId = useStore((s) => s.theme);
   const gridTheme = useMemo(() => gridThemeFromCss(), [themeId]);
@@ -161,6 +167,22 @@ export function DataGrid({
         onCellActivated={onCellActivated}
         onHeaderClicked={onHeaderClicked ? (colIndex) => onHeaderClicked(colIndex) : undefined}
         onHeaderMenuClick={onHeaderMenuClick ? (col, bounds) => onHeaderMenuClick(col, bounds) : undefined}
+        onCellContextMenu={
+          onCellContextMenu
+            ? (cell, e) => {
+                e.preventDefault();
+                onCellContextMenu(cell, { x: e.bounds.x + e.localEventX, y: e.bounds.y + e.localEventY });
+              }
+            : undefined
+        }
+        onHeaderContextMenu={
+          onHeaderContextMenu
+            ? (col, e) => {
+                e.preventDefault();
+                onHeaderContextMenu(col, e.bounds);
+              }
+            : undefined
+        }
         minColumnWidth={GRID_COL_MIN_WIDTH}
       />
     </div>

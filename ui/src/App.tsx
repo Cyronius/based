@@ -14,6 +14,20 @@ import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { IconButton } from "./components/IconButton";
 
+// BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries `open=<path>` in the hash.
+// Captured (and stripped) once at module load — surviving in the hash would re-open the file on
+// every reload, and StrictMode's double-mounted effects couldn't tell first run from second.
+const bootOpenPath = (() => {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const p = params.get("open");
+  if (p) {
+    params.delete("open");
+    window.location.hash = params.toString();
+  }
+  return p;
+})();
+let bootOpenConsumed = false;
+
 function EmptyState() {
   const connections = useStore((s) => s.connections);
   const setDialog = useStore((s) => s.setDialog);
@@ -80,6 +94,26 @@ export function App() {
     return () => es.close();
   }, [loadConnections, loadSettings, loadEmbeddingProfiles, loadRerankerProfiles, loadAiProfiles, restoreWindow, setStatus, resumeSession]);
 
+  // BASED-OPEN-SQL-ARGV: open the OS-requested file once this window has a connection to attach
+  // the tab to (query tabs live under a connection). Fresh windows have no restored connection,
+  // so the open waits for the user's first connect; restored windows fire right after restore.
+  useEffect(() => {
+    if (!bootOpenPath || bootOpenConsumed) return;
+    const openIfConnected = (s: ReturnType<typeof useStore.getState>): boolean => {
+      if (bootOpenConsumed || !s.activeConnectionId || s.status !== "connected") return false;
+      bootOpenConsumed = true;
+      void s.openSqlFile(bootOpenPath).catch((err) => {
+        useStore.getState().setBanner(err instanceof Error ? err.message : String(err));
+      });
+      return true;
+    };
+    if (openIfConnected(useStore.getState())) return;
+    const unsub = useStore.subscribe((s) => {
+      if (openIfConnected(s)) unsub();
+    });
+    return unsub;
+  }, []);
+
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.
   useEffect(() => {
     syncMonacoTheme(monaco);
@@ -95,7 +129,10 @@ export function App() {
         if (tab) void state.runQuery(tab.id);
       } else if (e.key.toLowerCase() === "s" && e.ctrlKey) {
         e.preventDefault();
-        if (tab) void state.saveTab(tab.id);
+        if (tab) void state.saveTab(tab.id, { as: e.shiftKey });
+      } else if (e.key.toLowerCase() === "o" && e.ctrlKey) {
+        e.preventDefault();
+        if (state.activeConnectionId) void state.openSqlFile();
       } else if (e.key === "Pause" && e.ctrlKey) {
         e.preventDefault();
         if (tab?.running) void state.cancelQuery(tab.id);

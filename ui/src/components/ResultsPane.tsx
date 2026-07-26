@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { QueryTabState } from "../store";
 import { useStore } from "../store";
+import { computeSelectionSlice, type SelectionSlice } from "../gridSelectionText";
 import { ResultGrid } from "./ResultGrid";
 import { ResultText } from "./ResultText";
 import { PlanView } from "./PlanView";
-import { GridToolbarActions } from "./GridToolbarActions";
+import { GridContextMenu } from "./GridContextMenu";
+import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
 
 type View = "grid" | "text" | "plan";
 
@@ -19,13 +21,21 @@ export function ResultsPane({
 }) {
   const setActiveResult = useStore((s) => s.setActiveResult);
   const [view, setView] = useState<View>("grid");
-  const selectionDataRef = useRef<() => string>(() => "");
+  const selectionSliceRef = useRef<(() => SelectionSlice) | null>(null);
   const fitColumnsRef = useRef<() => void>(() => {});
   // Sorted/filtered view rows from the grid, so export/copy are WYSIWYG (BASED-GRID-SORT).
   const viewRowsRef = useRef<(() => QueryTabState["resultSets"][number]["rows"]) | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
   const rs = tab.resultSets[Math.min(tab.activeResult, tab.resultSets.length - 1)] ?? null;
   const hasPlan = !!tab.plan?.length;
+
+  // One shared action set feeds both the toolbar buttons and the right-click context menu.
+  const exportActions = useGridExportActions({
+    columns: rs?.columns ?? [],
+    getRows: () => viewRowsRef.current?.() ?? rs?.rows ?? [],
+    getSlice: () => selectionSliceRef.current?.() ?? computeSelectionSlice(undefined, rs?.columns.length ?? 0),
+  });
 
   // If a rerun without the Execution Plan toggle clears tab.plan, fall back off the Plan view.
   useEffect(() => {
@@ -72,12 +82,7 @@ export function ResultsPane({
               {rs.complete ? `${rs.rowCount.toLocaleString()} rows` : `${rs.rows.length.toLocaleString()}…`}
               {tab.stats ? ` · ${tab.stats.durationMs.toLocaleString()} ms` : ""}
             </span>
-            <GridToolbarActions
-              columns={rs.columns}
-              getRows={() => viewRowsRef.current?.() ?? rs.rows}
-              getSelectionText={() => selectionDataRef.current()}
-              onFitColumns={() => fitColumnsRef.current()}
-            />
+            <GridToolbarActions actions={exportActions} onFitColumns={() => fitColumnsRef.current()} />
           </>
         )}
       </div>
@@ -97,8 +102,8 @@ export function ResultsPane({
             <ResultGrid
               rs={rs}
               version={tab.version}
-              onSelectionData={(fn) => {
-                selectionDataRef.current = fn;
+              onSelectionSlice={(fn) => {
+                selectionSliceRef.current = fn;
               }}
               onViewRows={(fn) => {
                 viewRowsRef.current = fn;
@@ -108,6 +113,7 @@ export function ResultsPane({
               }}
               onCellTextChange={onCellTextChange}
               onCellActivate={onCellActivate}
+              onCellContextMenu={setCtxMenu}
             />
           ) : (
             <ResultText rs={rs} version={tab.version} />
@@ -118,6 +124,7 @@ export function ResultsPane({
           </div>
         )}
       </div>
+      {ctxMenu && <GridContextMenu x={ctxMenu.x} y={ctxMenu.y} actions={exportActions} onClose={() => setCtxMenu(null)} />}
     </div>
   );
 }

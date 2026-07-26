@@ -11,3 +11,5 @@ build/
 !ui/vendor/lm-ag-ui/dist/**
 
 .codegraph
+*.tsbuildinfo
+shell/artifacts/

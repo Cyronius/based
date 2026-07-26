@@ -247,3 +247,29 @@ describe.skip("BASED-AGENT-IMPORT: manual verification", () => {
 describe.skip("BASED-EMBED-UI: manual verification", () => {
   it.todo("see spec.md procedure");
 });
+
+// Traces: BASED-GRID-EXPORT-STANDARD (canonical spec: specs/based/spec.md)
+// Verification: manual — every data grid (SQL results, Data tab, embeddings Selection) shows the
+// same toolbar action set (Fit columns / Copy / Copy as Markdown / Save as CSV / Open in Excel),
+// all controls at one height; notices ("Copied", "Saved …") surface in the toolbar for both
+// toolbar- and context-menu-triggered actions.
+describe.skip("BASED-GRID-EXPORT-STANDARD: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-GRID-CONTEXT-MENU (canonical spec: specs/based/spec.md)
+// Verification: manual — right-click a cell in any grid → Copy / Copy as Markdown / Save as CSV /
+// Open in Excel at the mouse position; right-click outside the selection moves it first; file
+// exports scope to the selection when one exists; header right-click opens the sort/filter menu
+// (Data tab keeps its pending-edits gate); Escape/outside click closes.
+describe.skip("BASED-GRID-CONTEXT-MENU: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-TAB-AUTONAME-APPLY (canonical spec: specs/based/spec.md)
+// Verification: manual — after a query tab's first successful run, a default "Query N" title is
+// replaced by a name derived from the executed SQL ("select Customers"); later runs, errored
+// runs, file-backed tabs, and manually renamed tabs keep their titles.
+describe.skip("BASED-TAB-AUTONAME-APPLY: manual verification", () => {
+  it.todo("see spec.md procedure");
+});

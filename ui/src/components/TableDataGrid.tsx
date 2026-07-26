@@ -8,7 +8,14 @@
 // result then takes over (read-only) until cleared, by normalizing SearchRows into a TablePage shape
 // (BASED-LANCE-SEARCH-UI).
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { GridCellKind, type EditableGridCell, type GridCell, type GridSelection, type Item } from "@glideapps/glide-data-grid";
+import {
+  CompactSelection,
+  GridCellKind,
+  type EditableGridCell,
+  type GridCell,
+  type GridSelection,
+  type Item,
+} from "@glideapps/glide-data-grid";
 import type { TableTabState } from "../store";
 import { useStore } from "../store";
 import { commitTableEdit, fetchTablePage, previewTableEdit, runLanceSearch } from "../api/client";
@@ -24,11 +31,12 @@ import {
   type WireValue,
 } from "../api/types";
 import { gridCellOverrides } from "../theme";
-import { computeSelectionText } from "../gridSelectionText";
+import { computeSelectionSlice, selectionContains } from "../gridSelectionText";
 import { parseFilterToTableFilter } from "../gridView";
 import { cellDisplayText, DataGrid, type DataGridColumnDef } from "./DataGrid";
 import { GridColumnMenu } from "./GridColumnMenu";
-import { GridToolbarActions } from "./GridToolbarActions";
+import { GridContextMenu } from "./GridContextMenu";
+import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
 import { ImportCsvDialog } from "./ImportCsvDialog";
 import { IconButton } from "./IconButton";
 import { TrashIcon } from "./icons";
@@ -121,6 +129,7 @@ export function TableDataGrid({
   const [sort, setSort] = useState<TableSort | null>(null);
   const [filterExprs, setFilterExprs] = useState<Record<string, string>>({});
   const [headerMenu, setHeaderMenu] = useState<{ col: number; x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [gateNotice, setGateNotice] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const capabilities = useStore((s) => s.capabilities);
@@ -301,6 +310,14 @@ export function TableDataGrid({
     [display, effectivePage, valueAt],
   );
 
+  // One shared action set feeds both the toolbar buttons and the right-click context menu
+  // (BASED-GRID-EXPORT-STANDARD). Columns come from the effective page so search results export too.
+  const exportActions = useGridExportActions({
+    columns: effectivePage?.columns ?? [],
+    getRows: () => displayRows,
+    getSlice: () => computeSelectionSlice(selection, effectivePage?.columns.length ?? 0),
+  });
+
   const headerInteractive = orderedBrowse && !hasSearchResult;
   const columns = useMemo<DataGridColumnDef[]>(
     () =>
@@ -396,6 +413,22 @@ export function TableDataGrid({
   const handleCellActivated = useCallback(
     (cell: Item) => onCellActivate?.(cellDisplayText(getCellContent(cell))),
     [getCellContent, onCellActivate],
+  );
+
+  // Right-click outside the current selection first selects the clicked cell (standard behavior),
+  // then opens the shared context menu at the mouse position (BASED-GRID-CONTEXT-MENU).
+  const handleCellContextMenu = useCallback(
+    (cell: Item, pos: { x: number; y: number }) => {
+      if (!selectionContains(selection, cell)) {
+        handleSelectionChange({
+          current: { cell, range: { x: cell[0], y: cell[1], width: 1, height: 1 }, rangeStack: [] },
+          columns: CompactSelection.empty(),
+          rows: CompactSelection.empty(),
+        });
+      }
+      setCtxMenu(pos);
+    },
+    [selection, handleSelectionChange],
   );
 
   const addRow = () => setNewRows((prev) => [...prev, {}]);
@@ -729,14 +762,7 @@ export function TableDataGrid({
 
             <div className="flex-1" />
 
-            {page && (
-              <GridToolbarActions
-                columns={page.columns}
-                getRows={() => displayRows}
-                getSelectionText={() => computeSelectionText(selection, page.columns, displayRows)}
-                onFitColumns={() => fitFnRef.current()}
-              />
-            )}
+            {page && <GridToolbarActions actions={exportActions} onFitColumns={() => fitFnRef.current()} />}
 
             {pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
             <button
@@ -822,9 +848,12 @@ export function TableDataGrid({
             onCellActivated={handleCellActivated}
             onHeaderClicked={headerInteractive ? handleHeaderClicked : undefined}
             onHeaderMenuClick={headerInteractive ? handleHeaderMenuClick : undefined}
+            onCellContextMenu={handleCellContextMenu}
+            onHeaderContextMenu={headerInteractive ? handleHeaderMenuClick : undefined}
           />
         )}
       </div>
+      {ctxMenu && <GridContextMenu x={ctxMenu.x} y={ctxMenu.y} actions={exportActions} onClose={() => setCtxMenu(null)} />}
       {importOpen && page && (
         <ImportCsvDialog
           schema={tab.schema}

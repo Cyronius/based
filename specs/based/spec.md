@@ -397,6 +397,29 @@ cancel.
 **Verification procedure:** the import stepper's "Choose file" opens the native dialog filtered to
 `*.csv`; cancel returns to the stepper without error.
 
+### BASED-FILE-OPEN-SQL: Open a .sql file into a query tab
+**Applies to:** based (core + ui)
+**Test category:** integration (endpoint) + manual (UI)
+
+`POST /api/file/open-sql { path? }` opens a native OpenFileDialog filtered to `*.sql` when no
+`path` is given (cancel → `{ path: null }`), reads the file, and returns `{ path, content }`; an
+explicit `path` skips the dialog (mirrors `/api/file/save-sql`). A missing file is a 400 with an
+error message. In the UI, Ctrl+O and the query-tab toolbar's "Open…" button open the chosen file
+in a new query tab titled by the file name, with `filePath` set and not dirty; choosing a file
+already backed by an open tab activates that tab instead of duplicating it.
+
+**Acceptance criteria (integration):**
+- Save `content` to a temp path via save-sql, then open-sql with that `path` → `{ path, content }` round-trips
+- open-sql with a nonexistent `path` → 400 with the path in the error
+- A leading UTF-8 BOM is stripped from `content`
+- A file over the size cap (2 MB) → 400 with a clear error, no content
+
+**Verification procedure (manual):**
+1. Ctrl+O (or toolbar "Open…") → native dialog filtered to `*.sql` → picked file opens in a new
+   tab titled by file name, content loaded, no dirty dot; cancel does nothing
+2. Ctrl+O and re-pick the same file → the existing tab is focused, no duplicate
+3. Restart the app → the file-backed tab restores with its content and file path
+
 ## Table data (browse + edit) — Phase 3
 
 ### BASED-TABLE-BROWSE: Paginated table data read
@@ -1110,13 +1133,43 @@ tab. Engines lacking the needed capability degrade to `details`.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save-As to `.sql` (Ctrl+S); F5 / Ctrl+Enter run; Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
+Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 / Ctrl+Enter run; Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
 
 **Verification procedure:**
 1. Open 2 tabs, type SQL, close app, reopen → both tabs restored with content
 2. Ctrl+S → native save dialog → `.sql` written; tab title shows file name
-3. F5 runs; run `WAITFOR DELAY '00:00:30'` → Cancel button (and Ctrl+Break) stops it with "cancelled" in Output
-4. Drag both pane dividers; collapse/expand Output
+3. On that file-backed tab: edit → Ctrl+S overwrites with no dialog; Ctrl+Shift+S (or "Save As…") → dialog seeded with the current file name → saves to the new path and re-titles the tab
+4. F5 runs; run `WAITFOR DELAY '00:00:30'` → Cancel button (and Ctrl+Break) stops it with "cancelled" in Output
+5. Drag both pane dividers; collapse/expand Output
+
+### BASED-TAB-AUTONAME-DERIVE: Derive tab title from SQL text
+**Applies to:** based (ui)
+**Test category:** unit
+
+A pure function `deriveTabTitle(sql)` (`ui/src/lib/deriveTabTitle.ts`) shall map SQL text to a deterministic tab title: `"{verb} {object}"` for the first statement (verb lowercased; object = last dotted segment of the target's name, brackets stripped), `"{verb}"` when no object is found, or `null` when the text has no leading keyword (empty / comments only). Derivation tokenizes rather than parses an AST — deliberately, so it never fails on valid T-SQL an AST parser can't handle — after stripping comments and string literals (mirroring `core/src/db/classify.ts`).
+
+**Acceptance criteria:**
+- `SELECT c.Name FROM dbo.Customers c JOIN Orders o ON …` → `select Customers` (first depth-0 `FROM`; a `FROM` inside a subquery in the select list is ignored)
+- `WITH cte AS (SELECT … FROM A) SELECT * FROM cte JOIN B …` → `select cte` (CTE list skipped paren-aware; main verb wins, including CTE-prefixed DML)
+- `INSERT INTO [dbo].[AuditLog] (…) VALUES (…)` → `insert AuditLog`; `UPDATE TOP (100) Users SET …` → `update Users`; `DELETE FROM #tmp …` → `delete #tmp`
+- `EXEC dbo.usp_RebuildIndexes @db = 'x'` → `exec usp_RebuildIndexes` (a `@ret =` assignment is skipped)
+- DDL skips object-type keywords: `CREATE TABLE dbo.OrdersArchive (…)` → `create OrdersArchive`; `DROP TABLE IF EXISTS Foo` → `drop Foo`; `TRUNCATE TABLE Foo` → `truncate Foo`; `BACKUP DATABASE x TO …` → `backup x`
+- `SELECT 1` → `select`; `''` / whitespace / comment-only → `null`
+- Keywords inside string literals or comments never influence the result
+- A multi-statement batch is named from the first statement only (depth-0 `;` or `GO` ends it)
+- Keyword matching is case-insensitive; identifier case is preserved
+
+### BASED-TAB-AUTONAME-APPLY: Apply derived title on first successful run
+**Applies to:** based (ui)
+**Test category:** manual
+
+When a query run completes with status `ok` and the tab's title still matches the default `Query N` pattern and the tab is not file-backed, the title shall be replaced by `deriveTabTitle(<the SQL that was executed>)` when non-null. This fires at most once per tab: after the rename the title no longer matches the default pattern, so later runs never rename. Errored/cancelled runs, file-backed tabs, and manually renamed tabs are never renamed. Duplicate titles across tabs are allowed (tabs are keyed by id).
+
+**Verification procedure:**
+1. New query tab (`Query N`), run `SELECT * FROM dbo.Customers` → tab title becomes `select Customers`
+2. Change the SQL to `DELETE FROM Orders` and rerun → title stays `select Customers` (named once)
+3. Open a `.sql` file and run it → tab keeps the file name
+4. New tab, run invalid SQL (error) → title stays `Query N`; fix the SQL and rerun → now renamed
 
 ### BASED-UI-RESULTS: Results pane
 **Applies to:** based (ui)
@@ -1188,6 +1241,66 @@ Both the query-results grid (BASED-UI-RESULTS) and the Edit Data grid (BASED-UI-
 5. Repeat 1-4 in the Edit Data grid (Data tab of an mssql table, and a LanceDB table)
 6. Edit a cell in Edit Data, then Copy / export CSV → the edited (uncommitted) value appears, not the stale committed one
 7. Open a read-only LanceDB table's Data tab → Copy and CSV/Excel export both work despite the grid being read-only
+
+### BASED-GRID-EXPORT-STANDARD: Standard export/copy action set on every data grid
+**Applies to:** based (ui)
+**Test category:** manual
+
+Every data grid — the SQL results grid (ResultsPane), the Data tab grid (TableDataGrid), and the
+embeddings Selection grid (SelectionGrid) — exposes the same toolbar action set: Fit columns, Copy
+(selection-or-all, tab-separated), Copy as Markdown (BASED-GRID-COPY-MD), Save as CSV, and Open in
+Excel. The action behavior lives in one shared hook (`useGridExportActions` in
+`ui/src/components/GridToolbarActions.tsx`); each host creates a single instance that feeds both
+its toolbar buttons and its right-click context menu (BASED-GRID-CONTEXT-MENU), so notices ("Copied",
+"Saved …") surface in the toolbar regardless of which surface triggered the action. All toolbar
+controls (text and icon buttons) render at the same height.
+
+**Verification procedure:**
+1. Lasso a selection in the embeddings view → the Selection tab shows a toolbar with row count +
+   Fit columns / Copy / markdown / CSV / Excel; each action works on the lassoed rows
+2. The same buttons appear and work in the SQL results toolbar and the Data tab toolbar
+3. Visually confirm the CSV/Excel/markdown icon buttons are the same height as "Fit columns"/"Copy"
+
+### BASED-GRID-COPY-MD: Copy selection as a markdown table
+**Applies to:** based (ui)
+**Test category:** unit
+
+A "Copy as Markdown" action copies the current selection (falling back to the whole view when
+nothing is selected — same slice semantics as Copy, `computeSelectionSlice` in
+`ui/src/gridSelectionText.ts`) to the clipboard as a GitHub-flavored markdown table via
+`selectionMarkdown`. The table always includes a header row naming the involved columns (markdown
+tables require one, even for range copies that TSV-copy without a header). Cell text uses the same
+formatting as Copy (NULL renders as `NULL`, vector/binary render their summary); pipes are escaped
+as `\|` and embedded newlines become `<br>`.
+
+**Acceptance criteria:**
+- Whole grid, columns `a`,`b`: header `| a | b |` + `| --- | --- |` + one line per row
+- A 1×1 range copy still yields a 3-line table (header, separator, value)
+- Cell `x|y` → `x\|y`; cell `"l1\nl2"` → `l1<br>l2`; NULL cell → `NULL`
+- TSV copy behavior is unchanged by the shared-slice refactor (header only for whole-grid and
+  column copies; CRLF line joins)
+
+### BASED-GRID-CONTEXT-MENU: Right-click context menu on grid cells and headers
+**Applies to:** based (ui)
+**Test category:** manual
+
+Right-clicking a cell in any data grid opens a context menu at the mouse position with the shared
+action set: Copy, Copy as Markdown, Save as CSV, Open in Excel. Copy actions use the
+selection-or-all slice; the file exports are scoped to the current selection when one exists
+(falling back to the whole view). Right-clicking a cell outside the current selection first moves
+the selection to that cell; right-clicking inside the selection keeps it. Right-clicking a column
+header opens the same sort/filter column menu as the header's menu icon (where header interactions
+are enabled — the Data tab keeps its pending-edits gate). The menu closes on action, outside click,
+or Escape, and clamps to the viewport.
+
+**Verification procedure:**
+1. In the SQL results grid, select a 2×2 range, right-click inside it → menu opens, selection kept;
+   Copy yields the range, Save as CSV exports just the range
+2. Right-click a cell outside the selection → that cell becomes the selection before the menu opens
+3. With no selection, right-click → Copy/Save act on the whole view with a header row
+4. Right-click a column header → the sort/filter popover opens (results grid and Data tab browse
+   mode; gated with pending edits in the Data tab)
+5. Repeat 1-3 in the Data tab grid and the embeddings Selection grid
 
 ### BASED-UI-EXEC-PLAN: Execution plan & client statistics controls
 **Applies to:** based (ui)
@@ -1890,3 +2003,93 @@ A fourth sub-view button, "Embeddings", appears on table tabs only when the engi
 
 Record: PASS/FAIL + date below.
 - 2026-07-25 PASS (automated Playwright pass against the dev app, steps 1-6 + 10-equivalent: 3-cluster fixture laid out, labels/legend/tooltip/click-details/find-similar/lasso-grid/2D-3D all verified by screenshot; found and fixed ortho depth-clipping and a lasso pointer-event crash). Steps 7 (AI label — LM Studio was down) and 8-9 (worker survival, theme sweep) pending a human pass.
+
+## Windows packaging & file association
+
+### BASED-PACKAGE-WIN: Packaged app bundle is self-contained
+**Applies to:** based (shell)
+**Test category:** manual
+
+The electrobun bundle includes the built UI (`build.copy` maps `../ui/dist` → `ui/dist`, landing
+at `Resources/app/ui/dist`), and the shell locates it bundle-relative to `process.argv0`
+(`findUiDist` in `shell/src/bun/index.ts`) — cwd is unreliable (the launcher chdirs to `bin`;
+file-association launches inherit Explorer's cwd). An installed app serves the real UI with no
+repo checkout present.
+
+**Verification procedure:**
+1. Build + install via `scripts/package-win.ps1` → run from the Start Menu shortcut on a path
+   with no repo → the full UI renders (not the bare core page).
+
+- 2026-07-25 PASS (installed via silent Setup; core server on the installed app returned the
+  built `ui/dist` index.html).
+
+### BASED-INSTALLER-WIN: Windows installer
+**Applies to:** based (repo `scripts/`)
+**Test category:** manual
+
+`scripts/package-win.ps1` produces `dist/based-<version>-Setup.exe` (Inno Setup; version read
+from `shell/electrobun.config.ts`). It builds the UI, runs `electrobun build --env=stable`,
+extracts the stable `tar.zst` (the runnable tree ships inside the self-extractor package),
+compiles `scripts/win/based-open.cs` into the bundle with the .NET Framework `csc`
+(`/target:winexe`), and hands the tree to `scripts/installer.iss`. The installer is per-user
+(`PrivilegesRequired=lowest`, no UAC), installs to `{localappdata}\Programs\based`, creates a
+Start Menu shortcut (desktop shortcut as an unchecked task), and registers an Apps & Features
+uninstall entry. Uninstall removes the install dir (including runtime logs), shortcuts, and all
+registry keys written at install; user data in `%APPDATA%\based` (app.db, agent.db) and
+Credential Manager secrets are left in place.
+
+**Verification procedure:**
+1. `pwsh scripts/package-win.ps1` (needs Inno Setup 6: `winget install JRSoftware.InnoSetup`) →
+   `dist/based-<version>-Setup.exe`.
+2. Install → app in Start Menu, entry in Settings → Apps; launch works.
+3. Uninstall → install dir + registry keys gone; `%APPDATA%\based` still present.
+
+- 2026-07-25 PASS (steps 1–2: built and silent-installed 0.1.0; uninstall entry present in
+  registry. Step 3 pending a human pass).
+
+### BASED-SQL-ASSOC-WIN: .sql "Open with" registration
+**Applies to:** based (installer)
+**Test category:** manual
+
+The installer registers based as an *available* handler for `.sql` — never overwriting the
+user's existing default. All under HKCU: ProgID `based.sql` (friendly name, `DefaultIcon` →
+`{app}\icon.ico`, open verb `"{app}\bin\based-open.exe" "%1"`),
+`Software\Classes\.sql\OpenWithProgids\based.sql`, and Default Programs registration
+(`Software\based\Capabilities` with `FileAssociations: .sql=based.sql`, plus
+`Software\RegisteredApplications\based`). The open verb routes through `based-open.exe` because
+electrobun's `launcher.exe` (1.18.1) does not forward argv to the bun process: the stub appends
+each path to `<dataDir>/pending-open.txt` and starts the launcher with `BASED_STUB_OPEN=1`.
+
+**Verification procedure:**
+1. Right-click a `.sql` → Open with → based is listed and opens the file; the previous default
+   app is unchanged.
+2. Settings → Default apps → based offers `.sql`.
+3. Uninstall → based gone from Open with and Default apps.
+
+- 2026-07-25 PASS (registry verified post-install: `based.sql` ProgID + open command,
+  OpenWithProgids alongside VSCode/SSMS entries untouched, RegisteredApplications set. Explorer
+  UI + uninstall sweep pending a human pass).
+
+### BASED-OPEN-SQL-ARGV: Opening a .sql path at launch
+**Applies to:** based (shell + ui)
+**Test category:** manual
+
+A launch asked to open files (direct argv paths, or lines in `<dataDir>/pending-open.txt`
+written by `based-open.exe`) opens one window per file with `open=<path>` in the URL hash; the
+UI (BASED-FILE-OPEN-SQL's `openSqlFile`) loads it into a query tab — titled by file name,
+`filePath` set — as soon as the window has a connected session (fresh windows wait for the
+user's first connect; restored windows fire right after restore). File-open windows are
+additive to BASED-WINDOW-RESTORE. If an instance is already running, the second launch forwards
+each path to the primary over the single-instance control server (`POST /open-file`) and exits;
+a stub-spawned launch that finds nothing pending (another instance consumed it) exits without
+opening a blank window when the primary is alive.
+
+**Verification procedure:**
+1. App not running: double-click a `.sql` → app starts, window opens; after connecting, the tab
+   shows the file's content and name.
+2. App running: double-click another `.sql` → a new window in the same instance (no second
+   process); no blank extra windows on rapid multi-double-click.
+
+- 2026-07-25 PASS (installed build: stub → pending-open.txt consumed → window per file; second
+  stub launch forwarded to the running primary — secondary exited 0, window count went 2→3 on
+  one process. In-tab content rendering after connect pending a human pass).

@@ -93,6 +93,48 @@ describe("tabs API (BASED-TABSTORE via API)", () => {
   });
 });
 
+// Traces: BASED-FILE-OPEN-SQL — explicit-path mode (the dialog path is manual)
+describe("BASED-FILE-OPEN-SQL: open .sql file content", () => {
+  test("save-sql then open-sql round-trips content", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "based-spec-sql-")), "roundtrip.sql");
+    const content = "SELECT 1 AS a;\n-- comment\nSELECT 2;\n";
+    const saved = (await (await api("/api/file/save-sql", { method: "POST", body: JSON.stringify({ content, path }) })).json()) as { path: string | null };
+    expect(saved.path).toBe(path);
+    const res = await api("/api/file/open-sql", { method: "POST", body: JSON.stringify({ path }) });
+    expect(res.status).toBe(200);
+    const opened = (await res.json()) as { path: string | null; content: string };
+    expect(opened.path).toBe(path);
+    expect(opened.content).toBe(content);
+  });
+
+  test("nonexistent path is a 400 with an error message", async () => {
+    const res = await api("/api/file/open-sql", {
+      method: "POST",
+      body: JSON.stringify({ path: join(tmpdir(), "based-spec-sql-missing", "nope.sql") }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("nope.sql");
+  });
+
+  test("UTF-8 BOM is stripped", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "based-spec-sql-")), "bom.sql");
+    await Bun.write(path, "\uFEFFSELECT 1;");
+    const opened = (await (await api("/api/file/open-sql", { method: "POST", body: JSON.stringify({ path }) })).json()) as { content: string };
+    expect(opened.content).toBe("SELECT 1;");
+  });
+
+  test("oversized file is a 400, no content", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "based-spec-sql-")), "big.sql");
+    await Bun.write(path, "-- x\n".repeat((2 * 1024 * 1024) / 5 + 1));
+    const res = await api("/api/file/open-sql", { method: "POST", body: JSON.stringify({ path }) });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; content?: string };
+    expect(body.error).toContain("too large");
+    expect(body.content).toBeUndefined();
+  });
+});
+
 // --- history requires a live DB session; self-skips like integration.mssql ---
 const devCfg: ConnectionConfig = {
   id: "spec-srv-dev",

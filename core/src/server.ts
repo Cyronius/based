@@ -97,6 +97,9 @@ interface SessionState {
 
 const encoder = new TextEncoder();
 
+/** Open-.sql size cap (BASED-FILE-OPEN-SQL) — a query tab is not a general text editor. */
+const MAX_OPEN_SQL_BYTES = 2 * 1024 * 1024;
+
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 }
@@ -777,6 +780,22 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
 
     // --- files / export ---
+    // Traces: BASED-FILE-OPEN-SQL — explicit `path` skips the dialog (mirrors save-sql), which is
+    // also what makes this testable and lets the shell's open-.sql-at-launch flow reuse it.
+    if (path === "/api/file/open-sql" && method === "POST") {
+      const body = (await req.json()) as { path?: string };
+      let target = body.path ?? null;
+      if (!target) target = await openFileDialog(filterFor("sql"));
+      if (!target) return json({ path: null });
+      const file = Bun.file(target);
+      if (!(await file.exists())) return json({ error: `File not found: ${target}` }, 400);
+      if (file.size > MAX_OPEN_SQL_BYTES) {
+        return json({ error: `File is too large to open (${Math.round(file.size / 1024)} KB; limit ${MAX_OPEN_SQL_BYTES / 1024} KB): ${target}` }, 400);
+      }
+      const raw = await file.text();
+      // Strip a UTF-8 BOM — invisible in the editor but breaks the SQL if left in.
+      return json({ path: target, content: raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw });
+    }
     if (path === "/api/file/save-sql" && method === "POST") {
       const body = (await req.json()) as { content: string; path?: string; defaultName?: string };
       let target = body.path ?? null;

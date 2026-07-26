@@ -2,13 +2,19 @@
 // No Electrobun RPC for app logic — everything rides localhost HTTP.
 import { BrowserWindow } from "electrobun/bun";
 import { existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { startServer } from "@based/core";
 import { initSingleInstance } from "./singleInstance";
+import { consumePendingOpens } from "./pendingOpens";
 
-/** electrobun dev runs from build/dev-win-x64; walk up until we find the repo's ui/dist. */
+/** BASED-PACKAGE-WIN: an installed bundle carries the UI at <bundle>/Resources/app/ui/dist
+ *  (see electrobun.config.ts `copy`). Locate it relative to bun.exe (<bundle>/bin/bun.exe) —
+ *  cwd is unreliable (the launcher chdirs to bin; file-association launches inherit whatever
+ *  Explorer had). Dev fallback: walk up from cwd to the repo's ui/dist. */
 function findUiDist(): string | undefined {
   if (process.env.BASED_UI_DIST && existsSync(process.env.BASED_UI_DIST)) return process.env.BASED_UI_DIST;
+  const bundled = resolve(dirname(process.argv0), "..", "Resources", "app", "ui", "dist");
+  if (existsSync(join(bundled, "index.html"))) return bundled;
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
     const candidate = join(dir, "ui", "dist");
@@ -47,14 +53,16 @@ if (devUrl) {
 // reuses the sid of a window that was still open last time instead of minting a fresh one.
 let windowsCreated = 0;
 
-function createWindow(existingSid?: string): void {
+function createWindow(existingSid?: string, openPath?: string): void {
   const sid = existingSid ?? crypto.randomUUID();
   const offset = windowsCreated * 40;
   windowsCreated++;
 
+  // BASED-OPEN-SQL-ARGV: `open` rides the hash so the UI can load the file into a query tab.
+  const open = openPath ? `&open=${encodeURIComponent(openPath)}` : "";
   const win = new BrowserWindow({
     title: "based",
-    url: `${baseUrl}/#token=${apiToken}&sid=${sid}`,
+    url: `${baseUrl}/#token=${apiToken}&sid=${sid}${open}`,
     frame: { x: 120 + offset, y: 80 + offset, width: 1680, height: 1000 },
   });
 
@@ -67,9 +75,23 @@ function createWindow(existingSid?: string): void {
   }
 }
 
-// Second OS-level launch attaches a new window to this (the already-running) instance
-// instead of starting a second backend against the same app.db/agent.db files.
-await initSingleInstance(() => createWindow());
+// BASED-OPEN-SQL-ARGV: files this launch was asked to open. Two sources — direct argv (covers a
+// future launcher that forwards args, and running the shell by hand) and the pending-opens file
+// written by based-open.exe (the file-association stub; the launcher drops its argv today, so
+// the stub hands paths over via the data dir instead).
+const openRequests = [
+  ...process.argv.slice(2).filter((a) => !a.startsWith("-") && existsSync(a)),
+  ...consumePendingOpens(),
+];
+
+// Second OS-level launch attaches to this (the already-running) instance instead of starting a
+// second backend against the same app.db/agent.db files: file-open requests are forwarded to the
+// primary; a bare second launch asks for a new window.
+await initSingleInstance({
+  onNewWindow: () => createWindow(),
+  onOpenFile: (path) => createWindow(undefined, path),
+  openRequests,
+});
 
 // BASED-WINDOW-RESTORE: reopen one window per sid that was still open when the app last exited
 // (cleanly or via kill) — window_state rows for cleanly-closed windows are deleted on close, so
@@ -80,8 +102,8 @@ const persisted = await fetch(`${baseUrl}/api/windows?token=${apiToken}`)
   .then((r) => r.json() as Promise<PersistedWindow[]>)
   .catch(() => [] as PersistedWindow[]);
 const restorable = persisted.filter((w) => w.sid !== "default");
-if (restorable.length > 0) {
-  for (const w of restorable) createWindow(w.sid);
-} else {
-  createWindow();
-}
+for (const w of restorable) createWindow(w.sid);
+// One window per file-open request, on top of whatever was restored (matches SSMS/VS Code:
+// opening a file doesn't suppress session restore).
+for (const p of openRequests) createWindow(undefined, p);
+if (restorable.length === 0 && openRequests.length === 0) createWindow();

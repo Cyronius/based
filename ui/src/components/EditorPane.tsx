@@ -45,6 +45,8 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
     editor.addCommand(monaco.KeyCode.F5, () => void useStore.getState().runQuery(tabId));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => void useStore.getState().runQuery(tabId));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void useStore.getState().saveTab(tabId));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => void useStore.getState().saveTab(tabId, { as: true }));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO, () => void useStore.getState().openSqlFile());
 
     editor.focus();
     return () => {

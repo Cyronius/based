@@ -123,6 +123,12 @@ export function openFileDialogApi(kind: "csv" | "sql" | "xlsx"): Promise<{ path:
   return api<{ path: string | null }>("/api/dialog/open-file", { method: "POST", body: JSON.stringify({ kind }) });
 }
 
+// Traces: BASED-FILE-OPEN-SQL — native open dialog + file read in one call; { path: null } on cancel.
+/** No `path` → native open dialog; explicit `path` (BASED-OPEN-SQL-ARGV) skips the dialog. */
+export function openSqlFileApi(path?: string): Promise<{ path: string | null; content?: string }> {
+  return api<{ path: string | null; content?: string }>("/api/file/open-sql", { method: "POST", body: JSON.stringify(path ? { path } : {}) });
+}
+
 export function inspectCsv(path: string): Promise<{ header: string[]; rows: string[][] }> {
   return api<{ header: string[]; rows: string[][] }>("/api/import/csv/inspect", {
     method: "POST",

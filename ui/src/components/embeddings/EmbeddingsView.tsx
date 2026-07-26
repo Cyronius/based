@@ -161,6 +161,9 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
         clusters.centroids[c * 3 + 1]!,
         clusters.centroids[c * 3 + 2]!,
       ]) as [number, number];
+      // A callout whose anchor left the viewport would clamp into a corner and float over the
+      // legend — drop it like a map label until the cluster scrolls back into view.
+      if (x < -20 || x > w + 20 || y < -20 || y > h + 20) continue;
       // Callout position: push the badge away from the canvas center so it clears its own points,
       // clamped to stay on screen. The leader line (rendered below) points back at the centroid.
       let dx = x - w / 2;

@@ -14,6 +14,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const runQuery = useStore((s) => s.runQuery);
   const cancelQuery = useStore((s) => s.cancelQuery);
   const saveTab = useStore((s) => s.saveTab);
+  const openSqlFile = useStore((s) => s.openSqlFile);
   const status = useStore((s) => s.status);
   const outputRef = useRef<ImperativePanelHandle>(null);
 
@@ -78,10 +79,24 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         )}
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          title="Open a .sql file (Ctrl+O)"
+          onClick={() => void openSqlFile()}
+        >
+          Open…
+        </button>
+        <button
+          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
           title="Save to .sql (Ctrl+S)"
           onClick={() => void saveTab(tab.id)}
         >
           Save{tab.dirty ? " •" : ""}
+        </button>
+        <button
+          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          title="Save to a new .sql file (Ctrl+Shift+S)"
+          onClick={() => void saveTab(tab.id, { as: true })}
+        >
+          Save As…
         </button>
         {tab.filePath && <span className="text-[length:var(--fs-sm)] text-faint font-mono truncate">{tab.filePath}</span>}
         <div className="flex-1" />

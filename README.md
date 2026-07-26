@@ -37,6 +37,19 @@ Three ways to run the app, fastest-feedback first:
   HMR** — run `bun run build:ui` after UI changes or you'll see a stale bundle. Set `BASED_DEV_URL` to point
   this same window at Vite instead (that's what `bun run dev` does under the hood).
 
+## Suggested local model setup
+
+Reference config, tuned for shared-memory AMD (Radeon 890M) — all served from LM Studio via its
+OpenAI-compatible endpoint:
+
+- **Reranker:** Qwen3-Reranker-0.6B (see the reranker section below for wiring it up)
+- **Embeddings:** Qwen3-Embedding-0.6B
+- **Agent model:** Ornith or Qwen 35B with **MTP enabled**, or Gemma 4 26B
+
+If you have less VRAM, use a smaller model for the agent — or a hosted service. Smaller models work
+acceptably too, e.g. **qwen3.5-9b-mtp**: if you're squeezed for VRAM it isn't the worst choice, but
+being a dense model it runs slower than the a3b version.
+
 ## Reranking with a local LLM (Qwen3-Reranker via LM Studio)
 
 > Interim home for this doc until the app has real documentation.

@@ -1,11 +1,11 @@
-// Traces: BASED-UI-RESULTS, BASED-GRID-SORT, BASED-GRID-FILTER
+// Traces: BASED-UI-RESULTS, BASED-GRID-SORT, BASED-GRID-FILTER, BASED-GRID-CONTEXT-MENU
 import { useCallback, useMemo, useState } from "react";
-import { GridCellKind, type GridCell, type GridSelection, type Item } from "@glideapps/glide-data-grid";
+import { CompactSelection, GridCellKind, type GridCell, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import type { ResultSetData } from "../store";
 import { useStore } from "../store";
 import { cellText } from "../api/types";
 import { gridCellOverrides } from "../theme";
-import { computeSelectionText } from "../gridSelectionText";
+import { computeSelectionSlice, selectionContains, type SelectionSlice } from "../gridSelectionText";
 import { computeViewIndex, NUMERIC_TYPES, type ColumnFilters, type SortState } from "../gridView";
 import { cellDisplayText, DataGrid, type DataGridColumnDef } from "./DataGrid";
 import { GridColumnMenu } from "./GridColumnMenu";
@@ -13,15 +13,18 @@ import { GridColumnMenu } from "./GridColumnMenu";
 export function ResultGrid({
   rs,
   version,
-  onSelectionData,
+  onSelectionSlice,
   onViewRows,
   onFitColumns,
   onCellTextChange,
   onCellActivate,
+  onCellContextMenu,
 }: {
   rs: ResultSetData;
   version: number;
-  onSelectionData: (fn: () => string) => void;
+  /** Registration callback: hands the caller a getter for the current selection slice, feeding the
+   *  shared copy/markdown/export actions (view-row indexed — pair with onViewRows). */
+  onSelectionSlice?: (fn: () => SelectionSlice) => void;
   /** Registration callback: hands the caller a getter for the current sorted/filtered rows so
    *  copy/CSV/Excel export are WYSIWYG (BASED-GRID-SORT). */
   onViewRows?: (fn: () => typeof rs.rows) => void;
@@ -30,6 +33,9 @@ export function ResultGrid({
   onCellTextChange?: (text: string | null) => void;
   /** Fires on double-click/Enter/Space on a cell, with its full text — opens the Cell viewer tab. */
   onCellActivate?: (text: string) => void;
+  /** Fires on cell right-click (after moving the selection to the cell when it was outside) with
+   *  the mouse's screen position — the host renders the shared GridContextMenu there. */
+  onCellContextMenu?: (pos: { x: number; y: number }) => void;
 }) {
   const [selection, setSelection] = useState<GridSelection | undefined>(undefined);
   const [sort, setSort] = useState<SortState>(null);
@@ -83,9 +89,9 @@ export function ResultGrid({
     [rs, version, viewRows, nullText],
   );
 
-  const selectionToText = useCallback(() => computeSelectionText(selection, rs.columns, viewRows), [selection, rs, viewRows]);
+  const selectionToSlice = useCallback(() => computeSelectionSlice(selection, rs.columns.length), [selection, rs]);
 
-  onSelectionData(selectionToText);
+  onSelectionSlice?.(selectionToSlice);
   onViewRows?.(() => viewRows);
 
   const handleSelectionChange = useCallback(
@@ -95,6 +101,22 @@ export function ResultGrid({
       onCellTextChange?.(cell ? cellDisplayText(getCellContent(cell)) : null);
     },
     [getCellContent, onCellTextChange],
+  );
+
+  // Right-click outside the current selection first selects the clicked cell (standard behavior),
+  // then bubbles the screen position up for the host's context menu.
+  const handleCellContextMenu = useCallback(
+    (cell: Item, pos: { x: number; y: number }) => {
+      if (!selectionContains(selection, cell)) {
+        handleSelectionChange({
+          current: { cell, range: { x: cell[0], y: cell[1], width: 1, height: 1 }, rangeStack: [] },
+          columns: CompactSelection.empty(),
+          rows: CompactSelection.empty(),
+        });
+      }
+      onCellContextMenu?.(pos);
+    },
+    [selection, handleSelectionChange, onCellContextMenu],
   );
 
   const handleCellActivated = useCallback(
@@ -154,6 +176,8 @@ export function ResultGrid({
           onCellActivated={handleCellActivated}
           onHeaderClicked={handleHeaderClicked}
           onHeaderMenuClick={handleHeaderMenuClick}
+          onCellContextMenu={onCellContextMenu ? handleCellContextMenu : undefined}
+          onHeaderContextMenu={handleHeaderMenuClick}
         />
       </div>
       {menu && (

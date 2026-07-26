@@ -21,11 +21,13 @@ import {
   saveAiProfile as apiSaveAiProfile,
   deleteAiProfile as apiDeleteAiProfile,
   setActiveAiProfile as apiSetActiveAiProfile,
+  openSqlFileApi,
   setSessionHealer,
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
 import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
+import { deriveTabTitle } from "./lib/deriveTabTitle";
 import type {
   AiProfile,
   AiProfileInput,
@@ -228,7 +230,12 @@ export interface AppState {
   setActiveResult(id: string, index: number): void;
   runQuery(id: string): Promise<void>;
   cancelQuery(id: string): Promise<void>;
-  saveTab(id: string): Promise<void>;
+  /** `as: true` always pops the save dialog (Save As), even on a file-backed tab. */
+  saveTab(id: string, opts?: { as?: boolean }): Promise<void>;
+  /** Open a .sql file into a new query tab (BASED-FILE-OPEN-SQL); a tab already backed by the
+   *  chosen file is activated instead. No `path` → native dialog; explicit `path` skips it
+   *  (BASED-OPEN-SQL-ARGV: OS file-association launches). */
+  openSqlFile(path?: string): Promise<void>;
   setDialog(dialog: DialogState): void;
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
@@ -1028,9 +1035,17 @@ export const useStore = create<AppState>((set, get) => {
               case "cancelled":
                 patch({ output: [...t.output, { kind: "system", text: "Query cancelled." }] });
                 break;
-              case "done":
+              case "done": {
                 patch({ stats: { durationMs: chunk.durationMs, status: chunk.status }, running: false, queryId: null });
+                // Traces: BASED-TAB-AUTONAME-APPLY — name the tab once, on its first successful
+                // run, from the SQL that actually ran. Only default "Query N" titles qualify, so
+                // file-backed, manually renamed, and already-auto-named tabs are never touched.
+                if (chunk.status === "ok" && !t.filePath && /^Query \d+$/.test(t.title)) {
+                  const title = deriveTabTitle(tab.content);
+                  if (title) patch({ title });
+                }
                 break;
+              }
             }
           },
           { capturePlan, captureStats, rowCap: rowPageSize },
@@ -1052,15 +1067,20 @@ export const useStore = create<AppState>((set, get) => {
       await api("/api/session/cancel", { method: "POST", body: JSON.stringify({ queryId: tab.queryId }) }).catch(() => {});
     },
 
-    async saveTab(id) {
+    async saveTab(id, opts) {
       const tab = get().tabs.find((t) => t.id === id);
       if (!tab || tab.kind !== "query") return;
+      // Save As drops the existing path so the server always pops the dialog, seeded with the
+      // current file name (or a slug of the title for a never-saved tab).
+      const path = opts?.as ? undefined : (tab.filePath ?? undefined);
       const res = await api<{ path: string | null }>("/api/file/save-sql", {
         method: "POST",
         body: JSON.stringify({
           content: tab.content,
-          path: tab.filePath ?? undefined,
-          defaultName: tab.filePath ? undefined : `${tab.title.replace(/[^\w.-]+/g, "-").toLowerCase()}.sql`,
+          path,
+          defaultName: path
+            ? undefined
+            : (tab.filePath?.split(/[\\/]/).pop() ?? `${tab.title.replace(/[^\w.-]+/g, "-").toLowerCase()}.sql`),
         }),
       });
       if (res.path) {
@@ -1068,6 +1088,27 @@ export const useStore = create<AppState>((set, get) => {
         set({ tabs: updateTab(get().tabs, id, { filePath: res.path, title, dirty: false }) });
         persistTabsSoon();
       }
+    },
+
+    // Traces: BASED-FILE-OPEN-SQL — native dialog + read server-side; the chosen file lands in a
+    // new query tab (or focuses the tab already backed by it).
+    async openSqlFile(path) {
+      const state = get();
+      if (state.capabilities && !state.capabilities.sql) return;
+      const res = await openSqlFileApi(path);
+      if (!res.path) return;
+      const existing = get().tabs.find((t) => t.kind === "query" && t.filePath === res.path);
+      if (existing) {
+        get().activateTab(existing.id);
+        return;
+      }
+      const content = res.content ?? "";
+      const title = res.path.split(/[\\/]/).pop() ?? res.path;
+      const tab: QueryTabState = { ...freshQueryTab(title), content, filePath: res.path };
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      const model = getModel(tab.id, content);
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: content }], () => null);
+      persistTabsSoon();
     },
 
     setDialog(dialog) {

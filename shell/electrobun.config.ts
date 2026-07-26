@@ -111,6 +111,10 @@ export default {
     },
     copy: {
       "src/mainview/index.html": "views/mainview/index.html",
+      // BASED-PACKAGE-WIN: ship the built UI inside the bundle (Resources/app/ui/dist) so an
+      // installed app serves the real frontend without a repo checkout. findUiDist() in
+      // src/bun/index.ts looks here first, relative to bun.exe.
+      "../ui/dist": "ui/dist",
     },
     // On Windows, electrobun 1.18.1's compiled CLI (bin/electrobun.exe) embeds
     // this icon via `require.resolve("rcedit/package.json")` — but since that
