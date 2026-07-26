@@ -32,6 +32,9 @@ interface WireSet {
 interface WireConfig {
   activeId: string;
   sets: WireSet[];
+  /** Generated, read-only, GET-only (BASED-AGENT-INSTRUCTIONS). */
+  briefings?: { mssql: string; lancedb: string };
+  briefingIsLive?: string | null;
 }
 
 describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
@@ -127,5 +130,55 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
   test("activating an unknown id is rejected", async () => {
     const r = await api("/api/agent/instructions/active", { method: "POST", body: JSON.stringify({ id: "does-not-exist" }) });
     expect(r.status).toBe(400);
+  });
+});
+
+// Traces: BASED-AGENT-INSTRUCTIONS — the two-layer prompt over the wire.
+//
+// A set holds only the editable half. The capability briefing is generated per connection, shipped
+// read-only on GET, and never accepted on POST — so a user can rewrite the agent's voice without
+// their copy going stale against a connection they weren't looking at when they wrote it.
+describe("BASED-AGENT-INSTRUCTIONS: the capability briefing is generated, not stored", () => {
+  test("GET ships a briefing per engine alongside the editable sets", async () => {
+    const cfg = (await (await api("/api/agent/instructions")).json()) as WireConfig;
+    expect(cfg.briefings!.mssql).toContain("Microsoft SQL Server");
+    expect(cfg.briefings!.lancedb).toContain("LanceDB");
+    // Nothing is connected in this suite, so both are representative renderings.
+    expect(cfg.briefingIsLive).toBeNull();
+  });
+
+  test("the briefing carries the capability facts; the persona carries none of them", async () => {
+    const cfg = (await (await api("/api/agent/instructions")).json()) as WireConfig;
+    const def = cfg.sets.find((s) => s.id === "default")!;
+    // Facts live in the briefing…
+    expect(cfg.briefings!.mssql).toMatch(/\brun_mutation\b/);
+    expect(cfg.briefings!.lancedb).toMatch(/read-only/i);
+    // …and are absent from the half a user can fork, which is the whole point: a forked persona
+    // cannot contradict the connection because it never claims anything about it.
+    expect(def.mssqlPersona).not.toMatch(/\brun_mutation\b/);
+    expect(def.lancePersona).not.toMatch(/read-only/i);
+    expect(def.lancePersona).not.toMatch(/\brun_query\b/);
+  });
+
+  test("a custom set round-trips its persona and never persists a briefing", async () => {
+    const created = (await (
+      await api("/api/agent/instructions", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Voice only",
+          core: "CORE",
+          mssqlPersona: "Be terse.",
+          lancePersona: "Be terse.",
+          // A caller that tries to pin a briefing must not be able to: it isn't part of a set.
+          briefings: { mssql: "FAKE", lancedb: "FAKE" },
+        }),
+      })
+    ).json()) as WireConfig;
+    const set = created.sets.find((s) => s.name === "Voice only")!;
+    expect(set.mssqlPersona).toBe("Be terse.");
+    expect(JSON.stringify(set)).not.toContain("FAKE");
+    // The generated briefing is still reported, unchanged by the save.
+    expect(created.briefings!.mssql).toContain("Microsoft SQL Server");
+    await api(`/api/agent/instructions/${set.id}`, { method: "DELETE" });
   });
 });

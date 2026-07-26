@@ -3,7 +3,11 @@
 // instruction that makes the model emit the leading purpose comment those labels come from.
 import { describe, it, expect } from "bun:test";
 import { parseSqlBlocks } from "../../../ui/src/lib/sqlBlocks";
-import { MSSQL_PERSONA } from "../../../core/src/agent/tools/mssql";
+// The fenced-sql-block convention is a capability fact (it only matters where SQL exists), so it
+// lives in the generated briefing rather than the editable persona.
+import { mssqlBriefing } from "../../../core/src/agent/tools/mssql";
+import { defaultCapabilitiesFor } from "../../../core/src/agent/surface";
+const MSSQL_PERSONA = mssqlBriefing(defaultCapabilitiesFor("mssql"));
 
 describe("BASED-CHAT-SQL-LABELS: parseSqlBlocks", () => {
   it("extracts the leading -- comment as label and the first SQL line", () => {

@@ -145,7 +145,7 @@ Empty/misconfigured provider shows a "configure a provider" state rather than fa
 ## Implementation decisions (below the traceability line)
 
 - **Model = local LM Studio (OpenAI-compatible)** via `@ai-sdk/openai-compatible`, base URL
-  `http://172.18.80.1:1234/v1`, default model `google/gemma-4-26b-a4b`. Seeded as the default
+  `http://localhost:1234/v1`, default model `google/gemma-4-26b-a4b`. Seeded as the default
   provider config so the app works with no setup. Provider registry (openai / azure / anthropic)
   is wired at the resolver but the full settings **screen** is deferred; a minimal inline config
   suffices this pass.

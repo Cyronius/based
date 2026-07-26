@@ -1,5 +1,5 @@
 // Traces: BASED-AGENT-AUDIT
-// Local audit log of every SQL statement the agent causes to run — reads via run_query/sample_rows
+// Local audit log of every SQL statement the agent causes to run — reads via run_query/read_table
 // and user-approved mutations. Never records row data, only the statement and its outcome.
 import type { Database } from "bun:sqlite";
 
@@ -15,6 +15,11 @@ export interface AuditEntry {
   status: "ok" | "error";
   error: string | null;
 }
+
+/** The audit surface a tool run depends on. Deliberately the shape rather than the class: a run can
+ *  then decorate it (see agent/subagent.ts, which tags every statement a subagent causes), which the
+ *  class's private `db` field would make structurally impossible. */
+export type AuditSink = Pick<AuditStore, "add" | "list">;
 
 export class AuditStore {
   constructor(private readonly db: Database) {}

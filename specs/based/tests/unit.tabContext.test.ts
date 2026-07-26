@@ -1,7 +1,7 @@
 // Traces: BASED-AGENT-TAB-CONTEXT — the server-side renderer for the client's workspace snapshot.
 // (The UI-side builders are covered in unit.uiTabContext.test.ts.)
 import { describe, expect, test } from "bun:test";
-import { renderTabContext, buildAgent, GENERIC_CORE, agentInstructions, MSSQL_PERSONA, createAgentMemory } from "@based/core";
+import { renderTabContext, buildAgent, GENERIC_CORE, agentInstructions, MSSQL_PERSONA, mssqlBriefing, defaultCapabilitiesFor, createAgentMemory } from "@based/core";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,9 +66,14 @@ describe("BASED-AGENT-TAB-CONTEXT: buildAgent contextNote", () => {
 
   test("contextNote is appended to the instructions; omitting it reproduces the prior text exactly", async () => {
     const note = "<workspace_context>\nActive tab: none\n</workspace_context>";
-    const withNote = buildAgent({ model, memory, engine: "mssql", toolDeps: deps, contextNote: note });
-    const without = buildAgent({ model, memory, engine: "mssql", toolDeps: deps });
-    expect(await withNote.getInstructions()).toBe(`${agentInstructions(GENERIC_CORE, MSSQL_PERSONA)}\n\n${note}`);
-    expect(await without.getInstructions()).toBe(agentInstructions(GENERIC_CORE, MSSQL_PERSONA));
+    const caps = defaultCapabilitiesFor("mssql");
+    const persona = MSSQL_PERSONA;
+    const briefing = mssqlBriefing(caps);
+    const withNote = buildAgent({ model, memory, capabilities: caps, toolDeps: deps, contextNote: note });
+    const without = buildAgent({ model, memory, capabilities: caps, toolDeps: deps });
+    expect(await withNote.getInstructions()).toBe(
+      `${agentInstructions(GENERIC_CORE, persona, undefined, briefing)}\n\n${note}`,
+    );
+    expect(await without.getInstructions()).toBe(agentInstructions(GENERIC_CORE, persona, undefined, briefing));
   });
 });

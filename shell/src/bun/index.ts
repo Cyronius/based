@@ -41,7 +41,7 @@ if (devUrl) {
   if (!staticDir) {
     console.error("based: ui/dist not found — run `bun run build:ui` first; window will show the bare core page");
   }
-  const server = startServer({ staticDir });
+  const server = startServer({ staticDir, onRequestNewWindow: () => createWindow() });
   console.log(`based core listening on ${server.url}`);
   baseUrl = server.url;
   apiToken = server.token;

@@ -8,6 +8,11 @@ export interface EmbeddingProfile {
   baseUrl: string;
   model: string;
   hasKey: boolean;
+  /** Traces: BASED-LANCE-EMBED-DIM — output dimension of `model`. Optional because it can't be known
+   *  until the model has been called once: user-settable, and otherwise back-filled by embedQuery
+   *  from the first successful response (see recordDimension). Reported by list_search_profiles so
+   *  profile↔column compatibility is one lookup instead of cross-tool reasoning about model names. */
+  dimension?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,5 +58,21 @@ export class EmbeddingProfileStore {
 
   delete(id: string): void {
     this.db.run("DELETE FROM embedding_profiles WHERE id = ?", [id]);
+  }
+
+  /** Traces: BASED-LANCE-EMBED-DIM — remember the dimension the model actually returned. Called on
+   *  every successful embed and idempotent; a changed value wins, because the profile's model may
+   *  have been edited to a different one. Never throws: a failed write must not fail the search. */
+  recordDimension(id: string, dimension: number): void {
+    try {
+      const existing = this.get(id);
+      if (!existing || existing.dimension === dimension) return;
+      this.db.run("UPDATE embedding_profiles SET json = ? WHERE id = ?", [
+        JSON.stringify({ ...existing, dimension }),
+        id,
+      ]);
+    } catch {
+      // best-effort metadata
+    }
   }
 }

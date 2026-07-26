@@ -8,6 +8,8 @@ import {
   fetchRelations,
   fetchRoutineParameters,
   fetchTableDetails,
+  fetchTableIndexes,
+  fetchRowCount,
   postScript,
   fetchWindowState,
   saveWindowState,
@@ -22,6 +24,7 @@ import {
   deleteAiProfile as apiDeleteAiProfile,
   setActiveAiProfile as apiSetActiveAiProfile,
   openSqlFileApi,
+  newWindowApi,
   setSessionHealer,
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
@@ -49,6 +52,7 @@ import type {
   TabRecord,
   TableColumn,
   TableDetails,
+  TableIndex,
   TestResult,
   WireValue,
 } from "./api/types";
@@ -96,7 +100,7 @@ export interface QueryTabState {
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
-  /** Set when the AGENT opened this tab (open_query_tab): the chat thread it was created from.
+  /** Set when the AGENT opened this tab (show_results): the chat thread it was created from.
    *  The rail resolves a tab's thread as `originThreadId ?? derived`, so the agent-opened tab
    *  shows the conversation that produced it (BASED-AGENT-THREADS aliasing). Persisted in meta. */
   originThreadId?: string;
@@ -117,6 +121,16 @@ export interface TableTabState {
   details: TableDetails | null;
   /** Server-computed CREATE TABLE script (tables only). */
   createScript: string | null;
+  /** Traces: BASED-INDEX-INTROSPECT — the table's indexes, on every engine that exposes them (not
+   *  just DDL-scriptable ones). Null until fetched, [] when the table genuinely has none — which is
+   *  itself the actionable fact on a vector table. */
+  indexes: TableIndex[] | null;
+  /** Traces: BASED-LANCE-SCAN — exact total row count, null until fetched or if unsupported. */
+  rowCount: number | null;
+  /** Traces: BASED-AGENT-SHOW-RESULTS — a browse predicate the agent asked for, consumed once by
+   *  TableDataGrid on mount. This is how `show_results` lands rows in a real grid on a connection
+   *  with no SQL editor to open a query tab in. */
+  prefillWhere: string | null;
   error: string | null;
   /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query
    *  view; Embeddings = the vector scatter (BASED-EMBED-UI, vector tables only). */
@@ -236,16 +250,23 @@ export interface AppState {
    *  chosen file is activated instead. No `path` → native dialog; explicit `path` skips it
    *  (BASED-OPEN-SQL-ARGV: OS file-association launches). */
   openSqlFile(path?: string): Promise<void>;
+  /** BASED-CTRL-N: asks the shell to open a new native window; a no-op under BASED_DEV_URL dev mode. */
+  newWindow(): Promise<void>;
   setDialog(dialog: DialogState): void;
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
   insertSqlIntoEditor(sql: string): void;
-  /** Returns the new tab's id (so the agent's open_query_tab can report/alias it). */
+  /** Returns the new tab's id (so the agent's show_results can report/alias it). */
   runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
   /** Open a fresh query tab with the given content WITHOUT running it (history "Open in new tab",
    *  Script-as output). `title` null → next "Query N". Returns the new tab's id, or null when the
    *  engine has no SQL surface. */
   newQueryTabWithContent(title: string | null, content: string): string | null;
+  /** Traces: BASED-AGENT-SHOW-RESULTS — open (or reuse) a table tab in its Data view, optionally
+   *  pre-filtered by an engine `where` predicate. This is `show_results` on a connection with no SQL
+   *  editor: without it, a Cloud session loses the "rows land in a real grid" norm exactly where it
+   *  also can't aggregate, and every answer degrades to rows pasted into chat. Returns the tab id. */
+  openTableTabWithQuery(schema: string, table: string, where?: string): Promise<string>;
   /** Stamp an agent-opened tab with the chat thread that created it (BASED-AGENT-THREADS aliasing);
    *  null detaches the alias ("New chat" on an aliased tab starts the tab's own thread). */
   setTabOriginThread(tabId: string, threadId: string | null): void;
@@ -443,7 +464,19 @@ export const useStore = create<AppState>((set, get) => {
             .then(({ definition }) => patchTab({ definition }))
             .catch(() => {})
         : Promise.resolve();
-    return Promise.all([columnsFetch, definitionFetch]).then(() => {});
+    // Traces: BASED-INDEX-INTROSPECT, BASED-LANCE-SCAN — both engines, not just DDL-scriptable ones.
+    // Either failing is cosmetic: the panel just doesn't render, it never blocks the tab.
+    const indexFetch = get().capabilities?.indexIntrospect
+      ? fetchTableIndexes(schema, table)
+          .then(({ indexes }) => patchTab({ indexes }))
+          .catch(() => {})
+      : Promise.resolve();
+    const countFetch = get().capabilities?.countRows
+      ? fetchRowCount(schema, table)
+          .then(({ count }) => patchTab({ rowCount: count }))
+          .catch(() => {})
+      : Promise.resolve();
+    return Promise.all([columnsFetch, definitionFetch, indexFetch, countFetch]).then(() => {});
   }
 
   // Fetches definition + parameters for a routine tab and patches it in — shared by openRoutineTab
@@ -477,6 +510,9 @@ export const useStore = create<AppState>((set, get) => {
           definition: null,
           details: null,
           createScript: null,
+          indexes: null,
+          rowCount: null,
+          prefillWhere: null,
           error: null,
           view: meta.view,
         };
@@ -840,6 +876,22 @@ export const useStore = create<AppState>((set, get) => {
       persistTabsSoon();
     },
 
+    // Traces: BASED-AGENT-SHOW-RESULTS — the no-SQL half of show_results. Reuses an already-open
+    // tab rather than stacking duplicates, and re-stamps prefillWhere so a second agent call with a
+    // different predicate actually re-filters instead of silently showing the first one's rows.
+    async openTableTabWithQuery(schema, table, where) {
+      const id = `table:${schema}.${table}`;
+      await get().openTableTab(schema, table, "table", "data");
+      set({
+        tabs: get().tabs.map((t) =>
+          t.id === id && t.kind === "table" ? { ...t, view: "data" as TableViewId, prefillWhere: where ?? null } : t,
+        ),
+        activeTabId: id,
+      });
+      persistTabsSoon();
+      return id;
+    },
+
     async openTableTab(schema, table, objectType, view) {
       const id = `table:${schema}.${table}`;
       const existing = get().tabs.find((t) => t.id === id);
@@ -858,6 +910,9 @@ export const useStore = create<AppState>((set, get) => {
         definition: null,
         details: null,
         createScript: null,
+        indexes: null,
+        rowCount: null,
+        prefillWhere: null,
         error: null,
         view: view ?? "details",
       };
@@ -1111,6 +1166,12 @@ export const useStore = create<AppState>((set, get) => {
       persistTabsSoon();
     },
 
+    // Traces: BASED-CTRL-N — asks the shell to open a new window; silently a no-op when core and
+    // shell aren't running in-process (BASED_DEV_URL dev mode has no window to open).
+    async newWindow() {
+      await newWindowApi().catch(() => {});
+    },
+
     setDialog(dialog) {
       set({ dialog });
     },
@@ -1208,7 +1269,7 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     // Open a fresh query tab with the given SQL and run it immediately (chat "Run" affordance and
-    // the agent's open_query_tab tool). Returns the new tab's id.
+    // the agent's show_results tool). Returns the new tab's id.
     async runSqlInNewTab(sql, title) {
       const state = get();
       const tab: QueryTabState = { ...freshQueryTab(title ?? nextQueryTitle(state.tabs)), content: sql };
@@ -1259,6 +1320,6 @@ export function activeQueryTab(state: AppState): QueryTabState | null {
 /** Tabs shown in the tab strip, in strip order — excludes the hidden SQL-view tabs `ensureSqlView`
  *  creates behind a table/view tab's "SQL" mode (see QueryTabState.parentTabId). Shared by
  *  TabStrip, the Ctrl+PageUp/PageDown handler, and TabContextMenu so "tab order" has one definition. */
-export function visibleTabs(state: AppState): TabState[] {
+export function visibleTabs(state: Pick<AppState, "tabs">): TabState[] {
   return state.tabs.filter((t) => !(t.kind === "query" && t.parentTabId));
 }

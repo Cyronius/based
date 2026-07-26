@@ -5,7 +5,7 @@ import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from
 import type { TableTabState, TableViewId } from "../store";
 import { useStore } from "../store";
 import { EmbeddingsView } from "./embeddings/EmbeddingsView";
-import type { TableColumn, TableDetails } from "../api/types";
+import type { TableColumn, TableDetails, TableIndex } from "../api/types";
 import { TableDataGrid } from "./TableDataGrid";
 import { QueryTabView } from "./QueryTabView";
 import { DefinitionBlock } from "./DefinitionBlock";
@@ -46,13 +46,45 @@ function DetailSection({ label, headers, children }: { label: string; headers: s
 
 const td = "px-3 py-1.5 border-b border-line-soft";
 
-// Traces: BASED-TABLE-DETAILS-UI — the enriched sections from getTableDetails.
-function DetailSections({ details }: { details: TableDetails }) {
+// Traces: BASED-INDEX-INTROSPECT — indexes for EVERY engine that exposes them, not just the
+// DDL-scriptable ones. It used to live inside DetailSections, which only renders when getTableDetails
+// succeeded — i.e. SQL Server only — so a LanceDB table showed no index information at all, and the
+// most load-bearing facts about a vector table (is there an FTS index? is it IVF or HNSW? how many
+// rows aren't indexed yet?) were invisible in the UI and unanswerable by the agent.
+//
+// Absence is rendered explicitly rather than hidden: "no indexes" is the actionable fact on a vector
+// table, since text/hybrid search cannot run without one.
+function IndexSection({ indexes, isVectorEngine }: { indexes: TableIndex[]; isVectorEngine: boolean }) {
+  const unindexed = indexes.reduce((n, i) => n + (i.numUnindexedRows ?? 0), 0);
+  if (indexes.length === 0) {
+    return (
+      <div className="mx-5 mb-4">
+        <div className="ledger-label mb-1.5">Indexes</div>
+        <div className="text-[length:var(--fs-base)] text-muted">
+          None.
+          {isVectorEngine && " Vector search will run exact (slow but precise); keyword and hybrid search need a full-text index and cannot run."}
+        </div>
+      </div>
+    );
+  }
+  const headers = isVectorEngine
+    ? ["Name", "Type", "Columns", "Metric", "Indexed", "Unindexed"]
+    : ["Name", "Type", "Key columns", "Included", "Filter"];
   return (
-    <>
-      {details.indexes.length > 0 && (
-        <DetailSection label="Indexes" headers={["Name", "Type", "Key columns", "Included", "Filter"]}>
-          {details.indexes.map((i) => (
+    <div className="mx-5 mb-4">
+      <div className="ledger-label mb-1.5">Indexes</div>
+      <table className="text-[length:var(--fs-base)] border-collapse">
+        <thead>
+          <tr className="text-left">
+            {headers.map((h) => (
+              <th key={h} className="ledger-label font-semibold px-3 py-2 border-b border-line whitespace-nowrap">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {indexes.map((i) => (
             <tr key={i.name} className="hover:bg-ink-850">
               <td className={`${td} font-mono text-paper`}>
                 {i.name}
@@ -70,13 +102,39 @@ function DetailSections({ details }: { details: TableDetails }) {
               <td className={`${td} font-mono text-paper-dim`}>
                 {i.keyColumns.map((k) => `${k.name}${k.descending ? " desc" : ""}`).join(", ")}
               </td>
-              <td className={`${td} font-mono text-faint`}>{i.includedColumns.join(", ")}</td>
-              <td className={`${td} font-mono text-faint`}>{i.filterDefinition ?? ""}</td>
+              {isVectorEngine ? (
+                <>
+                  <td className={`${td} text-muted`}>{i.distanceType ?? ""}</td>
+                  <td className={`${td} font-mono text-paper-dim`}>{i.numIndexedRows?.toLocaleString() ?? ""}</td>
+                  <td className={`${td} font-mono ${i.numUnindexedRows ? "text-warn" : "text-faint"}`}>
+                    {i.numUnindexedRows?.toLocaleString() ?? ""}
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td className={`${td} font-mono text-faint`}>{i.includedColumns.join(", ")}</td>
+                  <td className={`${td} font-mono text-faint`}>{i.filterDefinition ?? ""}</td>
+                </>
+              )}
             </tr>
           ))}
-        </DetailSection>
+        </tbody>
+      </table>
+      {unindexed > 0 && (
+        <div className="mt-1.5 text-[length:var(--fs-sm)] text-warn">
+          {unindexed.toLocaleString()} row{unindexed === 1 ? "" : "s"} not yet covered by an index — searches scan those
+          exactly, which is the usual reason a search got slow or missed a recently added row.
+        </div>
       )}
+    </div>
+  );
+}
 
+// Traces: BASED-TABLE-DETAILS-UI — the enriched sections from getTableDetails. Indexes moved out to
+// IndexSection so both engines get them.
+function DetailSections({ details }: { details: TableDetails }) {
+  return (
+    <>
       {details.foreignKeys.length > 0 && (
         <DetailSection label="Foreign keys" headers={["Name", "Columns", "References", "On delete", "On update"]}>
           {details.foreignKeys.map((fk) => (
@@ -138,7 +196,7 @@ function DetailSections({ details }: { details: TableDetails }) {
   );
 }
 
-function ColumnsTable({ tab }: { tab: TableTabState }) {
+function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEngine: boolean }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto">
       {tab.error && (
@@ -184,6 +242,8 @@ function ColumnsTable({ tab }: { tab: TableTabState }) {
           </tbody>
         </table>
       )}
+
+      {tab.indexes && <IndexSection indexes={tab.indexes} isVectorEngine={isVectorEngine} />}
 
       {tab.details && <DetailSections details={tab.details} />}
 
@@ -282,11 +342,15 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
         </h1>
         <span className="ledger-label">{tab.objectType}</span>
         {tab.columns && <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.columns.length} columns</span>}
+        {/* Traces: BASED-LANCE-SCAN — the exact total, so "how big is this table" never needs a query. */}
+        {tab.rowCount != null && (
+          <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.rowCount.toLocaleString()} rows</span>
+        )}
       </div>
 
       {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
       {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
-      {tab.view === "details" && <ColumnsTable tab={tab} />}
+      {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
       {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
     </div>
   );

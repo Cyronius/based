@@ -14,7 +14,7 @@ automatically — do NOT describe the diagram in prose instead, and do NOT use a
 
 ## Structural diagrams (from the schema)
 
-Inspect the schema first with get_schema; never invent tables or columns.
+Inspect the schema first with list_objects / describe_table; never invent tables or columns.
 
 - **ER / schema shape** — use \`erDiagram\`. One entity per table; list key columns with types; draw
   relationships from foreign keys (\`CUSTOMER ||--o{ ORDER : places\`).
@@ -29,7 +29,9 @@ Chart the numbers the database actually returns — never guess counts.
 
 1. Write an **aggregate** query that yields a *small* group set (a \`GROUP BY\` returning a handful of
    rows, e.g. counts by status, totals by month). Do not chart thousands of raw rows.
-2. Run it with **run_query** to get the real numbers.
+2. Run it with **run_query** to get the real numbers. If this connection has no \`run_query\`, there is
+   no server-side aggregation: build the group set from repeated **count_rows** calls (one per
+   category, each with its own filter) instead. Never chart a number you didn't read back.
 3. Emit a mermaid chart of those numbers:
    - **\`pie\`** — best for a small categorical distribution. Stable and well-supported.
 
@@ -53,7 +55,7 @@ Chart the numbers the database actually returns — never guess counts.
 
 ## Rules
 
-- Aggregate to a small group set and use run_query's real numbers before charting.
+- Aggregate to a small group set and chart only numbers a tool actually returned.
 - Label the chart (a title, axis names) so it reads on its own.
 - If a value is unknown, run a query for it rather than inventing it.`,
 };

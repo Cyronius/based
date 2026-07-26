@@ -20,15 +20,18 @@ import type {
   CommandResult,
   ConnectionConfig,
   ConnectionStatus,
+  ConnectionVariant,
   DatabaseAdapter,
   DbCommand,
   DbObject,
+  EngineCapabilities,
   ExecuteOptions,
   LanceSearchParams,
   QueryChunk,
   QueryExecution,
   SearchRows,
   TableColumn,
+  TableIndex,
   TablePage,
   TestResult,
   VectorSampleResult,
@@ -57,18 +60,36 @@ function vectorInfo(arrowType: unknown): { dim: number; elementType: string } | 
 export class LanceDbAdapter implements DatabaseAdapter {
   // Traces: BASED-LANCE-SQL — dynamic per config: DuckDB's lance extension can scan local Lance
   // storage but cannot reach LanceDB Cloud, so only local connections advertise sql.
-  get capabilities() {
+  get capabilities(): EngineCapabilities {
     return {
       sql: !this.isCloud(),
       search: true,
       write: false,
       // Lance is an unordered engine (readTablePage has no stable ORDER BY) — no server-side
-      // sort/filter browse (BASED-TABLE-ORDERBY).
+      // sort browse (BASED-TABLE-ORDERBY). Filtering is a different question: a `where` predicate
+      // needs no ordering, and it is the ONLY way to narrow rows on a cloud connection.
       orderedBrowse: false,
       // No DDL scripting or FK relations — Lance has neither SQL DDL nor foreign keys.
       script: false,
       relations: false,
-    } as const;
+      // Traces: BASED-AGENT-SURFACE-VARIANT
+      engine: "lancedb",
+      variant: this.variant(),
+      containers: this.baseFolderDbs ? [...this.baseFolderDbs.keys()].sort() : null,
+      wherePredicate: true,
+      structuredFilters: false,
+      countRows: true,
+      takeByKey: true,
+      indexIntrospect: true,
+    };
+  }
+
+  /** Which of the three LanceDB shapes this connection is. Cloud is a config property; base-folder
+   *  is only known after connect() has scanned the directory, so before that a local connection
+   *  reports "lancedb-local" (it has no containers to report either way). */
+  private variant(): ConnectionVariant {
+    if (this.isCloud()) return "lancedb-cloud";
+    return this.baseFolderDbs ? "lancedb-basefolder" : "lancedb-local";
   }
   readonly database: string;
   private conn: lancedb.Connection | null = null;
@@ -188,7 +209,7 @@ export class LanceDbAdapter implements DatabaseAdapter {
     this.conn = null;
     this.baseFolderDbs = null;
     this.localDir = null;
-    this.vectorMetricCache.clear();
+    this.indexCache.clear();
     this.emitStatus("disconnected");
   }
 
@@ -287,54 +308,124 @@ export class LanceDbAdapter implements DatabaseAdapter {
       };
     });
     if (cols.some((c) => c.isVector)) {
-      const metrics = await this.vectorMetricsFor(schema, table, t);
+      const indexes = await this.indexesFor(schema, table, t);
       for (const c of cols) {
-        if (c.isVector && metrics[c.name]) c.vectorMetric = metrics[c.name]!;
+        const metric = indexes.find((i) => i.keyColumns[0]?.name === c.name)?.distanceType;
+        if (c.isVector && metric) c.vectorMetric = metric;
       }
     }
     return cols;
   }
 
-  /** Per-table vector-column → index metric map, memoized for the connection's lifetime (index
-   *  metadata doesn't churn mid-session and getTableColumns runs on every page read / search).
-   *  Any introspection failure degrades to an empty map, never an error. */
-  private vectorMetricCache = new Map<string, Record<string, "l2" | "cosine" | "dot">>();
+  // Traces: BASED-INDEX-INTROSPECT, BASED-LANCE-VECTOR-METRIC — one memoized listIndices +
+  // indexStats round-trip per table, feeding BOTH the per-column vector metric (which runs on every
+  // page read and search, hence the cache) and the index panel / get_indexes tool. Previously only
+  // `distanceType` survived this call; indexType and the indexed/unindexed row split were fetched
+  // and thrown away, which is exactly what the agent needed to know whether nprobes or ef is live
+  // and why a freshly-appended row isn't showing up in search.
+  private indexCache = new Map<string, TableIndex[]>();
 
-  private async vectorMetricsFor(
-    schema: string,
-    table: string,
-    t: lancedb.Table,
-  ): Promise<Record<string, "l2" | "cosine" | "dot">> {
+  private async indexesFor(schema: string, table: string, t: lancedb.Table): Promise<TableIndex[]> {
     const key = `${schema}/${table}`;
-    const cached = this.vectorMetricCache.get(key);
+    const cached = this.indexCache.get(key);
     if (cached) return cached;
-    const metrics: Record<string, "l2" | "cosine" | "dot"> = {};
+    const out: TableIndex[] = [];
     try {
-      const indices = await t.listIndices();
-      for (const idx of indices) {
-        const col = idx.columns[0];
-        if (!col) continue;
-        const stats = await t.indexStats(idx.name);
+      for (const idx of await t.listIndices()) {
+        const stats = await t.indexStats(idx.name).catch(() => undefined);
         const metric = stats?.distanceType?.toLowerCase();
-        if (metric === "l2" || metric === "cosine" || metric === "dot") metrics[col] = metric;
+        out.push({
+          name: idx.name,
+          typeDesc: String(stats?.indexType ?? idx.indexType ?? "").toUpperCase(),
+          isUnique: false,
+          isPrimaryKey: false,
+          isUniqueConstraint: false,
+          filterDefinition: null,
+          keyColumns: idx.columns.map((name) => ({ name, descending: false })),
+          includedColumns: [],
+          distanceType: metric === "l2" || metric === "cosine" || metric === "dot" ? metric : null,
+          numIndexedRows: stats?.numIndexedRows ?? null,
+          numUnindexedRows: stats?.numUnindexedRows ?? null,
+          numIndices: stats?.numIndices ?? null,
+        });
       }
     } catch {
-      // best-effort: no metric info beats a failed column listing
+      // best-effort: an empty list beats a failed column listing (getTableColumns depends on this)
     }
-    this.vectorMetricCache.set(key, metrics);
-    return metrics;
+    this.indexCache.set(key, out);
+    return out;
   }
 
-  // Traces: BASED-LANCE-BROWSE — one page, capped by the row cap. LanceDB rows are unordered (no PK),
-  // so orderBy is empty; paging uses the query offset/limit.
-  async readTablePage(schema: string, table: string, opts: { offset: number; limit: number }): Promise<TablePage> {
+  async getIndexes(schema: string, table: string): Promise<TableIndex[]> {
+    const t = await this.resolveTable(table, schema || undefined);
+    return this.indexesFor(schema, table, t);
+  }
+
+  // Traces: BASED-LANCE-BROWSE, BASED-LANCE-SCAN — one page, capped by the row cap. LanceDB rows are
+  // unordered (no PK), so orderBy is empty; paging uses the query offset/limit. `where` is a Lance
+  // predicate, and on a cloud connection it is the only way to narrow rows at all — there is no SQL.
+  async readTablePage(
+    schema: string,
+    table: string,
+    opts: { offset: number; limit: number; where?: string },
+  ): Promise<TablePage> {
     const t = await this.resolveTable(table, schema || undefined);
     const columns = await this.getTableColumns(schema, table);
     const limit = Math.min(Math.max(1, Math.floor(opts.limit)), this.rowCap);
     const offset = Math.max(0, Math.floor(opts.offset));
-    const records = await t.query().offset(offset).limit(limit).toArray();
+    let q = t.query();
+    if (opts.where) q = q.where(opts.where);
+    const records = await q.offset(offset).limit(limit).toArray();
     const rows = this.serializeRecords(records, columns);
     return { columns, rows, orderBy: [] };
+  }
+
+  // Traces: BASED-LANCE-SCAN — cheap total, so the caller can decide between paging and aggregating
+  // and can tell the user how big the answer is. hasMore alone says nothing about scale.
+  async countRows(schema: string, table: string, opts?: { where?: string }): Promise<number> {
+    const t = await this.resolveTable(table, schema || undefined);
+    // A blank predicate means "no filter" — passing it through reaches the Lance parser as an empty
+    // expression and fails with `Expected: an expression, found: EOF`. Every other read path here
+    // guards the same way (readTablePage, and the three search modes).
+    return t.countRows(opts?.where?.trim() || undefined);
+  }
+
+  /** A Lance predicate literal. Strings are single-quoted with '' escaping (the same convention as
+   *  SQL); numbers pass through after a finite check. Callers never build this themselves — that is
+   *  the whole point of take_rows existing next to a free-text `where`. */
+  private static predicateLiteral(v: string | number): string {
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) throw new Error(`Cannot match on a non-finite key value (${v}).`);
+      return String(v);
+    }
+    return `'${v.replaceAll("'", "''")}'`;
+  }
+
+  // Traces: BASED-LANCE-SCAN — fetch specific rows by id. The common follow-up to a search that
+  // returned keys; on cloud there is no SQL to hand-write it with.
+  async takeRows(
+    schema: string,
+    table: string,
+    opts: { keyColumn: string; keys: Array<string | number>; columns?: string[] },
+  ): Promise<TablePage> {
+    const t = await this.resolveTable(table, schema || undefined);
+    const columns = await this.getTableColumns(schema, table);
+    if (!columns.some((c) => c.name === opts.keyColumn)) {
+      throw new Error(`Unknown column "${opts.keyColumn}" on ${table}. Columns: ${columns.map((c) => c.name).join(", ")}`);
+    }
+    if (opts.keys.length === 0) return { columns, rows: [], orderBy: [] };
+    const list = opts.keys.map((k) => LanceDbAdapter.predicateLiteral(k)).join(", ");
+    // Lance predicates are DataFusion-flavoured: a double-quoted name is parsed as a STRING literal,
+    // not an identifier, so `"id" IN (…)` silently matches nothing. Plain names go bare; anything
+    // else is backtick-quoted, which is the identifier quote this dialect actually honours.
+    const ident = /^[A-Za-z_][A-Za-z0-9_]*$/.test(opts.keyColumn)
+      ? opts.keyColumn
+      : `\`${opts.keyColumn.replaceAll("`", "``")}\``;
+    let q = t.query().where(`${ident} IN (${list})`).limit(Math.min(opts.keys.length, this.rowCap));
+    if (opts.columns?.length) q = q.select(opts.columns);
+    const records = (await q.toArray()) as Array<Record<string, unknown>>;
+    const projected = opts.columns?.length ? columns.filter((c) => opts.columns!.includes(c.name)) : columns;
+    return { columns: projected, rows: this.serializeRecords(records, projected), orderBy: [] };
   }
 
   // Traces: BASED-EMBED-VECTORS — full-precision vector sample for the Embeddings view. The only
@@ -488,26 +579,28 @@ export class LanceDbAdapter implements DatabaseAdapter {
       .join(" | ");
   }
 
-  /** Direction-aware floor/delta filtering against `scoreKey` (already-sorted `records`, best first).
+  /** Traces: BASED-SEARCH-PARAM-NAMES — direction-aware score thresholds against `scoreKey`
+   *  (already-sorted `records`, best first). "min" is relative to score *quality*, not to the
+   *  number: for an ascending score like `_distance`, minScore is enforced as an upper bound.
    *  No-op if there's no score column or neither bound is set. */
-  private applyFloorDelta(
+  private applyScoreThresholds(
     records: Array<Record<string, unknown>>,
     scoreKey: string | null,
-    floor?: number,
-    delta?: number,
+    minScore?: number,
+    maxScoreGapFromTop?: number,
   ): Array<Record<string, unknown>> {
-    if (!scoreKey || (floor == null && delta == null)) return records;
+    if (!scoreKey || (minScore == null && maxScoreGapFromTop == null)) return records;
     const ascending = this.isAscendingScore(scoreKey);
     const top = records[0]?.[scoreKey] as number | undefined;
     return records.filter((rec) => {
       const score = rec[scoreKey] as number;
-      if (floor != null) {
-        if (ascending && score > floor) return false;
-        if (!ascending && score < floor) return false;
+      if (minScore != null) {
+        if (ascending && score > minScore) return false;
+        if (!ascending && score < minScore) return false;
       }
-      if (delta != null && top != null) {
-        if (ascending && score - top > delta) return false;
-        if (!ascending && top - score > delta) return false;
+      if (maxScoreGapFromTop != null && top != null) {
+        if (ascending && score - top > maxScoreGapFromTop) return false;
+        if (!ascending && top - score > maxScoreGapFromTop) return false;
       }
       return true;
     });
@@ -533,8 +626,27 @@ export class LanceDbAdapter implements DatabaseAdapter {
   // vector, which is precisely what you need to know when a connection's default embedding profile
   // points at the wrong model. A table with no vector column is left alone: there's nothing to
   // compare against, and the engine's error is already the right one.
-  private assertVectorDimension(vector: number[], baseCols: TableColumn[], table: string, model?: string): void {
-    const vectorCols = baseCols.filter((c) => c.isVector && typeof c.vectorDimension === "number");
+  private assertVectorDimension(
+    vector: number[],
+    baseCols: TableColumn[],
+    table: string,
+    model?: string,
+    vectorColumn?: string,
+  ): void {
+    let vectorCols = baseCols.filter((c) => c.isVector && typeof c.vectorDimension === "number");
+    if (vectorColumn) {
+      // Traces: BASED-LANCE-VECTOR-COLUMN — when a column is named, check against THAT column;
+      // otherwise a two-embedding table would pass the guard on the wrong column's dimension.
+      const named = baseCols.find((c) => c.name === vectorColumn);
+      if (!named?.isVector) {
+        throw new Error(
+          `"${vectorColumn}" is not a vector column of ${table}. Vector columns: ${
+            vectorCols.map((c) => `"${c.name}" (${c.vectorDimension})`).join(", ") || "none"
+          }`,
+        );
+      }
+      vectorCols = [named];
+    }
     if (vectorCols.length === 0) return;
     if (vectorCols.some((c) => c.vectorDimension === vector.length)) return;
     const expected =
@@ -560,10 +672,11 @@ export class LanceDbAdapter implements DatabaseAdapter {
 
   // Traces: BASED-LANCE-SEARCH-UNIFIED, BASED-LANCE-VECTOR-SEARCH, BASED-LANCE-FTS, BASED-LANCE-HYBRID,
   // BASED-LANCE-SEARCH-KNOBS
-  // One search pipeline for vector/keyword/hybrid: fetch `sampleSize` native candidates (prefiltered
-  // by `where` on all three modes) → optionally rerank externally down to `keepSize` → sort by
-  // whichever score is present → apply floor/delta → truncate. RRFReranker (hybrid mode) is only
-  // LanceDB's internal vector+FTS fusion plumbing here — never the user-configured reranker profile.
+  // The pipeline order, in one place — every search tool's description repeats it verbatim:
+  //   probe (nprobes/ef) → prefilter (where, unless postfilter) → candidatePool → rerank
+  //   (rerankTopN) → threshold (minScore/maxScoreGapFromTop) → k
+  // RRFReranker (hybrid mode) is only LanceDB's internal vector+FTS fusion plumbing here — never the
+  // user-configured reranker profile.
   async search(params: LanceSearchParams): Promise<SearchRows> {
     if (params.mode === "text") {
       const used = LanceDbAdapter.VECTOR_KNOB_KEYS.filter((k) => params[k] != null && params[k] !== false);
@@ -571,8 +684,8 @@ export class LanceDbAdapter implements DatabaseAdapter {
         throw new Error(`${used.join("/")} require vector or hybrid mode — text (FTS) search has no vector query to tune.`);
       }
     }
-    const sampleSize = Math.min(Math.max(1, Math.floor(params.sampleSize ?? 50)), this.rowCap);
-    const keepSize = Math.min(Math.max(1, Math.floor(params.keepSize ?? 10)), sampleSize);
+    const candidatePool = Math.min(Math.max(1, Math.floor(params.candidatePool ?? 50)), this.rowCap);
+    const keepSize = Math.min(Math.max(1, Math.floor(params.keepSize ?? 10)), candidatePool);
 
     // Resolved before embedding so the dimension guard below can compare against the real column
     // (BASED-LANCE-EMBED-DIM-GUARD).
@@ -589,27 +702,34 @@ export class LanceDbAdapter implements DatabaseAdapter {
       }
       vector = await embedQuery(params.embeddingProfile, params.query);
     }
-    if (vector) this.assertVectorDimension(vector, baseCols, params.table, params.embeddingProfile?.model);
+    if (vector) {
+      this.assertVectorDimension(vector, baseCols, params.table, params.embeddingProfile?.model, params.vectorColumn);
+    }
+
+    // Traces: BASED-LANCE-VECTOR-COLUMN — without .column(), LanceDB picks the vector column itself
+    // and a table with two embeddings is only reachable by whichever one it happens to pick.
+    const onColumn = (q: lancedb.VectorQuery): lancedb.VectorQuery =>
+      params.vectorColumn ? q.column(params.vectorColumn) : q;
 
     let records: Array<Record<string, unknown>>;
     if (params.mode === "vector") {
       if (!vector) throw new Error("vector search needs a query vector or a text query");
-      let q = this.applyVectorKnobs(t.vectorSearch(vector as never).limit(sampleSize), params);
+      let q = this.applyVectorKnobs(onColumn(t.vectorSearch(vector as never)).limit(candidatePool), params);
       if (params.where) q = q.where(params.where);
       if (params.columns?.length) q = q.select(params.columns);
       records = (await q.toArray()) as Array<Record<string, unknown>>;
     } else if (params.mode === "text") {
       if (!params.query) throw new Error("text search needs a query");
-      let q = t.query().fullTextSearch(params.query).limit(sampleSize);
+      let q = t.query().fullTextSearch(params.query).limit(candidatePool);
       if (params.where) q = q.where(params.where);
       if (params.columns?.length) q = q.select(params.columns);
       records = (await q.toArray()) as Array<Record<string, unknown>>;
     } else {
       if (!params.query || !vector) throw new Error("hybrid search needs both a text query and a vector");
       const fusion = await lancedb.rerankers.RRFReranker.create();
-      let q = this.applyVectorKnobs(t.query().fullTextSearch(params.query).nearestTo(vector as never), params)
+      let q = this.applyVectorKnobs(onColumn(t.query().fullTextSearch(params.query).nearestTo(vector as never)), params)
         .rerank(fusion)
-        .limit(sampleSize);
+        .limit(candidatePool);
       if (params.where) q = q.where(params.where);
       if (params.columns?.length) q = q.select(params.columns);
       records = (await q.toArray()) as Array<Record<string, unknown>>;
@@ -633,7 +753,7 @@ export class LanceDbAdapter implements DatabaseAdapter {
       );
     }
 
-    finalRecords = this.applyFloorDelta(finalRecords, scoreKey, params.floor, params.delta);
+    finalRecords = this.applyScoreThresholds(finalRecords, scoreKey, params.minScore, params.maxScoreGapFromTop);
     finalRecords = finalRecords.slice(0, keepSize);
 
     const { columns, order } = this.searchColumns(finalRecords, baseCols);

@@ -3,7 +3,7 @@
 //         BASED-AGENT-MULTISTEP
 // Server-level auth/gate tests always run; tool + audit tests that need a live DB self-skip like
 // the other integration suites.
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
@@ -14,21 +14,23 @@ import {
   AiProfileStore,
   AgentInstructionsStore,
   AuditStore,
-  DEFAULT_AI_CONFIG,
   buildAgentTools,
   buildAgent,
   agentInstructions,
   GENERIC_CORE,
   MSSQL_PERSONA,
   LANCE_PERSONA,
+  mssqlBriefing,
+  lanceBriefing,
+  defaultCapabilitiesFor,
   skills,
-  testConnection,
   setAiKey,
   getAiKey,
   deleteAiKey,
 } from "@based/core";
 import { MssqlAdapter } from "@based/core/mssql";
 import type { ConnectionConfig } from "@based/core";
+import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const dir = mkdtempSync(join(tmpdir(), "based-spec-agent-"));
 const TOKEN = "agent-token";
@@ -50,12 +52,12 @@ describe("BASED-AI-PROVIDER: config store + key secrets", () => {
   test("config persists secret-free and reopens", () => {
     const path = join(mkdtempSync(join(tmpdir(), "based-aicfg-")), "app.db");
     const store = new AiConfigStore(openDb(path));
-    expect(store.get()).toEqual(DEFAULT_AI_CONFIG); // default when unset
+    expect(store.get()).toBeNull(); // no built-in default when unset
     const saved = store.save({ providerId: "p1", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m", hasKey: true });
     expect(JSON.stringify(saved)).not.toContain("secret");
     const reopened = new AiConfigStore(openDb(path));
-    expect(reopened.get().model).toBe("m");
-    expect(reopened.get().baseUrl).toBe("http://x/v1");
+    expect(reopened.get()?.model).toBe("m");
+    expect(reopened.get()?.baseUrl).toBe("http://x/v1");
   });
 
   test("AI key round-trips through Credential Manager", () => {
@@ -69,10 +71,42 @@ describe("BASED-AI-PROVIDER: config store + key secrets", () => {
 });
 
 describe("BASED-AI-PROVIDER-PROFILES: profile CRUD + migration", () => {
-  test("GET /api/ai-profiles migrates the legacy default config into a profile on first use", async () => {
-    const profiles = (await (await api("/api/ai-profiles")).json()) as Array<{ name: string; kind: string; hasKey: boolean }>;
-    expect(profiles.length).toBeGreaterThan(0);
-    expect(profiles.some((p) => p.name === "Default" && p.kind === "openai-compatible")).toBe(true);
+  test("GET /api/ai-profiles returns an empty list on a fresh install — no built-in default is seeded", async () => {
+    const profiles = (await (await api("/api/ai-profiles")).json()) as Array<{ name: string }>;
+    expect(profiles).toEqual([]);
+  });
+
+  test("a real legacy ai_config row migrates into a Default profile on first use", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "based-aimigrate-"));
+    const dbPath = join(dir, "app.db");
+    new AiConfigStore(openDb(dbPath)).save({
+      providerId: "legacy",
+      kind: "openai-compatible",
+      baseUrl: "http://legacy-host/v1",
+      model: "legacy-model",
+      hasKey: false,
+    });
+    const migrateServer = startServer({ token: "migrate-token", dbPath, agentDbPath: join(dir, "agent.db") });
+    try {
+      const res = await fetch(`${migrateServer.url}/api/ai-profiles`, {
+        headers: { authorization: "Bearer migrate-token" },
+      });
+      const profiles = (await res.json()) as Array<{ name: string; kind: string; baseUrl: string; model: string }>;
+      expect(profiles.length).toBe(1);
+      expect(profiles[0]).toMatchObject({ name: "Default", kind: "openai-compatible", baseUrl: "http://legacy-host/v1", model: "legacy-model" });
+    } finally {
+      await migrateServer.stop();
+    }
+  });
+
+  test("invoking the agent with zero profiles configured returns a clear 400, not a raw error", async () => {
+    const res = await api("/api/session/label-clusters?sid=default", {
+      method: "POST",
+      body: JSON.stringify({ clusters: [{ id: 0, samples: ["x"] }] }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/no agent profile configured/i);
   });
 
   test("POST /api/ai-profiles creates a profile; DELETE removes it", async () => {
@@ -89,9 +123,15 @@ describe("BASED-AI-PROVIDER-PROFILES: profile CRUD + migration", () => {
     expect(profiles.some((p) => p.id === created.id)).toBe(false);
   });
 
-  test("the migrated Default profile links to the default instruction set", async () => {
-    const profiles = (await (await api("/api/ai-profiles")).json()) as Array<{ name: string; instructionSetId: string }>;
-    expect(profiles.find((p) => p.name === "Default")?.instructionSetId).toBe("default");
+  test("a profile created via the API with no instructionSetId links to the default instruction set", async () => {
+    const created = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ name: "No-instructions profile", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m" }),
+      })
+    ).json()) as { id: string; instructionSetId: string };
+    expect(created.instructionSetId).toBe("default");
+    await api(`/api/ai-profiles/${created.id}`, { method: "DELETE" });
   });
 
   test("a profile's instructionSetId persists and round-trips", async () => {
@@ -179,6 +219,12 @@ describe("BASED-AGENT-INSTRUCTIONS: instructions resolve from the profile's link
 
   test("resolveById falls back to the default set when the id no longer resolves", () => {
     expect(store.resolveById("deleted-set-id", "mssql")).toEqual(store.resolveById("default", "mssql"));
+    // The default set resolves to persona: null — "no override", so the live connection's
+    // generated, variant-correct persona is used (BASED-AGENT-SURFACE-VARIANT). Only a custom set
+    // pins a fixed string, because a fixed string cannot be regenerated per variant.
+    // Both halves are plain strings again: a persona carries no connection-specific claims, so it
+    // needs no per-variant regeneration. The capability briefing that does is generated by
+    // agentSurfaceFor and never lives in a set (BASED-AGENT-INSTRUCTIONS).
     expect(store.resolveById("default", "mssql")).toEqual({ core: GENERIC_CORE, persona: MSSQL_PERSONA });
   });
 });
@@ -245,18 +291,24 @@ describe("BASED-AGENT-INSTRUCTIONS-COMPOSE: buildAgent core/persona overrides", 
   }
 
   test("no override reproduces today's hardcoded per-engine output", async () => {
-    const mssqlAgent = buildAgent({ model: {} as never, memory: {} as never, engine: "mssql", toolDeps: noopToolDeps() });
-    expect(await mssqlAgent.getInstructions()).toBe(agentInstructions(GENERIC_CORE, MSSQL_PERSONA));
+    const mssqlCaps = defaultCapabilitiesFor("mssql");
+    const mssqlAgent = buildAgent({ model: {} as never, memory: {} as never, capabilities: mssqlCaps, toolDeps: noopToolDeps() });
+    expect(await mssqlAgent.getInstructions()).toBe(
+      agentInstructions(GENERIC_CORE, MSSQL_PERSONA, undefined, mssqlBriefing(mssqlCaps)),
+    );
 
-    const lanceAgent = buildAgent({ model: {} as never, memory: {} as never, engine: "lancedb", toolDeps: noopToolDeps() });
-    expect(await lanceAgent.getInstructions()).toBe(agentInstructions(GENERIC_CORE, LANCE_PERSONA, ["lancedb"]));
+    const lanceCaps = defaultCapabilitiesFor("lancedb");
+    const lanceAgent = buildAgent({ model: {} as never, memory: {} as never, capabilities: lanceCaps, toolDeps: noopToolDeps() });
+    expect(await lanceAgent.getInstructions()).toBe(
+      agentInstructions(GENERIC_CORE, LANCE_PERSONA, ["lancedb"], lanceBriefing(lanceCaps)),
+    );
   });
 
   test("core/persona overrides replace the built-in defaults", async () => {
     const agent = buildAgent({
       model: {} as never,
       memory: {} as never,
-      engine: "lancedb",
+      capabilities: defaultCapabilitiesFor("lancedb"),
       toolDeps: noopToolDeps(),
       core: "CUSTOM CORE TEXT",
       persona: "CUSTOM LANCE PERSONA TEXT",
@@ -266,6 +318,8 @@ describe("BASED-AGENT-INSTRUCTIONS-COMPOSE: buildAgent core/persona overrides", 
     expect(text).toContain("CUSTOM LANCE PERSONA TEXT");
     expect(text).not.toContain(GENERIC_CORE);
     expect(text).not.toContain(LANCE_PERSONA);
+    // …but the capability briefing is NOT overridable, so it survives a fully custom persona.
+    expect(text).toContain(lanceBriefing(defaultCapabilitiesFor("lancedb")));
   });
 });
 
@@ -274,7 +328,7 @@ describe("BASED-AGENT-MULTISTEP: default step budget", () => {
     const agent = buildAgent({
       model: {} as never,
       memory: {} as never,
-      engine: "mssql",
+      capabilities: defaultCapabilitiesFor("mssql"),
       toolDeps: {
         getAdapter: (): never => {
           throw new Error("must not touch the adapter");
@@ -299,23 +353,12 @@ describe("BASED-AGENT-MUTATION-GATE: approval flag required", () => {
 });
 
 // --- live-DB tool + audit tests ---
-const devCfg: ConnectionConfig = {
-  id: "spec-agent-dev",
-  name: "spec-agent-dev",
-  server: process.env.BASED_TEST_SERVER ?? "zl5qolt7t8.database.windows.net",
-  database: process.env.BASED_TEST_DB ?? "learnermobile_db_ci",
-  authType: "azure-cli",
-  encrypt: true,
-  trustServerCertificate: false,
-  createdAt: "",
-  updatedAt: "",
-};
-const probe = await testConnection(devCfg, () => null);
-const d = probe.ok ? describe : describe.skip;
-if (!probe.ok) console.warn(`[integration.agent] dev DB unavailable, skipping tool/audit tests: ${probe.error}`);
+const devCfg: ConnectionConfig = devConnection("spec-agent-dev");
+const d = DEV_DB_AVAILABLE ? describe : describe.skip;
+if (!DEV_DB_AVAILABLE) warnDevDbSkip("integration.agent", "tool/audit tests");
 
 d("agent tools over the live adapter", () => {
-  test("get_schema, sample_rows, run_query, refusal, and read audit", async () => {
+  test("list_objects, describe_table, read_table, run_query, refusal, and read audit", async () => {
     const adapter = new MssqlAdapter(devCfg, () => null);
     await adapter.connect();
     const audit = new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-audit-")), "app.db")));
@@ -327,13 +370,13 @@ d("agent tools over the live adapter", () => {
     });
 
     // BASED-AGENT-SCHEMA-CTX: object list, no rows
-    const objs = (await tools.get_schema.execute!({}, {} as never)) as { objects: unknown[] };
+    const objs = (await tools.list_objects.execute!({}, {} as never)) as { objects: unknown[] };
     expect(Array.isArray(objs.objects)).toBe(true);
     expect(objs.objects.length).toBeGreaterThan(0);
     const first = objs.objects[0] as { schema: string; name: string; type: string };
 
     // columns for a real table
-    const cols = (await tools.get_schema.execute!({ table: first.name, schema: first.schema }, {} as never)) as {
+    const cols = (await tools.describe_table.execute!({ table: first.name, schema: first.schema }, {} as never)) as {
       columns: unknown[];
     };
     expect(Array.isArray(cols.columns)).toBe(true);
@@ -349,8 +392,8 @@ d("agent tools over the live adapter", () => {
     const refused = (await tools.run_query.execute!({ sql: "UPDATE dbo.Nope SET a = 1" }, {} as never)) as { refused?: boolean };
     expect(refused.refused).toBe(true);
 
-    // BASED-AGENT-SAMPLE: bad identifier rejected
-    const bad = (await tools.sample_rows.execute!({ table: "x; DROP TABLE y" }, {} as never)) as { error?: string };
+    // BASED-AGENT-READ-ROWS: a bogus table name fails as an adapter error, not a silent read
+    const bad = (await tools.read_table.execute!({ table: "x; DROP TABLE y" }, {} as never)) as { error?: string };
     expect(bad.error).toBeTruthy();
 
     // BASED-AGENT-AUDIT: the read is recorded (mutation refusal is not — it never ran)
@@ -362,7 +405,7 @@ d("agent tools over the live adapter", () => {
   }, 120_000);
 
   // Traces: BASED-SCRIPT-OBJECT, BASED-AGENT-READ-ROWS
-  test("script_object scripts a table's CREATE and a view's definition; read_rows pages with sort", async () => {
+  test("describe_table scripts a table's CREATE and a view's definition; read_table pages with sort", async () => {
     const adapter = new MssqlAdapter(devCfg, () => null);
     await adapter.connect();
     const audit = new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-audit-script-")), "app.db")));
@@ -373,11 +416,11 @@ d("agent tools over the live adapter", () => {
       audit,
     });
     try {
-      const objs = (await tools.get_schema.execute!({}, {} as never)) as {
+      const objs = (await tools.list_objects.execute!({}, {} as never)) as {
         objects: Array<{ schema: string; name: string; type: string }>;
       };
       const table = objs.objects.find((o) => o.type === "table")!;
-      const scripted = (await tools.script_object.execute!({ name: table.name, schema: table.schema }, {} as never)) as {
+      const scripted = (await tools.describe_table.execute!({ table: table.name, schema: table.schema, format: "ddl" }, {} as never)) as {
         sql?: string;
         type?: string;
       };
@@ -386,26 +429,26 @@ d("agent tools over the live adapter", () => {
       expect(scripted.sql).toContain(table.name);
 
       // alter on a table → error object, no throw (SSMS parity, surfaced as a tool error)
-      const bad = (await tools.script_object.execute!({ name: table.name, schema: table.schema, action: "alter" }, {} as never)) as {
+      const bad = (await tools.describe_table.execute!({ table: table.name, schema: table.schema, format: "alter" }, {} as never)) as {
         error?: string;
       };
       expect(bad.error).toMatch(/not valid for tables/);
 
       const view = objs.objects.find((o) => o.type === "view");
       if (view) {
-        const v = (await tools.script_object.execute!({ name: view.name, schema: view.schema }, {} as never)) as { sql?: string };
+        const v = (await tools.describe_table.execute!({ table: view.name, schema: view.schema, format: "ddl" }, {} as never)) as { sql?: string };
         expect(v.sql ?? "").toMatch(/CREATE\s+VIEW/i);
       }
 
-      const unknown = (await tools.script_object.execute!({ name: "definitely_not_a_real_object_xyz" }, {} as never)) as {
+      const unknown = (await tools.describe_table.execute!({ table: "definitely_not_a_real_object_xyz", format: "ddl" }, {} as never)) as {
         error?: string;
         validNames?: string[];
       };
       expect(unknown.error).toBeTruthy();
       expect(unknown.validNames!.length).toBeGreaterThan(0);
 
-      // read_rows: a first page in stable order, hasMore heuristic and audit row
-      const page = (await tools.read_rows.execute!({ table: table.name, schema: table.schema, limit: 5 }, {} as never)) as {
+      // read_table: a first page in stable order, hasMore heuristic and audit row
+      const page = (await tools.read_table.execute!({ table: table.name, schema: table.schema, limit: 5 }, {} as never)) as {
         rows?: unknown[][];
         orderBy?: string[];
         hasMore?: boolean;
@@ -414,7 +457,7 @@ d("agent tools over the live adapter", () => {
       expect(page.error).toBeUndefined();
       expect(Array.isArray(page.rows)).toBe(true);
       expect(page.orderBy!.length).toBeGreaterThan(0);
-      expect(audit.list(devCfg.id).some((r) => r.sql.includes("read_rows("))).toBe(true);
+      expect(audit.list(devCfg.id).some((r) => r.sql.includes("read_table("))).toBe(true);
     } finally {
       await adapter.disconnect();
     }
@@ -505,6 +548,87 @@ describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
   }, 60_000);
 });
 
+// Traces: BASED-AGENT-DELEGATE-ISOLATION — the load-bearing claim behind delegation is that a
+// child's work never lands in the conversation the parent is protecting. That is enforced by
+// building the child without memory, so this test runs a real delegated turn against a real
+// LibSQL-backed thread and shows the thread is byte-for-byte what it was before.
+describe("BASED-AGENT-DELEGATE-ISOLATION: a delegated run leaves the parent thread alone", () => {
+  const threadId = "tab:conn-delegate:tab-1";
+  const resourceId = "conn-delegate";
+
+  test("thread history is unchanged across a delegated run, and the child's SQL is tagged", async () => {
+    const { createAgentMemory, createSubagentRunner, defaultCapabilitiesFor: caps, AuditStore: Audit, openDb: open } =
+      await import("@based/core");
+    const { MockLanguageModelV4 } = await import("ai/test");
+
+    const memory = createAgentMemory(join(dir, "agent.db"));
+    const now = new Date();
+    await memory.saveThread({ thread: { id: threadId, resourceId, title: "t", createdAt: now, updatedAt: now } });
+    await memory.saveMessages({
+      messages: [
+        {
+          id: "d-user-1",
+          role: "user",
+          createdAt: now,
+          threadId,
+          resourceId,
+          content: { format: 2, parts: [{ type: "text", text: "which tables feed invoicing?" }] },
+        },
+      ] as never,
+    });
+
+    const url = `/api/agent/threads/${encodeURIComponent(threadId)}/messages?resourceId=${resourceId}`;
+    const before = (await (await api(url)).json()) as unknown[];
+    expect(before).toHaveLength(1);
+
+    const audit = new Audit(open(join(mkdtempSync(join(tmpdir(), "based-delegate-int-")), "app.db")));
+    const runner = createSubagentRunner({
+      model: new MockLanguageModelV4({
+        doGenerate: async () => ({
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "rc1",
+              toolName: "report_findings",
+              input: JSON.stringify({ summary: "Invoice, InvoiceLine, and Customer." }),
+            },
+          ],
+          finishReason: "tool-calls",
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          warnings: [],
+        }),
+      }) as never,
+      capabilities: caps("mssql"),
+      toolDeps: {
+        getAdapter: () => {
+          throw new Error("isolation test must not touch the adapter");
+        },
+        connectionId: () => resourceId,
+        database: () => "db",
+        audit,
+      },
+      timeoutMs: 30_000,
+      concurrency: 1,
+    });
+
+    const [result] = await runner("answer the invoicing question", [
+      { name: "invoice tables", instructions: "list the tables that feed invoicing" },
+    ]);
+    expect(result!.status).toBe("ok");
+    expect(result!.summary).toBe("Invoice, InvoiceLine, and Customer.");
+
+    // The child ran, reported, and wrote nothing to the thread the user is looking at.
+    const afterDelegation = (await (await api(url)).json()) as unknown[];
+    expect(afterDelegation).toEqual(before);
+
+    // The fan-out is still accounted for, under the parent's connection.
+    const rows = audit.list(resourceId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.sql).toBe("delegate(answer the invoicing question, 1 task(s))");
+    expect(rows[0]!.status).toBe("ok");
+  }, 60_000);
+});
+
 // Traces: BASED-EMBED-LABELS-AI — endpoint validation always runs; the live-model naming test
 // self-skips when the active AI profile's server is unreachable (same spirit as the dev-DB gate).
 describe("BASED-EMBED-LABELS-AI: label-clusters endpoint", () => {
@@ -528,27 +652,38 @@ describe("BASED-EMBED-LABELS-AI: label-clusters endpoint", () => {
   });
 });
 
-// Live naming: probe the active profile's /models with a short timeout; skip when down.
-const aiBase = (() => {
+// Live naming: probe a local LM Studio's /models with a short timeout; skip when down. This probe
+// is read-only and safe to run at module-load time; creating/activating a profile is NOT — it must
+// wait for beforeAll (module-load-time code runs before any test in the file, which would corrupt
+// the earlier "starts with zero profiles" tests above if it mutated the shared server here).
+const aiBase = "http://localhost:1234/v1";
+const aiModelId = await (async () => {
   try {
-    return DEFAULT_AI_CONFIG.baseUrl;
+    const res = await fetch(`${aiBase}/models`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Array<{ id: string }> };
+    return body.data?.[0]?.id ?? null;
   } catch {
     return null;
   }
 })();
-const aiUp = await (async () => {
-  if (!aiBase) return false;
-  try {
-    const res = await fetch(`${aiBase}/models`, { signal: AbortSignal.timeout(1500) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-})();
+const aiUp = aiModelId != null;
 const dAi = aiUp ? describe : describe.skip;
 if (!aiUp) console.warn("[integration.agent] AI server unreachable, skipping live cluster-labeling test");
 
 dAi("BASED-EMBED-LABELS-AI: live naming via the active profile", () => {
+  // There is no built-in default profile anymore, so this suite creates and activates its own —
+  // deferred to beforeAll so it runs during test execution, after the earlier zero-profile tests.
+  beforeAll(async () => {
+    const created = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ name: "Live test profile", kind: "openai-compatible", baseUrl: aiBase, model: aiModelId }),
+      })
+    ).json()) as { id: string };
+    await api("/api/ai-profiles/active", { method: "POST", body: JSON.stringify({ id: created.id }) });
+  });
+
   test("returns a short label per cluster id", async () => {
     const res = await api("/api/session/label-clusters?sid=default", {
       method: "POST",

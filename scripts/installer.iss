@@ -24,7 +24,10 @@
 AppId={{7E1B62D3-4C60-4E2A-9E01-BA5ED1C60A2F}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher={#AppName}
+AppPublisher=Cyrus Attoun
+AppPublisherURL=https://github.com/Cyronius/based
+AppSupportURL=https://github.com/Cyronius/based/issues
+AppUpdatesURL=https://github.com/Cyronius/based/releases
 DefaultDirName={localappdata}\Programs\{#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=yes

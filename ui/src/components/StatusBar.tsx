@@ -1,6 +1,18 @@
+import { useEffect, useState } from "react";
+import { fetchHealth } from "../api/client";
 import { activeQueryTab, useStore } from "../store";
 
 export function StatusBar() {
+  // The running build's version, so a bug report can name it. Fetched once; a failure just leaves
+  // the slot empty rather than nagging -- the status bar is not the place to surface a dead core,
+  // the connection indicator to its left already does that.
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    fetchHealth()
+      .then((h) => setVersion(h.version))
+      .catch(() => {});
+  }, []);
+
   const status = useStore((s) => s.status);
   const statusDetail = useStore((s) => s.statusDetail);
   const database = useStore((s) => s.database);
@@ -41,6 +53,7 @@ export function StatusBar() {
           last run: {tab.stats.status} in {tab.stats.durationMs.toLocaleString()} ms
         </span>
       )}
+      {version && <span className="text-faint" title={`based ${version}`}>v{version}</span>}
     </footer>
   );
 }

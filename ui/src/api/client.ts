@@ -20,6 +20,7 @@ import type {
   ScriptAction,
   SearchRows,
   TableDetails,
+  TableIndex,
   TableChangeSet,
   TableEditResult,
   TableFilter,
@@ -129,6 +130,10 @@ export function openSqlFileApi(path?: string): Promise<{ path: string | null; co
   return api<{ path: string | null; content?: string }>("/api/file/open-sql", { method: "POST", body: JSON.stringify(path ? { path } : {}) });
 }
 
+export function newWindowApi(): Promise<{ ok: boolean }> {
+  return api<{ ok: boolean }>("/api/window/new", { method: "POST" });
+}
+
 export function inspectCsv(path: string): Promise<{ header: string[]; rows: string[][] }> {
   return api<{ header: string[]; rows: string[][] }>("/api/import/csv/inspect", {
     method: "POST",
@@ -176,6 +181,11 @@ export async function streamCsvImport(reqBody: CsvImportRequest, onChunk: (chunk
       if (line) onChunk(JSON.parse(line) as CsvImportChunk);
     }
   }
+}
+
+/** Core's liveness probe, carrying the running build's version for the status bar. */
+export function fetchHealth(): Promise<{ ok: boolean; version: string }> {
+  return api<{ ok: boolean; version: string }>("/api/health");
 }
 
 export function getSettings(): Promise<AppSettings> {
@@ -266,11 +276,29 @@ export function fetchTablePage(
   limit: number,
   sort?: TableSort[],
   filters?: TableFilter[],
+  where?: string,
 ): Promise<TablePage> {
   let qs = `schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&offset=${offset}&limit=${limit}`;
   if (sort && sort.length > 0) qs += `&sort=${encodeURIComponent(JSON.stringify(sort))}`;
   if (filters && filters.length > 0) qs += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
+  if (where) qs += `&where=${encodeURIComponent(where)}`;
   return api<TablePage>(`/api/session/table-data?${qs}`);
+}
+
+/** Traces: BASED-INDEX-INTROSPECT — a table's indexes, on any engine that exposes them (unlike
+ *  fetchTableDetails this is not gated on DDL scripting, so LanceDB gets it too). */
+export function fetchTableIndexes(schema: string, table: string): Promise<{ indexes: TableIndex[] }> {
+  return api<{ indexes: TableIndex[] }>(
+    `/api/session/indexes?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+  );
+}
+
+/** Traces: BASED-LANCE-SCAN — exact row count, optionally narrowed. */
+export function fetchRowCount(schema: string, table: string, opts?: { where?: string; filters?: TableFilter[] }): Promise<{ count: number }> {
+  let qs = `schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`;
+  if (opts?.where) qs += `&where=${encodeURIComponent(opts.where)}`;
+  if (opts?.filters?.length) qs += `&filters=${encodeURIComponent(JSON.stringify(opts.filters))}`;
+  return api<{ count: number }>(`/api/session/row-count?${qs}`);
 }
 
 /** Full table introspection + server-computed CREATE script (BASED-TABLE-DETAILS). */

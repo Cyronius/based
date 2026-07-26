@@ -17,14 +17,20 @@ export function resolveEmbeddingProfile(
   id?: string,
   defaultId?: string | null,
 ): ResolvedEmbeddingProfile | undefined {
-  if (!id) {
-    if (!defaultId) return undefined;
-    const fallback = store.get(defaultId);
-    return fallback ? { baseUrl: fallback.baseUrl, model: fallback.model, apiKey: getKey(fallback.id) ?? undefined } : undefined;
-  }
-  const p = store.get(id);
-  if (!p) throw new Error(`Unknown embedding profile: ${id}`);
-  return { baseUrl: p.baseUrl, model: p.model, apiKey: getKey(p.id) ?? undefined };
+  const resolved = (() => {
+    if (!id) return defaultId ? store.get(defaultId) : null;
+    const p = store.get(id);
+    if (!p) throw new Error(`Unknown embedding profile: ${id}`);
+    return p;
+  })();
+  if (!resolved) return undefined;
+  return {
+    baseUrl: resolved.baseUrl,
+    model: resolved.model,
+    apiKey: getKey(resolved.id) ?? undefined,
+    // Traces: BASED-LANCE-EMBED-DIM — back-fill the profile's dimension from the first real embed.
+    onDimension: (dimension) => store.recordDimension(resolved.id, dimension),
+  };
 }
 
 export function resolveRerankerProfile(

@@ -12,6 +12,12 @@ export type AuthType =
  *  (see engineOf in adapterFactory). Never read cfg.engine directly; always go through engineOf. */
 export type DbEngine = "mssql" | "lancedb";
 
+// Traces: BASED-AGENT-SURFACE-VARIANT — the engine alone doesn't determine what a connection can
+// do: the three LanceDB shapes differ on SQL, on folder qualification, and on what a table name
+// even means. Every capability-driven consumer (agent surface, personas, UI gating) branches on
+// this, never on `engine` plus a private isCloud() the caller can't see.
+export type ConnectionVariant = "mssql" | "lancedb-local" | "lancedb-basefolder" | "lancedb-cloud";
+
 export interface ConnectionConfig {
   id: string;
   name: string;
@@ -160,7 +166,8 @@ export interface ScriptTableColumn extends TableColumn {
 }
 export interface TableIndex {
   name: string;
-  /** e.g. "CLUSTERED" | "NONCLUSTERED" | "NONCLUSTERED COLUMNSTORE". */
+  /** e.g. "CLUSTERED" | "NONCLUSTERED" | "NONCLUSTERED COLUMNSTORE"; on LanceDB the index type
+   *  reported by indexStats ("IVF_PQ", "HNSW_SQ", "FTS", "BTREE", …). */
   typeDesc: string;
   isUnique: boolean;
   isPrimaryKey: boolean;
@@ -168,6 +175,15 @@ export interface TableIndex {
   filterDefinition: string | null;
   keyColumns: Array<{ name: string; descending: boolean }>;
   includedColumns: string[];
+  // Traces: BASED-INDEX-INTROSPECT — vector-engine fields, absent on SQL Server. `numUnindexedRows`
+  // is the usual explanation for "search got slow" or "search can't find a row I just added": those
+  // rows are scanned exactly (or missed) rather than served from the ANN index.
+  /** ANN distance metric, when the index is a vector index. */
+  distanceType?: "l2" | "cosine" | "dot" | null;
+  numIndexedRows?: number | null;
+  numUnindexedRows?: number | null;
+  /** Sub-index count (LanceDB splits large indices). */
+  numIndices?: number | null;
 }
 export interface TableForeignKey {
   name: string;
@@ -264,6 +280,10 @@ export interface ResolvedEmbeddingProfile {
   baseUrl: string;
   model: string;
   apiKey?: string;
+  /** Traces: BASED-LANCE-EMBED-DIM — called with the size of every embedding this profile actually
+   *  produces, so the profile can learn its own dimension without a separate probe call. Wired by
+   *  resolveEmbeddingProfile; absent in contexts with no store to write back to. */
+  onDimension?: (dimension: number) => void;
 }
 
 /** How a reranker profile's endpoint is called (BASED-LANCE-RERANK-OPENAI). `rerank` = the classic
@@ -298,6 +318,8 @@ export interface RerankerRunOptions {
  *  through this one shape; `where` is an engine filter predicate, not SQL DML, and applies to all
  *  three modes. */
 export interface LanceSearchRequest {
+  /** Base-folder name (the `folder` the agent passes) — disambiguates a table name that exists in
+   *  more than one folder. Ignored on single-database and cloud connections. */
   schema?: string;
   table: string;
   mode: LanceSearchMode;
@@ -305,12 +327,16 @@ export interface LanceSearchRequest {
   query?: string;
   /** Raw query embedding. If given for vector/hybrid, `embeddingProfileId` is not consulted. */
   vector?: number[];
-  /** Prefilter predicate (LanceDB `where`, not SQL DML) — supported on all three modes. */
+  /** Which vector column to search. Required in practice only when a table has more than one —
+   *  LanceDB otherwise picks the sole vector column itself (BASED-LANCE-VECTOR-COLUMN). */
+  vectorColumn?: string;
+  /** Prefilter predicate — LanceDB predicate syntax, NOT DuckDB SQL. Supported on all three modes. */
   where?: string;
   columns?: string[];
-  /** Initial candidate pool fetched via the native search, before reranking. Default 50. */
-  sampleSize?: number;
-  /** Final row count after reranking/filtering (== k). Default 10, capped by sampleSize. */
+  /** Initial candidate pool fetched via the native search, before reranking. Default 50.
+   *  (Renamed from `sampleSize`: it is an over-fetch pool, never a row sample.) */
+  candidatePool?: number;
+  /** Final row count after reranking/filtering (== k). Default 10, capped by candidatePool. */
   keepSize?: number;
   embeddingProfileId?: string;
   rerankerProfileId?: string;
@@ -318,10 +344,14 @@ export interface LanceSearchRequest {
   /** Column supplying "document" text sent to the rerank endpoint. Defaults to a heuristic
    *  (first non-vector string column). */
   rerankTextColumn?: string;
-  /** Drop rows whose final score is worse than this absolute threshold. */
-  floor?: number;
+  // Traces: BASED-SEARCH-PARAM-NAMES — based-side score thresholds, applied to whatever the final
+  // score column is (`_distance`, `_relevance_score`, or `_rerank_score`) and direction-aware, so
+  // "min" always means "keep the better ones" regardless of which way that score sorts. The old
+  // names (`floor`/`delta`) read as bounds on a number and were used backwards.
+  /** Drop rows whose final score is worse than this threshold. */
+  minScore?: number;
   /** Drop rows whose final score trails the #1 result's score by more than this. */
-  delta?: number;
+  maxScoreGapFromTop?: number;
   // Traces: BASED-LANCE-SEARCH-KNOBS — Lance SDK vector-query tuning knobs. Vector/hybrid modes
   // only; combining any of them with mode:"text" throws before querying. All are no-ops on an
   // unindexed column (exact search) except distanceRange, which always bounds.
@@ -393,6 +423,26 @@ export interface EngineCapabilities {
   script: boolean;
   /** FK-relationship introspection for the ER diagram (BASED-RELATIONS). */
   relations: boolean;
+  // Traces: BASED-AGENT-SURFACE-VARIANT — the fields below exist so the agent surface can be
+  // *generated* rather than described in prose conditionals the model has to evaluate against a
+  // variant it cannot see. Everything here is knowable at connect time.
+  /** The engine this connection targets — the same value engineOf(cfg) returns. */
+  engine: DbEngine;
+  /** The connection shape. Finer than `engine`: the three LanceDB variants differ materially. */
+  variant: ConnectionVariant;
+  /** Base-folder names — the qualifier in `folder.main.table`, and the only legal values of the
+   *  agent's `folder` param. Null on every variant that has no folder namespace. */
+  containers: string[] | null;
+  /** A free-text engine predicate (LanceDB `where`) on readTablePage / countRows. */
+  wherePredicate: boolean;
+  /** Structured column/op/value filters on readTablePage (T-SQL, parameterized). */
+  structuredFilters: boolean;
+  /** countRows() is implemented. */
+  countRows: boolean;
+  /** takeRows() (fetch by key values) is implemented. */
+  takeByKey: boolean;
+  /** getIndexes() is implemented — what makes "IVF or HNSW?" a lookup instead of a guess. */
+  indexIntrospect: boolean;
 }
 
 export interface DatabaseAdapter {
@@ -413,8 +463,21 @@ export interface DatabaseAdapter {
   readTablePage(
     schema: string,
     table: string,
-    opts: { offset: number; limit: number; orderBy?: TableSort[]; filters?: TableFilter[] },
+    opts: { offset: number; limit: number; orderBy?: TableSort[]; filters?: TableFilter[]; where?: string },
   ): Promise<TablePage>;
+  /** Row count, optionally narrowed. Present when `capabilities.countRows` is true. `where` is the
+   *  engine predicate (LanceDB); `filters` is the structured, parameterized form (SQL Server).
+   *  Traces: BASED-LANCE-SCAN. */
+  countRows?(schema: string, table: string, opts?: { where?: string; filters?: TableFilter[] }): Promise<number>;
+  /** Fetch rows whose `keyColumn` matches one of `keys`. Literals are escaped here, never by the
+   *  caller. Present when `capabilities.takeByKey` is true. Traces: BASED-LANCE-SCAN. */
+  takeRows?(
+    schema: string,
+    table: string,
+    opts: { keyColumn: string; keys: Array<string | number>; columns?: string[] },
+  ): Promise<TablePage>;
+  /** Index metadata. Present when `capabilities.indexIntrospect` is true. Traces: BASED-INDEX-INTROSPECT. */
+  getIndexes?(schema: string, table: string): Promise<TableIndex[]>;
   /** SQL definition text (CREATE VIEW/PROCEDURE/FUNCTION body). Present when capabilities.sql is true. */
   getObjectDefinition?(schema: string, name: string): Promise<string | null>;
   /** Full table introspection for scripting + the enriched Details view (BASED-TABLE-DETAILS).

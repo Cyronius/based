@@ -5,7 +5,7 @@
 import { Agent } from "@mastra/core/agent";
 import type { LanguageModel } from "ai";
 import type { Memory } from "@mastra/memory";
-import type { DbEngine } from "../db/types";
+import type { DbEngine, EngineCapabilities } from "../db/types";
 import { agentSurfaceFor } from "./surface";
 import { type ToolDeps } from "./tools/shared";
 import { catalog as skillCatalog } from "./skills";
@@ -24,36 +24,51 @@ export const AGENT_MAX_STEPS = 30;
 export const GENERIC_CORE = `You are "Capi" — an assistant embedded in a database client, living in the right-hand rail next to the user's query editor. You help the user understand their database and work with its data.
 
 Ground rules:
-- Work from the actual schema. Call get_schema to list objects, or get_schema with a table name to see its columns, before making claims about tables you have not inspected. Never invent table or column names.
-- You only ever see schema and, when you explicitly ask for them, small samples of rows. You do not have the full data. To read more than a sample, page with read_rows (offset/limit) rather than pulling a whole table.
+- Your tools are generated for THIS connection: everything you can see, you can use here, and anything absent is genuinely unavailable — don't apologize for a tool you weren't given or assume a capability you can't see. When you're unsure what this connection supports, call get_connection_info; it is cheap and exact.
+- Work from the actual schema. Call list_objects to see what exists, and describe_table before making claims about a table you have not inspected. Never invent table or column names.
+- You only ever see schema and, when you explicitly ask for them, small samples of rows. You do not have the full data. To read more than a sample, page with read_table (offset/limit) rather than pulling a whole table, and call count_rows first when the scale matters.
 - You live next to the user's tab strip. When a <workspace_context> block is present it describes the active tab (its SQL and results) and every open tab; treat the active tab as the default subject of the conversation, and use list_tabs / get_tab to read another tab's SQL or results when the user refers to it.
-- When the user asks to SEE data ("show me…", "list the…"), call open_query_tab so the results land in a real results grid — do not paste large row sets into chat. run_query/read_rows are for your own analysis; keep their raw output out of your answer unless it is small.
+- When the user asks to SEE data ("show me…", "list the…"), call show_results so the rows land in a real results grid — do not paste large row sets into chat. run_query/read_table are for your own analysis; keep their raw output out of your answer unless it is small.
 - Answer in concise markdown. Explain briefly what a query or search does; don't narrate every tool call.`;
 
-/** Compose the system prompt: core + the engine's persona + the (engine-filtered) skill
- *  catalog + the load-a-skill-first protocol. Only each skill's name+description is advertised here;
- *  the body is pulled on demand via load_skill. `core` defaults to GENERIC_CORE but is user-overridable
- *  (BASED-AGENT-INSTRUCTIONS). */
-export function agentInstructions(core: string, persona: string, skillTags?: DbEngine[]): string {
+/** Compose the system prompt: core + the connection's capability briefing + the persona + the
+ *  (engine-filtered) skill catalog. Only each skill's name+description is advertised here; the body
+ *  is pulled on demand via load_skill.
+ *
+ *  Traces: BASED-AGENT-INSTRUCTIONS — `core` and `persona` are user-overridable; `briefing` is not.
+ *  The briefing states what this connection *is* (generated per variant), the persona states how to
+ *  behave (a fixed string, safe to fork because nothing in it varies by connection). Keeping them
+ *  separate is what lets a user rewrite the agent's voice without pinning stale claims about a
+ *  connection they weren't looking at when they wrote it. `briefing` is optional so callers that
+ *  compose only core+persona (tests, previews) keep working. */
+export function agentInstructions(core: string, persona: string, skillTags?: DbEngine[], briefing?: string): string {
   const catalogText = skillCatalog(skillTags)
     .map((s) => `- ${s.name}: ${s.description}`)
     .join("\n");
   const skillsBlock = catalogText
     ? `\n\nSkills — extra capabilities you can pull in on demand. When a request matches a skill below, call the load_skill tool with its name to get the full instructions BEFORE acting on it; then follow them.\n${catalogText}`
     : "";
-  return `${core}
+  const briefingBlock = briefing ? `\n\n${briefing}` : "";
+  return `${core}${briefingBlock}
 
 ${persona}${skillsBlock}`;
 }
 
 export function buildAgent(opts: {
   model: LanguageModel;
-  memory: Memory;
-  engine: DbEngine;
+  /** Traces: BASED-AGENT-DELEGATE-ISOLATION — omitted for a subagent run, which is how a child's
+   *  work is kept out of the tab's thread: with no memory there is nothing to persist and nothing
+   *  to clean up afterwards. Every user-facing run passes one. */
+  memory?: Memory;
+  /** The live adapter's capabilities — the only thing that knows cloud from local from base-folder.
+   *  Callers with no adapter can use defaultCapabilitiesFor(engine). */
+  capabilities: EngineCapabilities;
   toolDeps: ToolDeps;
   /** Override for the engine-neutral core (BASED-AGENT-INSTRUCTIONS); defaults to GENERIC_CORE. */
   core?: string;
-  /** Override for the engine's persona fragment; defaults to the engine surface's persona. */
+  /** Override for the engine's persona — voice and policy only. The capability briefing is NOT
+   *  overridable and is always injected, so a custom persona can never leave the agent with stale
+   *  claims about what this connection can do. */
   persona?: string;
   /** Per-profile model params split into Mastra execution defaults (BASED-AI-PROFILE-PARAMS). */
   executionDefaults?: ExecutionDefaults;
@@ -61,9 +76,14 @@ export function buildAgent(opts: {
    *  appended after the composed instructions. Omitted → instructions identical to before. */
   contextNote?: string;
 }): Agent {
-  const surface = agentSurfaceFor(opts.engine, opts.toolDeps);
+  const surface = agentSurfaceFor(opts.capabilities, opts.toolDeps);
   const { modelSettings, providerOptions } = opts.executionDefaults ?? {};
-  const baseInstructions = agentInstructions(opts.core ?? GENERIC_CORE, opts.persona ?? surface.persona, surface.skillTags);
+  const baseInstructions = agentInstructions(
+    opts.core ?? GENERIC_CORE,
+    opts.persona ?? surface.persona,
+    surface.skillTags,
+    surface.briefing,
+  );
   return new Agent({
     id: AGENT_ID,
     name: "based capi",
@@ -72,7 +92,7 @@ export function buildAgent(opts: {
     // nominally distinct across package boundaries (version skew) — runtime-compatible (spike-proven).
     model: opts.model as never,
     tools: surface.tools as never,
-    memory: opts.memory as never,
+    ...(opts.memory ? { memory: opts.memory as never } : {}),
     defaultOptions: {
       maxSteps: AGENT_MAX_STEPS,
       ...(modelSettings ? { modelSettings: modelSettings as never } : {}),

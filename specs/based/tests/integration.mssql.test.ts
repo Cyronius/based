@@ -7,29 +7,13 @@ import { describe, expect, test } from "bun:test";
 import { buildEditCommands, testConnection } from "@based/core";
 import { MssqlAdapter } from "@based/core/mssql";
 import type { ConnectionConfig, ExecuteOptions, QueryChunk } from "@based/core";
+import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
-const cfg: ConnectionConfig = {
-  id: "spec-dev",
-  name: "spec-dev",
-  server: process.env.BASED_TEST_SERVER ?? "zl5qolt7t8.database.windows.net",
-  database: process.env.BASED_TEST_DB ?? "learnermobile_db_ci",
-  authType: "azure-cli",
-  encrypt: true,
-  trustServerCertificate: false,
-  createdAt: "",
-  updatedAt: "",
-};
+const cfg: ConnectionConfig = devConnection("spec-dev");
 const noSecret = () => null;
 
-let available = false;
-let availError = "";
-{
-  const probe = await testConnection(cfg, noSecret);
-  available = probe.ok;
-  availError = probe.error ?? "";
-}
-const d = available ? describe : describe.skip;
-if (!available) console.warn(`[integration.mssql] dev DB unavailable, skipping: ${availError}`);
+const d = DEV_DB_AVAILABLE ? describe : describe.skip;
+if (!DEV_DB_AVAILABLE) warnDevDbSkip("integration.mssql", "all suites");
 
 function collect(
   adapter: MssqlAdapter,
@@ -321,7 +305,7 @@ d("mssql adapter against dev DB", () => {
 
 // --- table browse + edit: needs CREATE/DROP TABLE; probes once and self-skips otherwise ---
 let canWrite = false;
-if (available) {
+if (DEV_DB_AVAILABLE) {
   const probe = new MssqlAdapter(cfg, noSecret);
   const name = `based_spec_probe_${Date.now()}`;
   try {

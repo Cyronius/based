@@ -5,6 +5,7 @@
 // without this module's window-bound api client.
 import type { Message } from "@ag-ui/client";
 import { api } from "../api/client";
+import { beginHistoryFetch, historyIsStale, markThreadReset } from "./threadReset";
 
 export { agentThreadId, resolveThreadId, threadsToDeleteOnClose } from "./threadIds";
 
@@ -25,10 +26,14 @@ export function pruneRestored(messages: Message[]): Message[] {
 }
 
 export async function fetchThreadHistory(threadId: string, connectionId: string): Promise<Message[]> {
+  const fetchToken = beginHistoryFetch(threadId);
   try {
     const messages = await api<Message[]>(
       `/api/agent/threads/${encodeURIComponent(threadId)}/messages?resourceId=${encodeURIComponent(connectionId)}`,
     );
+    // "New chat" landed while this was in flight: the user discarded this conversation, and the
+    // DELETE races the GET server-side — never resurrect it into the view or back into the cache.
+    if (historyIsStale(fetchToken)) return [];
     for (const m of messages) restoredIds.add(m.id);
     threadMessageCache.set(threadId, messages);
     return messages;
@@ -39,11 +44,12 @@ export async function fetchThreadHistory(threadId: string, connectionId: string)
 
 /** Fire-and-forget server-side thread deletion (tab close / New chat). */
 export function deleteThread(threadId: string): void {
+  markThreadReset(threadId);
   threadMessageCache.delete(threadId);
   void api(`/api/agent/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" }).catch(() => {});
 }
 
-/** The thread id the rail currently has mounted — set by ChatSession, read by the open_query_tab
+/** The thread id the rail currently has mounted — set by ChatSession, read by the show_results
  *  frontend tool so an agent-opened tab can be aliased to the conversation that created it. */
 let activeChatThreadId: string | null = null;
 export function setActiveChatThreadId(id: string | null): void {

@@ -1,8 +1,13 @@
-// Traces: BASED-AGENT-INSTRUCTIONS
-// User-editable agent instruction sets. The "default" set is virtual — never persisted, always
-// mirrors the built-in GENERIC_CORE/MSSQL_PERSONA/LANCE_PERSONA constants — so it can neither drift
-// from the code nor be edited or deleted. Only custom sets + the active selection persist, in the
-// same single-row-JSON-over-defaults shape as AiConfigStore/SettingsStore.
+// Traces: BASED-AGENT-INSTRUCTIONS, BASED-AGENT-SURFACE-VARIANT
+// User-editable agent instruction sets. The "default" set is virtual — never persisted, never
+// editable — so it can't drift from the code.
+//
+// What a set holds is deliberately only half the prompt: the engine-neutral core and each engine's
+// *persona* (voice and policy). The capability briefing — which tools exist on this connection, what
+// it can't do, how to qualify a table — is generated per variant by agentSurfaceFor and is never
+// stored here, so editing the agent's voice cannot pin a stale claim about a connection the user
+// wasn't looking at. Personas are plain strings and safe to fork precisely because nothing in them
+// varies by connection.
 import type { Database } from "bun:sqlite";
 import type { DbEngine } from "../db/types";
 import { GENERIC_CORE } from "./agent";
@@ -107,7 +112,11 @@ export class AgentInstructionsStore {
   }
 
   /** Resolve a specific set's core + engine-appropriate persona. Falls back to the default set if
-   *  `id` no longer resolves (e.g. the set a profile linked to was deleted). */
+   *  `id` no longer resolves (e.g. the set a profile linked to was deleted).
+   *
+   *  Both values are plain strings for every set, default included: a persona carries no
+   *  connection-specific claims, so it needs no per-variant regeneration. The capability briefing
+   *  that does is generated separately by agentSurfaceFor and is never part of a set. */
   resolveById(id: string, engine: DbEngine): { core: string; persona: string } {
     const cfg = this.get();
     const set = id === "default" ? DEFAULT_SET : cfg.customSets.find((s) => s.id === id) ?? DEFAULT_SET;

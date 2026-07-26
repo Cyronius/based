@@ -9,6 +9,9 @@ export type AuthType =
 
 export type DbEngine = "mssql" | "lancedb";
 
+/** Traces: BASED-AGENT-SURFACE-VARIANT — mirrors core/src/db/types.ts. */
+export type ConnectionVariant = "mssql" | "lancedb-local" | "lancedb-basefolder" | "lancedb-cloud";
+
 export interface ConnectionConfig {
   id: string;
   name: string;
@@ -142,6 +145,16 @@ export interface EngineCapabilities {
   script: boolean;
   /** FK-relationship introspection for the ER diagram (BASED-RELATIONS). */
   relations: boolean;
+  // Traces: BASED-AGENT-SURFACE-VARIANT — mirrors core/src/db/types.ts.
+  engine: DbEngine;
+  variant: ConnectionVariant;
+  /** Base-folder names (the `folder.main.table` qualifier), or null. */
+  containers: string[] | null;
+  wherePredicate: boolean;
+  structuredFilters: boolean;
+  countRows: boolean;
+  takeByKey: boolean;
+  indexIntrospect: boolean;
 }
 
 // Traces: BASED-TABLE-DETAILS — mirrors core/src/db/types.ts
@@ -162,6 +175,11 @@ export interface TableIndex {
   filterDefinition: string | null;
   keyColumns: Array<{ name: string; descending: boolean }>;
   includedColumns: string[];
+  // Traces: BASED-INDEX-INTROSPECT — vector-engine fields, absent on SQL Server.
+  distanceType?: "l2" | "cosine" | "dot" | null;
+  numIndexedRows?: number | null;
+  numUnindexedRows?: number | null;
+  numIndices?: number | null;
 }
 export interface TableForeignKey {
   name: string;
@@ -258,16 +276,21 @@ export interface LanceSearchRequest {
   mode: LanceSearchMode;
   query?: string;
   vector?: number[];
+  /** Which vector column to search — needed only on tables with more than one. */
+  vectorColumn?: string;
   where?: string;
   columns?: string[];
-  sampleSize?: number;
+  /** Over-fetch pool before rerank/threshold (was `sampleSize`). */
+  candidatePool?: number;
   keepSize?: number;
   embeddingProfileId?: string;
   rerankerProfileId?: string;
   rerankerOptions?: RerankerRunOptions;
   rerankTextColumn?: string;
-  floor?: number;
-  delta?: number;
+  /** Direction-aware score threshold (was `floor`). */
+  minScore?: number;
+  /** Direction-aware gap from the #1 result (was `delta`). */
+  maxScoreGapFromTop?: number;
 }
 
 export interface SearchRows {
@@ -418,6 +441,13 @@ export interface AgentInstructionsConfig {
   /** "default" or a sets[].id. */
   activeId: string;
   sets: InstructionSet[];
+  /** Traces: BASED-AGENT-INSTRUCTIONS — the generated, non-editable half of the prompt, per engine.
+   *  Present on GET only (never posted back); shown read-only in the editor so the user can see what
+   *  is injected alongside their persona. */
+  briefings?: { mssql: string; lancedb: string };
+  /** Which engine's briefing above came from the LIVE connection rather than a representative
+   *  rendering, or null when nothing is connected. */
+  briefingIsLive?: DbEngine | null;
 }
 
 export interface MutationResult {

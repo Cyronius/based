@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import { RunAgentInputSchema, type BaseEvent } from "@ag-ui/core";
 import { EventEncoder } from "@ag-ui/encoder";
 import { MastraAgent } from "@ag-ui/mastra";
+import { APP_VERSION } from "./version";
 import { openDb } from "./storage/db";
 import { ConnectionStore } from "./storage/connections";
 import { TabStore } from "./storage/tabs";
@@ -28,6 +29,9 @@ import {
   deleteRerankerKey,
 } from "./secrets";
 import { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
+import { defaultCapabilitiesFor } from "./agent/surface";
+import { mssqlBriefing } from "./agent/tools/mssql";
+import { lanceBriefing } from "./agent/tools/lancedb";
 import { encodeVectorSample } from "./db/vectorWire";
 import { labelClusters, type LabelCluster } from "./agent/labelClusters";
 import { createLspSubsystem } from "./lsp";
@@ -43,8 +47,12 @@ import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeout
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
 import { buildAgent, AGENT_ID } from "./agent/agent";
+import { createSubagentRunner } from "./agent/subagent";
+import { SUBAGENT_CONCURRENCY } from "./agent/tools/delegate";
+import type { ToolDeps } from "./agent/tools/shared";
 import { renderTabContext } from "./agent/tabContext";
 import { mapDbMessagesToAgui } from "./agent/threadMessages";
+import { transcriptMarkdown } from "./agent/transcript";
 import { AgentInstructionsStore } from "./agent/instructionsStore";
 import { collectQuery } from "./agent/runSql";
 import { isReadOnly } from "./db/classify";
@@ -53,6 +61,7 @@ import type {
   ConnectionInput,
   ConnectionStatus,
   DatabaseAdapter,
+  DbEngine,
   ExecuteOptions,
   LanceSearchRequest,
   QueryExecution,
@@ -79,6 +88,8 @@ export interface ServerOptions {
   dbPath?: string;
   /** LibSQL file for agent memory; defaults to agent.db in the data dir. */
   agentDbPath?: string;
+  /** BASED-CTRL-N: only set when shell and core run in-process (see shell/src/bun/index.ts) — opens a new native window. */
+  onRequestNewWindow?: () => void;
 }
 
 export interface RunningServer {
@@ -117,13 +128,15 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const rerankerProfiles = new RerankerProfileStore(db);
   const aiProfiles = new AiProfileStore(db);
 
-  // Traces: BASED-AI-PROVIDER-PROFILES — migrate the legacy single ai_config row (or its
-  // DEFAULT_AI_CONFIG fallback) into a "Default" profile the first time profiles are read, whether
-  // that's the settings popover listing them or the agent resolving one to run against.
+  // Traces: BASED-AI-PROVIDER-PROFILES — migrate a real legacy single ai_config row into a
+  // "Default" profile the first time profiles are read, whether that's the settings popover
+  // listing them or the agent resolving one to run against. A fresh install with no legacy row and
+  // no profiles yet stays genuinely empty — there is no built-in default to seed.
   function ensureAiProfiles(): AiProfile[] {
     const list = aiProfiles.list();
     if (list.length > 0) return list;
     const legacy = aiConfig.get();
+    if (!legacy) return [];
     let created = aiProfiles.save({
       name: "Default",
       kind: legacy.kind,
@@ -143,6 +156,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
   function activeAiProfile(): AiProfile {
     const list = ensureAiProfiles();
+    if (list.length === 0) {
+      throw new Error("No agent profile configured — add one in Settings → Agent.");
+    }
     const activeId = settings.get().activeAiProfileId;
     return list.find((p) => p.id === activeId) ?? list[0]!;
   }
@@ -175,6 +191,23 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       sessions.set(sid, s);
     }
     return s;
+  }
+
+  // Traces: BASED-AGENT-INSTRUCTIONS — an instruction set stores only the editable half of the
+  // prompt. The capability briefing is generated per connection and never persisted, so it rides
+  // every instructions response read-only: without it the editor would show a persona that says
+  // nothing about which tools exist, and the user would helpfully write those facts back in by hand
+  // — pinning them to whichever connection they had in mind. Uses the live connection's
+  // capabilities when there is one (so the editor shows what this session actually sends) and the
+  // representative rendering otherwise.
+  function withBriefings<T extends object>(sid: string, config: T) {
+    const live = getSession(sid).adapter?.capabilities;
+    const forEngine = (engine: DbEngine) => (live && live.engine === engine ? live : defaultCapabilitiesFor(engine));
+    return {
+      ...config,
+      briefings: { mssql: mssqlBriefing(forEngine("mssql")), lancedb: lanceBriefing(forEngine("lancedb")) },
+      briefingIsLive: live ? live.engine : null,
+    };
   }
 
   function broadcast(sid: string, event: Record<string, unknown>): void {
@@ -263,7 +296,8 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const method = req.method;
     const sid = url.searchParams.get("sid") ?? "default";
 
-    if (path === "/api/health") return json({ ok: true });
+    // The version is here so a user can report which build they are on without hunting for it.
+    if (path === "/api/health") return json({ ok: true, version: APP_VERSION });
 
     // --- connections ---
     if (path === "/api/connections" && method === "GET") return json(connections.list());
@@ -399,7 +433,40 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       } catch {
         return json({ error: "Malformed sort/filters JSON" }, 400);
       }
-      return json(await requireAdapter(sid).readTablePage(schema, table, { offset, limit, orderBy, filters }));
+      // `?where=` present but empty means "no filter" — an empty predicate is a parse error downstream.
+      const where = url.searchParams.get("where") || undefined;
+      return json(await requireAdapter(sid).readTablePage(schema, table, { offset, limit, orderBy, filters, where }));
+    }
+    // Traces: BASED-LANCE-SCAN — exact row count, optionally narrowed the way the engine narrows
+    // (a `where` predicate on LanceDB, structured filters on SQL Server).
+    if (path === "/api/session/row-count") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.countRows || !adapter.countRows) {
+        return json({ error: "This engine does not support row counts" }, 400);
+      }
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const table = url.searchParams.get("table") ?? "";
+      const where = url.searchParams.get("where") || undefined;
+      let filters: TableFilter[] | undefined;
+      try {
+        const filtersRaw = url.searchParams.get("filters");
+        if (filtersRaw) filters = JSON.parse(filtersRaw) as TableFilter[];
+      } catch {
+        return json({ error: "Malformed filters JSON" }, 400);
+      }
+      return json({ count: await adapter.countRows(schema, table, { where, filters }) });
+    }
+    // Traces: BASED-INDEX-INTROSPECT — index metadata for the Details panel and the agent's
+    // get_indexes. Unlike /table-details this is NOT gated on `script`: LanceDB has no DDL to
+    // script but very much has indexes, and their absence is the actionable fact.
+    if (path === "/api/session/indexes") {
+      const adapter = requireAdapter(sid);
+      if (!adapter.capabilities.indexIntrospect || !adapter.getIndexes) {
+        return json({ error: "This engine does not expose index metadata" }, 400);
+      }
+      const schema = url.searchParams.get("schema") ?? "dbo";
+      const table = url.searchParams.get("table") ?? "";
+      return json({ indexes: await adapter.getIndexes(schema, table) });
     }
     // Traces: BASED-TABLE-DETAILS — full introspection + server-computed CREATE script for the
     // enriched Details view and the scripter.
@@ -576,6 +643,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const body = (await req.json()) as Partial<{ activeTabId: string | null; schemaFilter: string }>;
       return json(windowState.save(sid, body));
     }
+    if (path === "/api/window/new" && method === "POST") {
+      if (!opts.onRequestNewWindow) return json({ error: "not supported" }, 404);
+      opts.onRequestNewWindow();
+      return json({ ok: true });
+    }
 
     // --- history ---
     if (path === "/api/history" && method === "GET") {
@@ -662,12 +734,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
 
     // Traces: BASED-AGENT-INSTRUCTIONS — named, user-editable instruction sets; "default" is virtual/locked.
     if (path === "/api/agent/instructions" && method === "GET") {
-      return json(agentInstructions.list());
+      return json(withBriefings(sid, agentInstructions.list()));
     }
     if (path === "/api/agent/instructions" && method === "POST") {
       const body = (await req.json()) as { id?: string; name: string; core: string; mssqlPersona: string; lancePersona: string };
       try {
-        return json(agentInstructions.saveSet(body));
+        return json(withBriefings(sid, agentInstructions.saveSet(body)));
       } catch (err) {
         return json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
@@ -675,7 +747,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/agent/instructions/active" && method === "POST") {
       const { id } = (await req.json()) as { id: string };
       try {
-        return json(agentInstructions.setActive(id));
+        return json(withBriefings(sid, agentInstructions.setActive(id)));
       } catch (err) {
         return json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
@@ -683,7 +755,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const instructionsMatch = path.match(/^\/api\/agent\/instructions\/([^/]+)$/);
     if (instructionsMatch && method === "DELETE") {
       try {
-        return json(agentInstructions.deleteSet(instructionsMatch[1]!));
+        return json(withBriefings(sid, agentInstructions.deleteSet(instructionsMatch[1]!)));
       } catch (err) {
         return json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
@@ -701,8 +773,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const resourceId = url.searchParams.get("resourceId") ?? getSession(sid).connectionId ?? "";
       if (!resourceId) return json([]);
       try {
-        const { messages } = await agentMemory.recall({ threadId, resourceId, perPage: false });
-        return json(mapDbMessagesToAgui(messages as never));
+        return json(await recallThreadMessages(threadId, resourceId));
       } catch {
         return json([]); // unknown thread / storage hiccup → empty history, never an error
       }
@@ -827,6 +898,19 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (!target) target = await saveFileDialog(body.defaultName ?? "query.sql", filterFor("sql"));
       if (!target) return json({ path: null });
       await Bun.write(target, body.content);
+      return json({ path: target });
+    }
+    // Traces: BASED-CHAT-TRANSCRIPT-UI — the chat rail's own download button. The client posts the
+    // messages it is actually rendering (which include the assistant's just-finished reply, not yet
+    // flushed to agent.db) and the server formats them, so transcriptMarkdown stays single-sourced
+    // with the save_chat_transcript tool. Explicit `path` skips the dialog, mirroring save-sql.
+    if (path === "/api/file/save-transcript" && method === "POST") {
+      const body = (await req.json()) as { messages?: unknown[]; title?: string; path?: string; defaultName?: string };
+      if (!Array.isArray(body.messages)) return json({ error: "messages must be an array" }, 400);
+      let target = body.path ?? null;
+      if (!target) target = await saveFileDialog(body.defaultName ?? "based-chat.md", filterFor("md"));
+      if (!target) return json({ path: null }); // user cancelled the dialog
+      await Bun.write(target, transcriptMarkdown(body.messages as never, { title: body.title }));
       return json({ path: target });
     }
     if (path === "/api/export" && method === "POST") {
@@ -973,6 +1057,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   // Traces: BASED-AGENT-MUTATION-GATE, BASED-AGENT-AUDIT — runs an approved mutation and audits it.
   async function runMutation(sid: string, sqlText: string): Promise<Response> {
     const adapter = requireAdapter(sid);
+    // Every other write path checks this (CSV import, grid edit) — this one did not, so on a local
+    // LanceDB connection an approved mutation went straight into the DuckDB/Lance bridge. The agent
+    // not being *offered* run_mutation on a read-only engine is UX; this is the enforcement.
+    if (!adapter.capabilities.write) {
+      return json({ error: "This connection is read-only — it does not support writes." }, 400);
+    }
     const startedAt = new Date().toISOString();
     const result = await collectQuery(adapter, sqlText);
     const status = result.status === "ok" ? "ok" : "error";
@@ -995,6 +1085,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       rowCounts: result.resultSets.map((rs) => rs.rowCount),
       durationMs: result.durationMs,
     });
+  }
+
+  // Traces: BASED-AGENT-THREADS, BASED-AGENT-TRANSCRIPT — one reader for a thread's stored
+  // messages, shared by the history-restore route and the save_chat_transcript tool so a transcript
+  // can never show a different conversation than the rail does.
+  async function recallThreadMessages(threadId: string, resourceId: string) {
+    const { messages } = await agentMemory.recall({ threadId, resourceId, perPage: false });
+    return mapDbMessagesToAgui(messages as never);
   }
 
   // Traces: BASED-AGENT-ENDPOINT — expose the Mastra agent as an AG-UI SSE stream.
@@ -1024,28 +1122,56 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const contextNote = renderTabContext(
       (input as { forwardedProps?: { tabContext?: unknown } }).forwardedProps?.tabContext,
     );
+    // Traces: BASED-AGENT-SURFACE-VARIANT — the LIVE adapter's capabilities, not the config's
+    // engine: only the connected adapter knows cloud from local from base-folder, and the whole
+    // tool surface and persona are generated from that distinction.
+    const capabilities = requireAdapter(sid).capabilities;
+    // Per-profile model params (temperature, reasoning_effort, …) ride the agent's default options
+    // so every run of the active profile carries them (BASED-AI-PROFILE-PARAMS).
+    const executionDefaults = resolveExecutionDefaults(profile.kind, profile.params);
+    // Traces: BASED-AGENT-DELEGATE — the deps a SUBAGENT gets. Identical to the parent's minus
+    // runSubagent, which is exactly what keeps `delegate` off a child's surface (no recursion).
+    const childDeps: ToolDeps = {
+      getAdapter: () => requireAdapter(sid),
+      connectionId: () => getSession(sid).connectionId!,
+      database: () => getSession(sid).database!,
+      audit,
+      embeddingProfiles,
+      rerankerProfiles,
+      getEmbeddingKey,
+      getRerankerKey,
+      // BASED-LANCE-CONN-DEFAULT-PROFILES — resolved per tool call, not captured here.
+      defaultEmbeddingProfileId: () => connectionDefaults(sid).embedding,
+      defaultRerankerProfileId: () => connectionDefaults(sid).reranker,
+    };
     const agent = buildAgent({
       model,
       memory: agentMemory,
-      engine,
+      capabilities,
       core: active.core,
+      // Voice only — the connection's capability briefing is injected by buildAgent regardless, so
+      // a custom instruction set can never leave the agent describing a connection it isn't on.
       persona: active.persona,
       contextNote: contextNote ?? undefined,
-      // Per-profile model params (temperature, reasoning_effort, …) ride the agent's default
-      // options so every run of the active profile carries them (BASED-AI-PROFILE-PARAMS).
-      executionDefaults: resolveExecutionDefaults(profile.kind, profile.params),
+      executionDefaults,
       toolDeps: {
-        getAdapter: () => requireAdapter(sid),
-        connectionId: () => getSession(sid).connectionId!,
-        database: () => getSession(sid).database!,
-        audit,
-        embeddingProfiles,
-        rerankerProfiles,
-        getEmbeddingKey,
-        getRerankerKey,
-        // BASED-LANCE-CONN-DEFAULT-PROFILES — resolved per tool call, not captured here.
-        defaultEmbeddingProfileId: () => connectionDefaults(sid).embedding,
-        defaultRerankerProfileId: () => connectionDefaults(sid).reranker,
+        ...childDeps,
+        // Traces: BASED-AGENT-TRANSCRIPT — parent-only, exactly like runSubagent below: a subagent
+        // shares this thread id but must not write the user's transcript, and the missing dep is
+        // what removes save_chat_transcript from its surface rather than a check at call time.
+        threadId: () => (input as { threadId?: string }).threadId,
+        recallThread: recallThreadMessages,
+        runSubagent: createSubagentRunner({
+          model,
+          capabilities,
+          toolDeps: childDeps,
+          persona: active.persona,
+          executionDefaults,
+          // The profile's idle window is already the user's answer to "how long may one model call
+          // hang?" — reuse it rather than inventing a second number that can disagree with it.
+          timeoutMs: resolveAiTimeouts(profile.timeoutSeconds).idleMs,
+          concurrency: SUBAGENT_CONCURRENCY,
+        }),
       },
     });
 

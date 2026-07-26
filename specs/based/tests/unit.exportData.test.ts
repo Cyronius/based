@@ -4,8 +4,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportData, sanitizeExportFileName, toCsv } from "@based/core";
-import type { DatabaseAdapter, TablePage } from "@based/core";
+import { agentSurfaceFor, AuditStore, exportData, openDb, sanitizeExportFileName, toCsv } from "@based/core";
+import type { DatabaseAdapter, EngineCapabilities, TablePage, ToolDeps } from "@based/core";
 
 function fakeTableAdapter(rowCount: number): { adapter: DatabaseAdapter; pageCalls: number[] } {
   const pageCalls: number[] = [];
@@ -73,5 +73,70 @@ describe("BASED-AGENT-EXPORT: exportData table source", () => {
   test("sql source without capabilities.sql throws (nothing written)", async () => {
     const { adapter } = fakeTableAdapter(5);
     await expect(exportData(adapter, { kind: "sql", sql: "SELECT 1" }, "csv", join(dir, "no.csv"))).rejects.toThrow(/does not support SQL/);
+  });
+});
+
+// The tool's own dispatch, one layer above the pipeline: which of sql/table the agent actually
+// named. A model fills an optional string with "" as readily as it omits it — the tool schema
+// reaches it as `anyOf: [string, null]` — so blank has to mean absent here, or naming exactly one
+// source still trips the "provide exactly one" guard.
+describe("BASED-AGENT-EXPORT: sql/table source selection", () => {
+  const CAPS: EngineCapabilities = {
+    sql: true,
+    search: false,
+    write: false,
+    orderedBrowse: false,
+    script: false,
+    relations: false,
+    engine: "lancedb",
+    variant: "lancedb-local",
+    containers: null,
+    wherePredicate: true,
+    structuredFilters: false,
+    countRows: true,
+    takeByKey: true,
+    indexIntrospect: false,
+  };
+
+  function exportTool(adapter: DatabaseAdapter) {
+    const deps: ToolDeps = {
+      getAdapter: () => adapter,
+      connectionId: () => "c",
+      database: () => "d",
+      audit: new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-exporttool-")), "app.db"))),
+      exportDir: () => dir,
+    };
+    return (agentSurfaceFor(CAPS, deps).tools as Record<string, { execute: (a: unknown, x: unknown) => Promise<unknown> }>)
+      .export_data!;
+  }
+
+  test("a blank `sql` alongside a real `table` exports the table", async () => {
+    const { adapter } = fakeTableAdapter(3);
+    const result = (await exportTool(adapter).execute(
+      { format: "csv", sql: "", table: "T", fileName: "blank-sql" },
+      {} as never,
+    )) as { error?: string; refused?: boolean; rowCount?: number };
+    expect(result.error).toBeUndefined();
+    expect(result.refused).toBeUndefined();
+    expect(result.rowCount).toBe(3);
+  });
+
+  test("blank on both sides is still 'provide exactly one', not a downstream failure", async () => {
+    const { adapter } = fakeTableAdapter(3);
+    const result = (await exportTool(adapter).execute({ format: "csv", sql: "", table: "" }, {} as never)) as {
+      error?: string;
+    };
+    expect(result.error).toContain("exactly one");
+  });
+
+  test("a real `sql` alongside a blank `table` exports the query", async () => {
+    const { adapter } = fakeTableAdapter(3);
+    // capabilities.sql is false on the fake adapter, so the pipeline refuses — but reaching that
+    // refusal is the proof the sql branch was chosen rather than the XOR guard firing first.
+    const result = (await exportTool(adapter).execute(
+      { format: "csv", sql: "SELECT 1", table: "", fileName: "blank-table" },
+      {} as never,
+    )) as { error?: string };
+    expect(result.error).toMatch(/does not support SQL/);
   });
 });

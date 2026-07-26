@@ -1,14 +1,20 @@
-// Traces: BASED-CHAT-UI, BASED-AGENT-MUTATION-GATE (frontend half), BASED-AGENT-TAB-TOOLS
-// Frontend agent tools. `run_mutation`: the agent proposes SQL, we render an approval card, and
-// only the user's Approve reaches the gated /api/agent/mutation endpoint. `list_tabs`/`get_tab`:
-// read the workspace (tab list, a tab's SQL/results) from the store on demand. `open_query_tab`:
-// opens a real query tab, optionally runs it, and returns a summary — so user-facing results land
-// in a grid, not in chat. The new tab is aliased to the chat thread that created it
+// Traces: BASED-CHAT-UI, BASED-AGENT-MUTATION-GATE (frontend half), BASED-AGENT-TAB-TOOLS,
+//         BASED-AGENT-SHOW-RESULTS, BASED-AGENT-SURFACE-VARIANT
+// Frontend agent tools — handlers and approval-card renderers. The schemas the model actually sees,
+// and the capability policy that decides which of these are offered at all, live in ./capiToolDefs
+// (React- and store-free, so they can be asserted directly).
+//
+// `run_mutation`: the agent proposes SQL, we render an approval card, and only the user's Approve
+// reaches the gated /api/agent/mutation endpoint. `list_tabs`/`get_tab`: read the workspace (tab
+// list, a tab's SQL/results) from the store on demand. `show_results`: puts rows in front of the
+// user in a real grid rather than in chat — a query tab where SQL exists, the table's data grid
+// where it doesn't. Agent-opened tabs are aliased to the chat thread that created them
 // (BASED-AGENT-THREADS).
 import { useEffect, useState } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
 import { api, inspectCsv, runAgentMutation, streamCsvImport, type CsvImportChunk } from "../api/client";
-import type { MutationResult, TableColumn } from "../api/types";
+import type { EngineCapabilities, MutationResult, TableColumn } from "../api/types";
+import { capiToolDefs, filterToolsByCapabilities } from "./capiToolDefs";
 import { useStore, type QueryTabState } from "../store";
 import { buildTabContext, serializeResultRows } from "./tabContext";
 import { getActiveChatThreadId } from "./threads";
@@ -94,7 +100,7 @@ function clip(text: string | null | undefined): string | null {
   return text.length > DEFINITION_CAP ? `${text.slice(0, DEFINITION_CAP)}\n-- …truncated…` : text;
 }
 
-/** "Opened <tab>" chip rendered under an open_query_tab call — click refocuses the tab. */
+/** "Opened <tab>" chip rendered under a show_results call — click refocuses the tab. */
 function OpenedTabChip({ result }: { result: string }) {
   let parsed: { tabId?: string; title?: string; status?: string } = {};
   try {
@@ -332,12 +338,7 @@ function ImportApprovalCard({ args }: { args: ImportArgs }) {
 
 export const capiTools: Record<string, ToolDefinition> = {
   list_tabs: {
-    definition: {
-      name: "list_tabs",
-      description:
-        "List the user's open workspace tabs: the active tab id plus each tab's id, kind (query/table/routine/diagram), title, and result summary. Use get_tab to read a specific tab's SQL or results.",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
+    definition: capiToolDefs.list_tabs,
     isFrontend: true,
     handler: () => {
       const state = useStore.getState();
@@ -358,19 +359,7 @@ export const capiTools: Record<string, ToolDefinition> = {
   },
 
   get_tab: {
-    definition: {
-      name: "get_tab",
-      description:
-        "Read one workspace tab: a query tab's SQL, run stats, output, and result rows (bounded); a table/routine tab's object identity and definition. Tab ids come from the workspace context or list_tabs.",
-      parameters: {
-        type: "object",
-        properties: {
-          tabId: { type: "string", description: "Tab id from workspace context or list_tabs" },
-          maxRows: { type: "number", description: "Rows to return per result set (default 50, max 200)" },
-        },
-        required: ["tabId"],
-      },
-    },
+    definition: capiToolDefs.get_tab,
     isFrontend: true,
     handler: (args: { tabId?: string; maxRows?: number }) => {
       const state = useStore.getState();
@@ -419,28 +408,34 @@ export const capiTools: Record<string, ToolDefinition> = {
     },
   },
 
-  open_query_tab: {
-    definition: {
-      name: "open_query_tab",
-      description:
-        "Open a new query tab with the given SQL so the user sees results in a real results grid — the right way to SHOW data to the user (instead of pasting rows into chat). Runs immediately unless run is false. Returns the tab id, run status, result-set summaries, and a small preview for you to narrate from.",
-      parameters: {
-        type: "object",
-        properties: {
-          sql: { type: "string", description: "The SQL to place in the new query tab" },
-          run: { type: "boolean", description: "Run immediately (default true)" },
-          title: { type: "string", description: "Optional tab title" },
-        },
-        required: ["sql"],
-      },
-    },
+  // Traces: BASED-AGENT-SHOW-RESULTS — "put the rows in a real grid" as one stable tool name across
+  // every engine. On a SQL connection it opens and runs a query tab; on one without SQL (LanceDB
+  // Cloud) it opens the table's Data tab with an optional `where`. Dropping it on SQL-less
+  // connections would take the "don't paste rows into chat" norm away exactly where the agent also
+  // can't aggregate, which is the worst possible place to lose it.
+  show_results: {
+    definition: capiToolDefs.show_results,
     isFrontend: true,
-    handler: async (args: { sql?: string; run?: boolean; title?: string }) => {
+    handler: async (args: { sql?: string; table?: string; where?: string; schema?: string; run?: boolean; title?: string }) => {
       const sql = args.sql ?? "";
-      if (!sql.trim()) return JSON.stringify({ error: "sql is required" });
       const store = useStore.getState();
+      if (!sql.trim()) {
+        if (!args.table?.trim()) return JSON.stringify({ error: "Provide `sql` (SQL connections) or `table` (connections without SQL)." });
+        const tabId = await store.openTableTabWithQuery(args.schema ?? "", args.table, args.where?.trim() || undefined);
+        return JSON.stringify({
+          tabId,
+          status: "opened",
+          table: args.table,
+          where: args.where ?? null,
+          note: "The table's data grid is now open for the user, filtered as requested.",
+        });
+      }
       const tabId = store.newQueryTabWithContent(args.title ?? null, sql);
-      if (!tabId) return JSON.stringify({ error: "This connection has no SQL editor (engine without SQL). Use the search tools instead." });
+      if (!tabId) {
+        return JSON.stringify({
+          error: "This connection has no SQL editor — pass `table` (and optionally `where`) instead of `sql`.",
+        });
+      }
       // Alias the new tab to the conversation that created it (BASED-AGENT-THREADS): clicking the
       // tab shows this chat, and closing it never deletes the shared thread.
       const threadId = getActiveChatThreadId();
@@ -469,36 +464,7 @@ export const capiTools: Record<string, ToolDefinition> = {
   },
 
   import_csv: {
-    definition: {
-      name: "import_csv",
-      description:
-        "Propose importing a CSV file into a table. Shows the user an approval card previewing the file and the column mapping; the import runs only if the user approves. Requires a connection that supports writes. Omit `mapping` to auto-map by header names (or by position when hasHeader is false).",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Absolute path to the CSV file on the user's machine" },
-          table: { type: "string", description: "Target table name" },
-          schema: { type: "string", description: "Target schema (defaults to dbo)" },
-          hasHeader: { type: "boolean", description: "First row is a header (default true)" },
-          mapping: {
-            type: "array",
-            description: "Explicit csvIndex→column mapping; omit to auto-map",
-            items: {
-              type: "object",
-              properties: {
-                csvIndex: { type: "number", description: "0-based CSV column index" },
-                column: { type: "string", description: "Target table column name" },
-              },
-              required: ["csvIndex", "column"],
-            },
-          },
-          nullEmpty: { type: "boolean", description: "Import empty fields as NULL (default true)" },
-          skipBadRows: { type: "boolean", description: "Skip rows that fail coercion instead of aborting (default false)" },
-          reason: { type: "string", description: "Short explanation of why this import is needed" },
-        },
-        required: ["path", "table"],
-      },
-    },
+    definition: capiToolDefs.import_csv,
     isFrontend: true,
     handler: () =>
       new Promise<string>((resolve) => {
@@ -508,19 +474,7 @@ export const capiTools: Record<string, ToolDefinition> = {
   },
 
   run_mutation: {
-    definition: {
-      name: "run_mutation",
-      description:
-        "Request the user's approval to run a data- or schema-changing statement (INSERT/UPDATE/DELETE/DDL). Shows an approval card; the statement runs only if the user approves.",
-      parameters: {
-        type: "object",
-        properties: {
-          sql: { type: "string", description: "The exact SQL statement to run" },
-          reason: { type: "string", description: "Short explanation of why this change is needed" },
-        },
-        required: ["sql"],
-      },
-    },
+    definition: capiToolDefs.run_mutation,
     isFrontend: true,
     handler: () =>
       new Promise<string>((resolve) => {
@@ -529,3 +483,13 @@ export const capiTools: Record<string, ToolDefinition> = {
     renderer: (args) => <ApprovalCard args={args as { sql?: string; reason?: string }} />,
   },
 };
+
+// Traces: BASED-AGENT-SURFACE-VARIANT — frontend tools were previously handed to the model
+// unconditionally, so `run_mutation` and `import_csv` were advertised on read-only LanceDB
+// connections. The backend surface test asserting "no run_mutation" only ever inspected the backend
+// half, so nothing caught it: the agent would cheerfully offer to fix data on a connection that
+// cannot accept a write, and look incompetent when it was refused. The tools a model can see are the
+// tools it will eventually propose, so the ones that can't work here are removed, not error-gated.
+export function capiToolsFor(capabilities: EngineCapabilities | null): Record<string, ToolDefinition> {
+  return filterToolsByCapabilities(capiTools, capabilities);
+}

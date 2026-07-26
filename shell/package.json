@@ -1,6 +1,7 @@
 {
   "name": "@based/shell",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "electrobun dev",

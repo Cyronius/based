@@ -108,24 +108,13 @@ class TestLsp {
 // real dev-DB adapter over azure-cli auth: the exact configuration the old sqls bridge could
 // never serve (or test). Self-skips without the dev DB, like integration.mssql.
 import { MssqlAdapter } from "@based/core/mssql";
-import { testConnection } from "@based/core";
 import { MssqlLspServer } from "../../../core/src/lsp/mssqlLsp";
 import type { ConnectionConfig, JsonRpcMessage } from "@based/core";
+import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
-const devCfg: ConnectionConfig = {
-  id: "spec-lsp-dev",
-  name: "spec-lsp-dev",
-  server: process.env.BASED_TEST_SERVER ?? "zl5qolt7t8.database.windows.net",
-  database: process.env.BASED_TEST_DB ?? "learnermobile_db_ci",
-  authType: "azure-cli",
-  encrypt: true,
-  trustServerCertificate: false,
-  createdAt: "",
-  updatedAt: "",
-};
-const devProbe = await testConnection(devCfg, () => null);
-const dm = devProbe.ok ? describe : describe.skip;
-if (!devProbe.ok) console.warn(`[integration.lsp] dev DB unavailable, skipping mssql-native suite: ${devProbe.error}`);
+const devCfg: ConnectionConfig = devConnection("spec-lsp-dev");
+const dm = DEV_DB_AVAILABLE ? describe : describe.skip;
+if (!DEV_DB_AVAILABLE) warnDevDbSkip("integration.lsp", "mssql-native suite");
 
 dm("BASED-LSP-MSSQL-NATIVE: in-house server against the dev DB (Entra-token auth)", () => {
   test("initialize, object/column completions, hover, JSON-RPC errors for unknown methods", async () => {

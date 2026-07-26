@@ -127,6 +127,11 @@ export function TableDataGrid({
   // Traces: BASED-TABLE-FILTER-UI — server-side sort + per-column filter expressions (mini-language,
   // parsed into structured TableFilters at fetch time). Gated on capabilities.orderedBrowse.
   const [sort, setSort] = useState<TableSort | null>(null);
+  // Traces: BASED-LANCE-SCAN, BASED-AGENT-SHOW-RESULTS — an engine `where` predicate applied to the
+  // BROWSE fetch (distinct from the search tab's prefilter). On an engine without per-column
+  // structured filters this is the only way to narrow browsed rows, and it's where a predicate the
+  // agent chose lands.
+  const [browseWhere, setBrowseWhere] = useState("");
   const [filterExprs, setFilterExprs] = useState<Record<string, string>>({});
   const [headerMenu, setHeaderMenu] = useState<{ col: number; x: number; y: number } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
@@ -143,10 +148,14 @@ export function TableDataGrid({
   const [rerankTopN, setRerankTopN] = useState("");
   const [rerankTemperature, setRerankTemperature] = useState("");
   const [rerankTextColumn, setRerankTextColumn] = useState("");
-  const [sampleSize, setSampleSize] = useState("50");
+  // Traces: BASED-SEARCH-PARAM-NAMES — candidatePool (was sampleSize: it is an over-fetch pool, not
+  // a row sample) and minScore/maxScoreGapFromTop (were floor/delta: direction-aware thresholds, so
+  // "min" means "keep the better ones" whichever way the score sorts).
+  const [candidatePool, setCandidatePool] = useState("50");
   const [keepSize, setKeepSize] = useState("10");
-  const [floorText, setFloorText] = useState("");
-  const [deltaText, setDeltaText] = useState("");
+  const [minScoreText, setMinScoreText] = useState("");
+  const [maxGapText, setMaxGapText] = useState("");
+  const [vectorColumn, setVectorColumn] = useState("");
   const [searchResult, setSearchResult] = useState<SearchRows | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -242,6 +251,7 @@ export function TableDataGrid({
           pageSize,
           effSort ? [effSort] : undefined,
           buildFilters(effExprs, page?.columns),
+          browseWhere || undefined,
         );
         setPage(p);
         setOffset(off);
@@ -253,7 +263,7 @@ export function TableDataGrid({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tab.schema, tab.table, pageSize, clearPending, sort, filterExprs, page?.columns, buildFilters],
+    [tab.schema, tab.table, pageSize, clearPending, sort, filterExprs, page?.columns, buildFilters, browseWhere],
   );
 
   useEffect(() => {
@@ -263,9 +273,18 @@ export function TableDataGrid({
     setFilterExprs({});
     setHeaderMenu(null);
     setRerankTextColumn("");
+    setVectorColumn("");
     void load(0, null, {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.schema, tab.table, pageSize]);
+
+  // Traces: BASED-AGENT-SHOW-RESULTS — adopt a predicate the agent asked for. Keyed on the tab's
+  // value so a second show_results call with a different `where` re-filters instead of being
+  // swallowed as "already initialized"; the browse fetch depends on browseWhere, so this reloads.
+  useEffect(() => {
+    setBrowseWhere(tab.prefillWhere ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.prefillWhere]);
 
   // Sort changes reload immediately; filter expressions debounce (typed live in the header menu).
   const viewInitRef = useRef(true);
@@ -517,10 +536,18 @@ export function TableDataGrid({
   const rangeLabel = page ? `${page.rows.length === 0 ? 0 : offset + 1}–${offset + page.rows.length}` : "";
   const searchRangeLabel = searchResult ? `${searchResult.rows.length} row${searchResult.rows.length === 1 ? "" : "s"}` : "";
 
-  // Reranking only makes sense over an embedding-scored candidate set; floor/delta trim that score,
-  // and sample/keep tune the reranker's candidate pool — each is meaningless without its prerequisite.
+  // Reranking only makes sense over an embedding-scored candidate set; the score thresholds trim
+  // that score, and pool/keep tune the reranker's candidate pool — each is meaningless without its
+  // prerequisite.
   const hasEmbedding = searchMode !== "text" && !!embeddingProfileId;
   const hasReranker = hasEmbedding && !!rerankerProfileId;
+
+  // Traces: BASED-LANCE-VECTOR-COLUMN — a table with two embeddings is otherwise only reachable via
+  // whichever column LanceDB happens to pick, so the picker appears exactly when that's ambiguous.
+  const vectorColumnOptions = useMemo(
+    () => (page?.columns ?? []).filter((c) => c.isVector).map((c) => c.name),
+    [page?.columns],
+  );
 
   // Candidate "document text" columns for the reranker — the table's string columns (from the
   // browsed page, which always has the base schema; search results add score columns).
@@ -542,7 +569,8 @@ export function TableDataGrid({
         mode: searchMode,
         query: query.trim() || undefined,
         where: whereText.trim() || undefined,
-        sampleSize: hasReranker ? numOrUndef(sampleSize) : undefined,
+        vectorColumn: hasEmbedding && vectorColumn ? vectorColumn : undefined,
+        candidatePool: hasReranker ? numOrUndef(candidatePool) : undefined,
         keepSize: hasReranker ? numOrUndef(keepSize) : undefined,
         embeddingProfileId: hasEmbedding ? embeddingProfileId : undefined,
         rerankerProfileId: hasEmbedding && rerankerProfileId ? rerankerProfileId : undefined,
@@ -551,8 +579,8 @@ export function TableDataGrid({
             ? { topN: numOrUndef(rerankTopN), temperature: numOrUndef(rerankTemperature) }
             : undefined,
         rerankTextColumn: hasReranker && rerankTextColumn ? rerankTextColumn : undefined,
-        floor: hasEmbedding ? numOrUndef(floorText) : undefined,
-        delta: hasEmbedding ? numOrUndef(deltaText) : undefined,
+        minScore: hasEmbedding ? numOrUndef(minScoreText) : undefined,
+        maxScoreGapFromTop: hasEmbedding ? numOrUndef(maxGapText) : undefined,
       });
       setSearchResult(res);
     } catch (err) {
@@ -635,18 +663,33 @@ export function TableDataGrid({
                     </option>
                   ))}
                 </select>
+                {vectorColumnOptions.length > 1 && (
+                  <select
+                    className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[10rem]"
+                    value={vectorColumn}
+                    onChange={(e) => setVectorColumn(e.target.value)}
+                    title="Which vector column to search — this table has more than one embedding"
+                  >
+                    <option value="">Vector: auto</option>
+                    {vectorColumnOptions.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="floor"
-                  value={floorText}
-                  onChange={(e) => setFloorText(e.target.value)}
-                  title="Drop results worse than this score"
+                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
+                  placeholder="min score"
+                  value={minScoreText}
+                  onChange={(e) => setMinScoreText(e.target.value)}
+                  title="Drop results scoring worse than this. Direction-aware: an upper bound on _distance, a lower bound on relevance/rerank scores"
                 />
                 <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="delta"
-                  value={deltaText}
-                  onChange={(e) => setDeltaText(e.target.value)}
+                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
+                  placeholder="max gap"
+                  value={maxGapText}
+                  onChange={(e) => setMaxGapText(e.target.value)}
                   title="Drop results trailing the top result's score by more than this"
                 />
               </>
@@ -682,10 +725,10 @@ export function TableDataGrid({
                 />
                 <input
                   className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="sample"
-                  value={sampleSize}
-                  onChange={(e) => setSampleSize(e.target.value)}
-                  title="Sample size (initial candidate pool)"
+                  placeholder="pool"
+                  value={candidatePool}
+                  onChange={(e) => setCandidatePool(e.target.value)}
+                  title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
                 />
                 <input
                   className="w-14 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
@@ -733,7 +776,27 @@ export function TableDataGrid({
             >
               Next ›
             </button>
-            <span className="text-faint font-mono">{rangeLabel}</span>
+            <span className="text-faint font-mono">
+              {rangeLabel}
+              {tab.rowCount != null && ` of ${tab.rowCount.toLocaleString()}`}
+            </span>
+            {/* Traces: BASED-LANCE-SCAN, BASED-AGENT-SHOW-RESULTS — the browse predicate is visible
+                and clearable, so a filtered grid never silently looks like the whole table. */}
+            {browseWhere && (
+              <button
+                className="rounded-full border border-brass px-2 py-px text-[length:var(--fs-xs)] text-brass hover:bg-brass/10 font-mono max-w-[24rem] truncate"
+                title={`Filtered by: ${browseWhere} — click to clear`}
+                onClick={() => {
+                  if (pendingCount > 0) {
+                    showGateNotice();
+                    return;
+                  }
+                  setBrowseWhere("");
+                }}
+              >
+                where {browseWhere} · clear
+              </button>
+            )}
             {Object.values(filterExprs).some((f) => f.trim()) && (
               <button
                 className="rounded-full border border-brass px-2 py-px text-[length:var(--fs-xs)] text-brass hover:bg-brass/10"

@@ -8,13 +8,53 @@
 #   5. ISCC scripts\installer.iss            -> dist\based-<version>-Setup.exe
 #
 # Requires Inno Setup 6:  winget install JRSoftware.InnoSetup
-# Known cosmetic issue: electrobun's own icon embed into launcher.exe is broken upstream
-# (rcedit resolution bug -- see shell\README.md); the installer, shortcuts, and .sql files still
-# get the based icon via icon.ico. Apply the README workaround before building to fix the
-# launcher exe icon itself.
+#
+# electrobun's icon embed into launcher.exe is broken upstream (rcedit resolution bug -- see
+# shell\README.md for the full diagnosis). Ensure-RceditShim below applies the workaround
+# automatically, so a release build gets the right exe icon without anyone remembering a manual
+# step. If the shim can't be mounted the build still succeeds; only launcher.exe's own icon falls
+# back, and the installer, shortcuts, and .sql association still use icon.ico.
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+
+# The absolute path electrobun's compiled CLI has baked in from its own upstream CI build. We
+# recreate it on a substed D: so its broken require.resolve finds a real rcedit.
+$RCEDIT_BAKED_SUBPATH = "a\electrobun\electrobun\package\node_modules\rcedit"
+
+function Ensure-RceditShim {
+  $shimRoot = Join-Path $env:USERPROFILE ".electrobun-rcedit-shim"
+  $target = Join-Path $shimRoot $RCEDIT_BAKED_SUBPATH
+  $probe = Join-Path "D:\" "$RCEDIT_BAKED_SUBPATH\package.json"
+
+  # Populate (or refresh) the shim from the real rcedit in the workspace bun store. electrobun only
+  # shells out to the binary, so package.json + the exes are the whole dependency.
+  $storeDir = Get-ChildItem (Join-Path $repo "node_modules\.bun") -Directory -Filter "rcedit@*" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $storeDir) {
+    Write-Warning "rcedit not found in node_modules\.bun -- skipping icon shim (run 'bun install'?)"
+    return
+  }
+  $src = Join-Path $storeDir.FullName "node_modules\rcedit"
+  New-Item -ItemType Directory -Force -Path (Join-Path $target "bin") | Out-Null
+  Copy-Item (Join-Path $src "package.json") (Join-Path $target "package.json") -Force
+  Copy-Item (Join-Path $src "bin\*.exe") (Join-Path $target "bin") -Force
+
+  if (Test-Path $probe) {
+    Write-Host "  rcedit shim already mounted on D:" -ForegroundColor DarkGray
+    return
+  }
+  if (Test-Path "D:\") {
+    Write-Warning "D: is already in use by something other than the rcedit shim -- launcher.exe will keep electrobun's default icon. See shell\README.md."
+    return
+  }
+  & "$env:WINDIR\System32\subst.exe" D: $shimRoot
+  if (Test-Path $probe) {
+    Write-Host "  mounted rcedit shim: D: -> $shimRoot" -ForegroundColor DarkGray
+  } else {
+    Write-Warning "subst D: did not take -- launcher.exe will keep electrobun's default icon."
+  }
+}
 
 # --- version from shell/electrobun.config.ts ---
 $config = Get-Content (Join-Path $repo "shell\electrobun.config.ts") -Raw
@@ -30,6 +70,7 @@ finally { Pop-Location }
 
 # --- 2. electrobun stable bundle ---
 Write-Host "`n[2/5] Building electrobun stable bundle..." -ForegroundColor Cyan
+Ensure-RceditShim
 Push-Location (Join-Path $repo "shell")
 try {
   & (Join-Path $repo "shell\node_modules\.bin\electrobun.exe") build --env=stable

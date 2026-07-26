@@ -1,7 +1,7 @@
 // Traces: BASED-AGENT-TAB-CONTEXT (client half), BASED-AGENT-TAB-TOOLS
 // Pure builders for the workspace snapshot that rides every agent send as
 // forwardedProps.tabContext (rendered server-side into the instructions), and the row serializer
-// the get_tab / open_query_tab frontend tools use. Runtime-import-free of the store (type-only
+// the get_tab / show_results frontend tools use. Runtime-import-free of the store (type-only
 // imports are erased) so specs can unit-test these without a DOM.
 import type { AppState, ResultSetData, TabState } from "../store";
 import { cellText } from "../api/types";

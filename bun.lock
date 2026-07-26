@@ -54,6 +54,7 @@
       "devDependencies": {
         "@lancedb/lancedb": "^0.24.0",
         "@types/bun": "^1.2.0",
+        "ai": "^7.0.34",
       },
     },
     "ui": {

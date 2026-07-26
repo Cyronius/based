@@ -1,7 +1,7 @@
 // Traces: BASED-CHAT-UI
 // The Capi chat conversation surface. Renders the lm-ag-ui thread with Streamdown, extracts SQL
 // blocks into Insert/Run affordances, and hosts the run_mutation approval card via the tool renderer.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAgentContext } from "@itkennel/lm-ag-ui";
 import type { Message } from "@ag-ui/client";
 import { Streamdown } from "streamdown";
@@ -233,6 +233,22 @@ export function CapiChat() {
     }
   };
 
+  // Message ids are not unique. When a run interleaves tool calls, the Mastra bridge pins every
+  // later text segment of that run to one continuation id (`<base>-agui-text`), the client re-emits
+  // a text-message start after each tool round under that same id, and lm-ag-ui finalizes one
+  // message per start — so several entries arrive sharing an id. React keys have to be unique among
+  // siblings or the reconciler mismatches fibers and repeats whole blocks on screen, so number the
+  // repeats here. First occurrence keeps the bare id: only genuine collisions get a new key, and an
+  // append never re-keys what is already mounted.
+  const rendered = useMemo(() => {
+    const seen = new Map<string, number>();
+    return messages.map((m) => {
+      const n = (seen.get(m.id) ?? 0) + 1;
+      seen.set(m.id, n);
+      return { m, key: n === 1 ? m.id : `${m.id}#${n}` };
+    });
+  }, [messages]);
+
   return (
     <div className="flex flex-1 min-h-0 min-w-0 flex-col">
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
@@ -243,7 +259,7 @@ export function CapiChat() {
             get <span className="text-brass">Insert</span> / <span className="text-brass">Run</span> actions.
           </p>
         )}
-        {messages.map((m) => {
+        {rendered.map(({ m, key }) => {
           const toolCalls = (m as unknown as { toolCalls?: Array<{ id: string; function?: { name?: string; arguments?: string } }> }).toolCalls;
           if (m.role === "assistant" && toolCalls?.length) {
             // A single assistant turn can carry both narration text and its tool calls
@@ -251,7 +267,7 @@ export function CapiChat() {
             // agent writes its answer in the same turn) — render the text once for the
             // message, not once per tool call.
             return (
-              <div key={m.id} className="fade-up">
+              <div key={key} className="fade-up">
                 {typeof m.content === "string" && m.content && (
                   <div className="text-[length:var(--fs-md)] leading-relaxed break-words">
                     <Markdown text={m.content} />
@@ -282,7 +298,7 @@ export function CapiChat() {
           if (m.role === "tool") return null; // rendered next to its call
           if (m.role === "user") {
             return (
-              <div key={m.id} className="text-right">
+              <div key={key} className="text-right">
                 <span className="inline-block max-w-full rounded-md bg-ink-800 px-2.5 py-1.5 text-[length:var(--fs-base)] text-paper-dim break-words">
                   {typeof m.content === "string" ? m.content : "[attachment]"}
                 </span>
@@ -291,7 +307,7 @@ export function CapiChat() {
           }
           const content = typeof m.content === "string" ? m.content : "";
           return (
-            <div key={m.id} className="fade-up text-[length:var(--fs-md)] leading-relaxed break-words">
+            <div key={key} className="fade-up text-[length:var(--fs-md)] leading-relaxed break-words">
               <Markdown text={content} />
               <SqlActions text={content} />
             </div>

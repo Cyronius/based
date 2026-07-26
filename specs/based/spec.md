@@ -309,6 +309,29 @@ A result set shall export to a valid `.xlsx` (header row + data rows) that round
 - NULL cells are empty; numbers stay numeric
 - A cell containing a lone surrogate or U+FFFF reads back with those characters removed (file opens without repair); valid surrogate pairs (emoji) survive
 
+### BASED-SAVE-FILE-WRITER: Document file writer
+**Applies to:** based (core)
+**Test category:** unit
+
+`core/src/files/saveFile.ts` writes a *document* (as opposed to `exportData`'s *data*) to a target
+directory. `sanitizeSaveFileName(name, defaultExt?)` accepts only a bare file name whose extension
+is on `SAVE_FILE_EXTENSIONS` — `html, htm, md, markdown, txt, sql, json, csv, tsv, xml, yaml, yml,
+svg, log`. This is a whitelist, not a blacklist: the caller is the model, so the guard has to be
+"only these document types" rather than "not these bad ones". `defaultExt` fills a missing
+extension but never replaces a present valid one. `resolveDownloadDir(override?)` resolves to the
+user's Downloads folder, falling back to the temp dir. `writeTextFileUnique(dir, name, content)`
+never overwrites — an existing name gets `-2`, `-3`, … — and returns the path actually written plus
+its UTF-8 byte length. (`exportData` may overwrite because its default names are timestamped; a
+model-chosen `report.html` is a plausible collision with a file the user already had.)
+
+**Acceptance criteria:**
+- `a/b.txt`, `a\b.txt`, `../b.txt`, `..secret.txt`, `"   "`, `""` → throws
+- `evil.exe`, `run.ps1`, `go.bat`, `x.js`, `x.vbs`, `s.lnk`, `k.reg`, `noextension`, `archive.tar.gz` → throws
+- `report.html` → `report.html`; `  Notes.MD  ` → `Notes.MD` (case preserved)
+- `("notes", "md")` → `notes.md`; `("notes.txt", "md")` → `notes.txt`; `("notes.exe", "md")` → throws
+- Writing `report.html` three times into one directory yields `report.html`, `report-2.html`, `report-3.html`, each with its own content
+- `bytes` is the UTF-8 byte length, not the character count (`"café — ok"`)
+
 ---
 
 ## Import
@@ -726,10 +749,11 @@ context menu. Read-only v1 — no diagram-driven DDL. Not exposed for LanceDB.
 **Applies to:** based (core)
 **Test category:** integration
 
-Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, base URL, default model, optional deployment) persists in the local store; the API key lives in Windows Credential Manager, never the store. A resolver turns the active config into an AI SDK `LanguageModel`. The out-of-box default targets a local LM Studio OpenAI-compatible server.
+Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, base URL, default model, optional deployment) persists in the local store; the API key lives in Windows Credential Manager, never the store. A resolver turns the active config into an AI SDK `LanguageModel`. There is no built-in default — a fresh install has no configured provider until the user adds one.
 
 **Acceptance criteria:**
 - Save config → read back identical fields; the stored record contains no key material
+- No config saved yet → the store's read returns `null`, not a hardcoded default
 - `setAiKey`/`getAiKey`/`deleteAiKey` round-trip through Credential Manager
 - The `openai-compatible` resolver returns a model for a reachable base URL
 
@@ -745,70 +769,89 @@ The agent `run_query` tool executes only read-only statements. A pure classifier
 - `SELECT`/leading-CTE → read-only; `INSERT`/`UPDATE`/`DELETE`/`DROP`/`TRUNCATE`/`EXEC`/`MERGE`/`SELECT…INTO` → not (case/whitespace/comment/string-literal insensitive)
 - `run_query` on a mutating statement returns `{ refused: true }` and never calls the adapter
 
-### BASED-AGENT-SCHEMA-CTX: Schema-only context tool
+### BASED-AGENT-SCHEMA-CTX: Schema-only context tools
 **Applies to:** based (core)
 **Test category:** integration
 
-`get_schema` returns objects (schema-qualified) and, on request, a table's columns — the same introspection the explorer uses — and never row data.
+`list_objects()` returns every object (namespace-qualified) and `describe_table({ table, … })`
+returns one table's columns — the same introspection the explorer uses — and neither ever returns row
+data. These replace the former single `get_schema` tool, whose two responsibilities (enumerate vs
+describe) shared one name and one argument list; `describe_table` also absorbed `script_object`
+(BASED-SCRIPT-OBJECT), so a table's columns, its DDL, and its pyarrow snippet are `format` values of
+one tool rather than the same information under two names.
 
 **Acceptance criteria:**
-- `get_schema()` returns a non-empty object list, each with schema/name/type
-- `get_schema({ table })` returns that table's columns and no rows
+- `list_objects()` returns a non-empty object list, each with schema/name/type
+- `describe_table({ table })` returns that table's columns and no rows
 
-### BASED-AGENT-SAMPLE: `sample_rows` tool
+### BASED-AGENT-SAMPLE: quick row peek — SUPERSEDED by BASED-AGENT-READ-ROWS
 **Applies to:** based (core)
 **Test category:** integration
 
-`sample_rows({ schema, table, limit })` returns up to `limit` (hard-capped 100) rows via a parameterized `SELECT TOP` over an identifier-validated object — the only tool that returns row data.
+`sample_rows` no longer exists as a separate tool. An unordered peek is `read_table` with a small
+`limit` and no filter, so the two were merged: keeping both meant two tools that returned rows while
+each described itself as "the only tool that returns raw rows", and the agent acted on whichever
+description it had read most recently. Superseded by BASED-AGENT-READ-ROWS.
 
-**Acceptance criteria:**
-- Returns ≤ limit rows with the table's columns for a known table
-- An invalid identifier (`;`, brackets, quotes) is rejected without querying
-
-### BASED-AGENT-READ-ROWS: `read_rows` paging tool
+### BASED-AGENT-READ-ROWS: `read_table` paging tool
 **Applies to:** based (core)
 **Test category:** unit
 
-An engine-neutral `read_rows({ table, schema?, offset?, limit? })` tool pages through a table via
-the adapter's `readTablePage` in a stable order, so the agent never has to pull a whole table at
-once. `limit` clamps to 1–200 (default 100); the result carries `{ columns, rows, orderBy, offset,
-returned, hasMore }` where `hasMore` is the `returned === limit` heuristic (`TablePage` has no total
-count; an exactly-full final page costs one extra empty read — documented, accepted). On engines
-with `orderedBrowse` (mssql) the tool additionally accepts `orderBy: [{column, dir}]` and
-`filters: [{column, op, value?}]`, passed straight through to `readTablePage`'s validated
-sort/filter path (BASED-TABLE-ORDERBY); on other engines those arguments return a descriptive
-error. Every call is audited as a read. `sample_rows` stays as the quick-peek affordance — the two
-tools cross-reference each other in their descriptions.
+One tool for "give me rows", under one name on every engine: `read_table({ table, <namespace>?,
+offset?, limit?, columns? })` pages through a table via the adapter's `readTablePage`, so the agent
+never pulls a whole table at once. `limit` clamps to 1–200 (default 100); the result carries
+`{ columns, rows, orderBy, offset, returned, hasMore }` where `hasMore` is the
+`returned === limit` heuristic (`TablePage` has no total; call `count_rows` when the scale
+matters). It absorbed the former `sample_rows` — a peek is a small page with no filter.
+
+Its filtering parameters are generated from the connection's capabilities and a parameter the engine
+cannot honour is **absent**, not accepted-then-refused (BASED-AGENT-SURFACE-VARIANT): engines with
+`structuredFilters` (SQL Server) expose `orderBy: [{column, dir}]` and
+`filters: [{column, op, value?}]`, passed to `readTablePage`'s validated, parameterized path
+(BASED-TABLE-ORDERBY); engines with `wherePredicate` (LanceDB) expose a free-text `where`
+predicate instead (BASED-LANCE-SCAN). Every call is audited as a read, with the predicate in the
+audit line.
 
 **Acceptance criteria:**
 - `limit: 500` clamps to 200; omitted limit reads 100; `offset` forwards verbatim
 - A full page reports `hasMore: true`; a short page reports `hasMore: false`
-- Default schema is `dbo` on mssql and `""` on lancedb (same resolution as `get_schema`)
-- `orderBy`/`filters` forward to the adapter on an `orderedBrowse` engine and error gracefully
-  (no adapter call) on an engine without it
-- Both engine surfaces contain `read_rows`; each call writes an audit row
+- A small `limit` with no filter reproduces the old `sample_rows` peek
+- The namespace defaults to `dbo` on mssql and `""` on lancedb
+- `orderBy`/`filters` forward to the adapter on a `structuredFilters` engine, and are **not present
+  in the tool's schema at all** on an engine without it
+- `where` forwards to the adapter on a `wherePredicate` engine and appears in the audit line
+- `columns` projects the returned page
+- Every engine surface contains `read_table`; each call writes an audit row
 
-### BASED-SCRIPT-OBJECT: Agent `script_object` tool
+### BASED-SCRIPT-OBJECT: Agent `describe_table` tool
 **Applies to:** based (core)
 **Test category:** unit + integration
 
-An engine-appropriate `script_object` agent tool returns DDL/description text — never executes it
-(execution stays on the BASED-AGENT-MUTATION-GATE approval path). On mssql
-(`capabilities.script`), `script_object({ name, schema?, action? })` resolves the object's type via
-`listObjects()` and routes through the existing scripter (BASED-SCRIPT-TSQL): tables via
-`getTableDetails` + `scriptObject({kind:"table"})`, views/procedures/functions via
-`getObjectDefinition` + `scriptObject({kind:"module"})`; `action` ∈
-create|drop|drop-create|alter|select|insert (default create), with the scripter's own invalid-combo
-errors surfaced as tool errors, not throws. On LanceDB, `script_object({ table, schema? })` returns
-a readable schema description (`describeLanceSchema`, a pure function): per-column name/type/
-nullability, vector columns as `vector[dim] of <elementType>` with the index metric when known
-(BASED-LANCE-VECTOR-METRIC), plus a `pyarrow` schema snippet (Lance tooling is Python-first).
-Unknown objects return `{ error }` with the valid-name list, mirroring `load_skill`. Calls are
-audited as reads.
+`describe_table({ table, <namespace>?, format? })` returns schema and DDL/description text — never
+executes it (execution stays on the BASED-AGENT-MUTATION-GATE approval path). It replaces the former
+`script_object`, whose name was SSMS heritage that said nothing about what it returned and which,
+on LanceDB, duplicated `get_schema({table})` in a second format. One tool, engine-shaped `format`:
+
+- `"columns"` (default, every engine) — the column list with types, nullability, key/FK metadata,
+  and for vector columns the dimension, element type, and index metric.
+- mssql (`capabilities.script`) — `"ddl"` resolves the object's type via `listObjects()` and routes
+  through the existing scripter (BASED-SCRIPT-TSQL): tables via `getTableDetails` +
+  `scriptObject({kind:"table"})`, views/procedures/functions via `getObjectDefinition` +
+  `scriptObject({kind:"module"})`. `"drop"`, `"drop-create"`, `"alter"`, `"select"` and
+  `"insert"` map onto the scripter's remaining actions, with its invalid-combo errors surfaced as
+  tool errors, not throws.
+- lancedb — `"pyarrow"` returns a readable schema description (`describeLanceSchema`, a pure
+  function) plus a `pa.schema` snippet, Lance tooling being Python-first.
+
+Unknown objects return `{ error, validNames }`, mirroring `load_skill`. Calls are audited as reads.
 
 **Acceptance criteria:**
-- mssql: a table round-trips to a `CREATE TABLE` containing its PK; a view returns its `CREATE VIEW` text; `action: "alter"` on a table returns an error object (no throw)
-- lancedb: the seeded table's description names every column, renders the vector column as `vector[dim]`, and includes a `pa.schema` snippet
+- The `format` enum offers `ddl` (and the other scripter actions) only on mssql and `pyarrow` only
+  on lancedb; `columns` is available on both
+- mssql: `format: "ddl"` round-trips a table to a `CREATE TABLE` containing its PK; a view returns
+  its `CREATE VIEW` text; `format: "alter"` on a table returns an error object (no throw)
+- lancedb: `format: "columns"` names every column and flags the vector one; `format: "pyarrow"`
+  renders it as `vector[dim]` and includes a `pa.schema` snippet
 - An unknown object name returns `{ error, validNames }` without calling the scripter
 - `describeLanceSchema` is pure (unit-tested with fixture columns, no DB)
 
@@ -833,6 +876,71 @@ reads. The agent-side **import** counterpart is BASED-AGENT-IMPORT (approval-gat
 - `fileName` containing `/`, `\`, or `..` is rejected; a missing extension is appended
 - End-to-end (lancedb integration): exporting the seeded table writes a real CSV whose header
   matches the table's columns, returns its path, and appends a kind-`read` audit row
+
+### BASED-AGENT-SAVE-FILE: Agent `save_file` tool
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+A `save_file({ content, fileName, openAfter? })` tool writes a document the agent authored — a
+standalone HTML report, a `.sql` script, a markdown write-up, plain notes — to a real file and
+returns `{ path, bytes, fileName }`, so a long document is delivered as a file instead of a wall of
+text the user has to hand-select out of the chat rail. It is present on **every** engine and
+variant, capability-free: it touches the filesystem, not the database.
+
+Name and extension go through `sanitizeSaveFileName` (BASED-SAVE-FILE-WRITER) and the write through
+`writeTextFileUnique`, so an unlisted or executable extension is refused and an existing file is
+never overwritten. `content` over `MAX_SAVE_FILE_BYTES` (5 MB) or empty is refused. The file lands
+in the user's Downloads folder (fallback: temp dir; `ToolDeps.exportDir` overrides it for tests) —
+no dialog can pop mid-run, same as BASED-AGENT-EXPORT. `openAfter` shell-opens the result. Failures
+return `{ error }`; every call audits as a read. The tool is named in the generated capability
+briefing for both engines.
+
+**Acceptance criteria:**
+- Writing `<!doctype html>…` as `orders.html` puts the exact bytes at `<dir>/orders.html` and returns that path with the UTF-8 byte count
+- Saving `notes.md` twice yields `notes.md` and `notes-2.md`; the first file's content is unchanged
+- `../escape.txt`, `sub/dir.txt`, `..\up.txt` → `{ error }` and the directory stays empty
+- `setup.ps1` → `{ error }` containing "Unsupported file type"; nothing written
+- Content over `MAX_SAVE_FILE_BYTES`, and empty content → `{ error }`; nothing written
+- `save_file` is in the tool surface of all four connection variants
+
+### BASED-AGENT-TRANSCRIPT: Agent `save_chat_transcript` tool + markdown formatter
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+`transcriptMarkdown(messages, { title?, generatedAt? })` renders AG-UI messages as a markdown
+document: an `# ` title (default `based — chat transcript`), a generated-at line, then `## You` /
+`## Capi` sections in conversation order. Assistant prose passes through verbatim so fenced code and
+` ```mermaid ` blocks survive. **Prose only** — `role: "tool"` and `role: "system"` messages and
+tool-call payloads are not rendered; a transcript is what the conversation *said*, and the mechanics
+are already in the audit log. Consecutive same-role turns merge under one heading, and a turn with
+no text (an assistant turn that is only tool calls) produces no heading.
+
+It lives in core, not the UI, because two paths produce a transcript and must produce the *same*
+document: this tool, and the chat rail's download button (BASED-CHAT-TRANSCRIPT-UI).
+
+`save_chat_transcript({ fileName?, title?, openAfter? })` writes that markdown to the Downloads
+folder and returns `{ path, bytes, messageCount, note }`. The messages come from agent memory via
+`ToolDeps.recallThread(threadId, connectionId)` — the same reader the history-restore route uses —
+never from the model: re-emitting a whole thread through tool-call arguments would cost as many
+tokens as the thread and would paraphrase rather than reproduce it. `fileName` defaults to
+`based-chat-<yyyymmddhhmmss>.md` and a bare name gets `.md` appended.
+
+Like `delegate` (BASED-AGENT-DELEGATE), its presence tracks the **run**, not the connection: it is
+built only when `recallThread` is on the deps, and a subagent's deps carry none — so the tool is
+absent from a child's surface rather than present-and-refusing. Mastra flushes a turn to `agent.db`
+after the run, so the file covers the conversation through the user's current message but not the
+reply being composed; the returned `note` says so, and the UI button has no such gap.
+
+**Acceptance criteria:**
+- Three turns render as `## You` / `## Capi` / `## You` with the header and generated-at line above them
+- A fenced `sql`/`mermaid` block in an assistant message appears byte-identical in the output
+- A thread containing system + tool messages yields exactly `["## You", "## Capi"]` headings and none of their content
+- An assistant message carrying only `toolCalls` adds no heading; two consecutive assistant messages share one
+- `[]` → header and generated-at line only; `title` replaces the default heading
+- The tool is absent on all four variants by default and present on all four once `recallThread` is injected
+- Recall is called with the run's `threadId` and the connection id; the written file starts `# <title>` and contains both turns
+- No `fileName` → a path matching `based-chat-<14 digits>.md`; `orders-chat` → `orders-chat.md`
+- A throwing `recallThread` → `{ error }` with its message; nothing written
 
 ### BASED-AGENT-IMPORT: Approval-gated agent CSV import
 **Applies to:** based (ui)
@@ -882,20 +990,40 @@ list of all open tabs (≤30) — hard-capped at 8,000 chars total; absent/malfo
 **Applies to:** based (core)
 **Test category:** integration
 
-The agent has no server tool that executes DML/DDL. Mutations run only through `POST /api/agent/mutation`, which requires `approved: true` and audits the SQL before executing. The frontend reaches it only after the user approves the `run_mutation` card.
+The agent has no server tool that executes DML/DDL. Mutations run only through
+`POST /api/agent/mutation`, which requires `approved: true` **and** `capabilities.write`, and
+audits the SQL before executing. The frontend reaches it only after the user approves the
+`run_mutation` card, and only offers that card on a connection that can accept writes
+(BASED-AGENT-SURFACE-VARIANT).
+
+The capability check is server-side because "read-only" was previously enforced only by the frontend
+not offering the tool — which it did offer, unconditionally. Every sibling write path (CSV import,
+grid commit) already checked `capabilities.write`; this one did not, so on a **local** LanceDB
+connection an approved mutation reached the DuckDB/Lance bridge. Consent is not capability: the user
+approving a statement does not make the connection able to run it.
 
 **Acceptance criteria:**
 - Mutation-exec with `approved` absent/false → 400, nothing runs, no audit row
 - With `approved: true` → runs and writes an audit row with `approved`
+- With `approved: true` on a connection whose `capabilities.write` is false → 400 with a
+  read-only message, nothing runs
 - `run_query` (the only agent-callable exec tool) rejects mutations, so the model cannot self-execute DML
+- `run_mutation` and `import_csv` are absent from the frontend tool map on a non-writable connection
 
-**Security posture (no spec impact):** `approved` is a UX gate suited to a personal tool; the real enforcement is that DML has no agent-reachable tool and the frontend only calls the endpoint on user approval.
+**Design constraint for a future LanceDB write surface (no implementation):** `run_mutation` takes a
+SQL string, and Lance's write operations — `merge_insert`, `add_columns` with expressions,
+`alter_columns`, predicate `delete` — are SDK API calls, not DDL. They cannot be expressed through
+this tool and will need their own proposal tools with their own approval cards. `run_mutation`'s
+generality is real only where SQL is the write interface.
+
+**Security posture (no spec impact):** `approved` is a UX gate suited to a personal tool; the real
+enforcement is the capability check plus the fact that DML has no agent-reachable exec tool.
 
 ### BASED-AGENT-AUDIT: Audit log of agent SQL
 **Applies to:** based (core)
 **Test category:** integration
 
-Every SQL the agent causes to run (reads via `run_query`/`sample_rows`, approved mutations) appends an audit row (connection, database, kind read|mutation, sql, approved, started-at, status, error), retrievable most-recent-first. Row data is never recorded.
+Every SQL the agent causes to run (reads via `run_query`/`read_table`/`count_rows`/`take_rows`, approved mutations) appends an audit row (connection, database, kind read|mutation, sql, approved, started-at, status, error), retrievable most-recent-first. Row data is never recorded.
 
 **Acceptance criteria:**
 - After an agent `run_query`, the audit list returns it with kind `read`, status `ok`
@@ -922,6 +1050,50 @@ The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) 
 - `buildAgent(...)` yields an agent whose resolved default options have `maxSteps` of 30 (assert via `agent.getDefaultOptions(...)`)
 - Manual: "audit my tables" against the dev DB streams tool calls and ends with a final assistant text message before `RUN_FINISHED`
 
+### BASED-AGENT-DELEGATE: Handing tasks to subagents
+**Applies to:** based (core)
+**Test category:** unit
+
+The agent can hand self-contained investigation tasks to subagents with a `delegate` tool, taking a `goal` string and 1–4 `tasks` (`{ name, instructions }`), and getting back one bounded result per task. The point is context, not concurrency: a subagent spends its own context on `describe_table`/`read_table`/`run_query` and returns only a summary, so the schema dumps never enter the parent's thread. Independent tasks run concurrently up to `SUBAGENT_CONCURRENCY`, which equals `DELEGATE_MAX_TASKS` so a fan-out is never artificially serialized — how parallel a run is becomes the model's choice of task count rather than a second hidden limit. No provider kind is treated specially; a backend configured for less parallelism than it is sent simply queues the surplus.
+
+Delegation is a property of the **run**, not the connection: the tool is registered iff `ToolDeps.runSubagent` is supplied, on every engine and variant. The deps handed to a subagent omit it, so a subagent has no `delegate` tool — recursion is prevented structurally, not by a runtime check. A subagent also gets no memory and no parent messages, and none of the frontend tools (`show_results`, `list_tabs`, `get_tab`, `open_query_tab`, `run_mutation`, `import_csv`), which are unreachable from the server. The capability briefing states this; the persona does not, since a forked persona would go stale.
+
+**Acceptance criteria:**
+- `agentSurfaceFor(caps, deps)` includes `delegate` when `deps.runSubagent` is set and omits it when not, for both mssql and LanceDB capabilities
+- The briefing gains the delegation paragraph only when `deps.runSubagent` is set
+- `delegate` rejects an empty `tasks` array and more than `DELEGATE_MAX_TASKS` (4) tasks at the schema level
+- Calling `delegate` invokes the runner once with the `goal` and every task, and returns `{ results, totalMs }`
+- A runner honouring `concurrency: 1` never has two tasks in flight at once; with `concurrency: 3` and three tasks, all three overlap
+- The deps a subagent is built with have no `runSubagent`, so `sharedTools` yields no `delegate` for it
+
+### BASED-AGENT-DELEGATE-REPORT: Subagent result contract
+**Applies to:** based (core)
+**Test category:** unit
+
+A subagent reports through a `report_findings` tool — available only inside a delegated run, never on the parent's surface — carrying a prose `summary`, optional `artifacts` (`label` plus any of `sql`, `objects`, `sample`, `note`) and optional `confidence`. Reporting through a tool call rather than structured output is deliberate: structured-output mode is unreliable against local OpenAI-compatible backends and interacts badly with tool loops.
+
+Artifacts are how a result stays actionable without moving data: a `sql` artifact is a query the subagent actually ran and validated, which the parent can pass to `show_results` so rows reach a grid without passing through anyone's context.
+
+The runner applies the caps regardless of what the model sends — a schema is a request, not a guarantee. Each task's outcome is independent: one failing or timing out never fails its siblings.
+
+**Acceptance criteria:**
+- `report_findings` args become the result's `summary`/`artifacts`/`confidence`
+- A run that never calls `report_findings` falls back to the final assistant text with `artifacts: []`, status `ok`
+- `summary` is truncated to `SUBAGENT_SUMMARY_CAP` (4,000 chars) and each artifact's `sample` to `SUBAGENT_SAMPLE_ROWS` (5 rows), even when the model exceeds them
+- A task whose run throws yields `status: "error"` with the message in `error`; a task that exceeds the timeout yields `status: "timeout"`; sibling tasks still return `status: "ok"`
+- A task that reported and then failed still hands its summary up
+
+### BASED-AGENT-DELEGATE-ISOLATION: A delegated run leaves no trace in the parent thread
+**Applies to:** based (core)
+**Test category:** integration
+
+A subagent is built without memory, so nothing it does is written to the tab's thread and there is nothing to clean up. It receives only the goal and its own brief — no parent conversation history. Its SQL is still audited under the same connection, tagged with a leading `-- subagent: <name>` comment (`AuditEntry` has no tag column, and a SQL comment is valid and legible in the History panel). The fan-out itself records one structured `delegate(goal, N task(s))` audit line.
+
+**Acceptance criteria:**
+- Thread messages recalled via `GET /api/agent/threads/:id/messages` are unchanged in count across a delegated run
+- Every audit row a subagent's tools produce begins `-- subagent: <task name>` and carries the parent's connection id
+- One `delegate(…)` audit row is written per `delegate` call, status `error` only when every task failed
+
 ### BASED-AGENT-THREADS: Per-tab thread persistence
 **Applies to:** based (core, ui)
 **Test category:** integration + unit
@@ -933,11 +1105,17 @@ global uniqueness — deterministic tab ids like `table:dbo.Users` repeat across
 switches the visible conversation (BASED-AGENT-TAB-TOOLS).
 
 **Ownership & aliasing:** a user-opened tab *owns* its derived thread. A tab the agent opens
-(`open_query_tab`) instead *aliases* the thread that created it — the tab stores `originThreadId`
+(`show_results`) instead *aliases* the thread that created it — the tab stores `originThreadId`
 (round-tripped through the persisted tab's `meta`), and thread resolution everywhere is
 `originThreadId ?? derived`. Closing a tab deletes a thread only when the tab owns it and no other
 open tab aliases it; "New chat" on an aliased tab detaches it (clears `originThreadId`) rather
 than clearing the shared conversation.
+
+**Reset wins over restore:** discarding a conversation ("New chat", tab close) bumps that thread's
+reset generation (`threadReset`). A history fetch carries the generation it started in, so one
+already in flight — the common case right after launch or a switch to a cold tab, where the DELETE
+and the GET race server-side — is dropped instead of restoring the cleared conversation into the
+view and back into the message cache.
 
 **Endpoints:** `GET /api/agent/threads/:threadId/messages?resourceId=…` returns the thread's
 history as AG-UI messages via `Memory.recall` + a defensive mapper (`mapDbMessagesToAgui`:
@@ -953,6 +1131,7 @@ does not require a live DB connection. `DELETE /api/agent/threads/:threadId` rem
 - The messages GET returns mapped history for a seeded thread and `[]` for an unknown one; after a DELETE, a subsequent GET returns `[]`
 - `mapDbMessagesToAgui` pairs a resolved tool invocation with a synthetic `hist_`-prefixed tool message and skips unknown part types (unit)
 - The client-side thread resolution (`originThreadId ?? derived`) and the owns-and-unaliased close rule are pure and unit-tested
+- A history fetch that began before a thread reset is stale (dropped); one begun after it is fresh, and a reset of one thread never marks another's fetch stale (unit)
 
 ### BASED-SKILL-REGISTRY: Skill registry & prompt catalog
 **Applies to:** based (core)
@@ -981,14 +1160,37 @@ The agent has a `load_skill({ name })` tool returning the skill body; an unknown
 **Applies to:** based (core)
 **Test category:** integration
 
-The agent's system prompt (the shared core + each engine's persona — SQL Server, LanceDB) is
-user-editable and persisted as named instruction sets. A single virtual `"default"` set always
+The agent's system prompt has three layers, and only two of them are user-editable:
+
+| Layer | Source | Editable | Varies by connection |
+|---|---|---|---|
+| core | `GENERIC_CORE` | ✅ | ✖ |
+| **capability briefing** | `mssqlBriefing(caps)` / `lanceBriefing(caps)` | **✖** | **✅** |
+| persona | `MSSQL_PERSONA` / `LANCE_PERSONA` | ✅ | ✖ |
+
+The **briefing** states what this connection *is*: which tools exist, whether it accepts writes, how
+to qualify a table, which SQL dialect (if any). It is generated per variant by `agentSurfaceFor`,
+injected between the core and the persona, and never stored in an instruction set. The **persona**
+states how to behave — voice, policy, output conventions — and is deliberately variant-neutral:
+every line must be true on every variant of its engine.
+
+That split is what makes a custom instruction set safe. Facts are not opinion: a fact forked into a
+fixed string goes stale against the connection, so the agent would confidently describe `run_query`
+on a Cloud connection that has none. Because a persona claims nothing about the connection, forking
+it costs the user nothing — the briefing is injected regardless.
+
+The core + personas are persisted as named instruction sets. A single virtual `"default"` set always
 mirrors the built-in `GENERIC_CORE`/`MSSQL_PERSONA`/`LANCE_PERSONA` constants — it is never persisted
 and can be neither edited nor deleted, so it can't drift from the code. `GET /api/agent/instructions`
 returns the active id plus every set (default first); `POST /api/agent/instructions` creates
 (no `id`) or updates (matching `id`) a custom set; `POST /api/agent/instructions/active` switches the
 active set; `DELETE /api/agent/instructions/:id` removes a custom set. All four reject `id: "default"`
 (create/update/delete) or an unknown id (activate) with a 400.
+
+Every instructions response additionally carries `briefings: {mssql, lancedb}` and
+`briefingIsLive` — the generated half, read-only, so the editor can show what is always injected
+alongside whatever the user writes. It is rendered from the **live** connection's capabilities when
+one is connected and from the representative variant otherwise. It is never accepted on POST.
 
 Which set the **running agent** uses is not the store's own `activeId` — it is the set the active
 AI provider profile links to (`BASED-AI-PROVIDER-PROFILES`). `resolveById(id, engine)` returns a set's
@@ -998,25 +1200,37 @@ resolves (e.g. the linked set was deleted). Instruction sets are thus authored/m
 
 **Acceptance criteria:**
 - Fresh store → `GET` returns exactly one set, `{ id: "default", editable: false, core: GENERIC_CORE, mssqlPersona: MSSQL_PERSONA, lancePersona: LANCE_PERSONA }`
+- Every instructions response (GET, save, activate, delete) carries `briefings` for both engines and `briefingIsLive`; a POST that includes a briefing does not persist it
+- Each engine's persona is byte-identical across every variant of that engine; each engine's briefing differs across its variants
+- No persona mentions `run_query`, `folder.main.table`, `folder`, `take_rows`, or read-only status — those are briefing facts
+- The briefing does carry them: cloud says read-only, local names `run_query`, base-folder names `folder.main.table`, mssql names `run_mutation`
+- A fully custom persona composed via `buildAgent` replaces the built-in persona **and still contains the connection's briefing**
+- `agentInstructions(core, persona)` with no briefing composes core + persona unchanged (previews, tests)
 - `POST` with no `id` creates a custom set (`editable: true`); a subsequent `GET` (after store reopen) still returns it
 - `POST` with a matching `id` updates that set in place rather than duplicating it
 - `POST`/`DELETE` targeting `id: "default"` → 400, no change
 - Activating a set persists across a `GET`; deleting the active custom set falls back `activeId` to `"default"`
 - Activating an unknown id → 400
-- `resolveById(id, engine)` returns that set's `core` + the engine-appropriate persona (`mssqlPersona` for `mssql`, `lancePersona` otherwise); an unresolved `id` returns the `"default"` set's values
+- `resolveById(id, engine)` returns that set's `core` + the engine-appropriate persona (`mssqlPersona` for `mssql`, `lancePersona` otherwise) as plain strings; an unresolved `id` returns the `"default"` set's values
 
 ### BASED-AGENT-INSTRUCTIONS-COMPOSE: Instruction-set override wiring
 **Applies to:** based (core)
 **Test category:** unit
 
 `buildAgent` accepts optional `core`/`persona` overrides; when supplied they replace `GENERIC_CORE`
-and the engine surface's persona in the composed system prompt (`agentInstructions`). Omitting them
-reproduces today's hardcoded per-engine output exactly — a regression guard as this becomes
-settings-driven.
+and the engine surface's persona in the composed system prompt (`agentInstructions`).
+
+There is deliberately **no briefing override**. The capability briefing is always the one
+`agentSurfaceFor` generated for the live connection, so no user customization — and no stale
+persisted set — can leave the agent describing a connection it isn't on
+(BASED-AGENT-INSTRUCTIONS). `agentInstructions(core, persona, skillTags?, briefing?)` takes the
+briefing last and optional, so callers that compose a preview without a live connection don't have
+to fabricate one.
 
 **Acceptance criteria:**
-- `buildAgent` with no `core`/`persona` → instructions equal `agentInstructions(GENERIC_CORE, <engine persona>)` for both `mssql` and `lancedb`
-- `buildAgent` with `core`/`persona` overrides → the built agent's instructions contain the override text and omit the built-in `GENERIC_CORE`/persona text
+- `buildAgent` with no `core`/`persona` → instructions equal `agentInstructions(GENERIC_CORE, <engine persona>, <tags>, <engine briefing>)` for both `mssql` and `lancedb`
+- `buildAgent` with `core`/`persona` overrides → the instructions contain the override text and omit the built-in `GENERIC_CORE`/persona text, **and still contain the connection's briefing**
+- `agentInstructions` called without a briefing composes core + persona unchanged
 
 ### BASED-AGENT-INSTRUCTIONS-UI: Agent instructions editor
 **Applies to:** based (ui)
@@ -1030,7 +1244,12 @@ name, whether it's built-in, how many profiles link to it, and Edit + duplicate 
 Editing takes over the whole Agent tab: while a set (or an AI provider profile) is being edited, the
 profile and instruction-set lists are hidden and the editor is the tab's entire content; Save or
 Cancel returns to the lists. The set editor shows a "Name" field (editable sets only) and three
-collapsible boxes — Core (shared), SQL Server persona, LanceDB persona — open by default. The
+collapsible boxes — Core (shared), SQL Server persona, LanceDB persona — open by default, each
+persona followed by a collapsed, read-only **capability briefing** box for that engine, labelled
+"generated, not editable" (and "this connection" when it was rendered from the live connection
+rather than the representative variant). A short note above them says what belongs where: personas
+set voice and habits, the briefing states what the connection is and is always injected — so the
+user neither restates those facts nor worries about them going stale (BASED-AGENT-INSTRUCTIONS). The
 read-only Default set opens as a viewer (boxes disabled, note explaining why) with a
 "Duplicate to edit" action; row-level duplicate likewise opens the editor on an unsaved editable
 copy. Nothing is persisted until Save (which creates the set for an unsaved copy); Cancel discards
@@ -1045,6 +1264,8 @@ the model.
 - An unsaved copy shows Save but no Delete, and does not appear in the list after a reload unless Save was clicked; Cancel discards it
 - Renaming via the Name field and clicking Save persists the new name (the list shows it after reload)
 - Editing a custom set's boxes and clicking Save persists the change across a reload
+- Each persona box is followed by a collapsed, read-only capability-briefing box for that engine; it has no textarea and cannot be edited
+- With a LanceDB connection open, the LanceDB briefing box is marked "this connection" and its text matches that connection's variant (no `run_query` line on Cloud)
 - The set list is an editing list only (no active-set network call); each row's subtitle reflects how many profiles link to the set
 - A profile's "Instructions" dropdown lists Default + all custom sets and persists the chosen `instructionSetId` on Save; a chat turn's behavior reflects the active profile's linked set
 
@@ -1389,8 +1610,41 @@ The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-ren
 4. Kill the app mid-thread, reopen, same connection → the same tab's prior turns are restored from server memory (per-tab restore — BASED-AGENT-THREADS)
 5. Capi's avatar renders to the left of the prompt textarea at the textarea's full height; clicking the send icon inside the textarea (or pressing Enter) sends the message; the icon dims while streaming
 6. After an answer settles, a subtle wall-clock readout of that turn (send→answer, e.g. `3.1s`) shows at the bottom of the thread; it clears when the next message is sent and is not persisted across reload (front-end only, `performance.now()` bracket around `runAgent`)
+7. Ask something that takes several rounds of tool calls ("exercise every query tool and report what breaks") → with the browser console open, no `Encountered two children with the same key` warning and no `Maximum update depth exceeded`; each narration paragraph and each tool card appears exactly once in the transcript. Message ids are not unique — the Mastra bridge pins every post-tool text segment of a run to one `-agui-text` continuation id — so the rail numbers repeated ids into distinct React keys; without that the reconciler mismatches fibers and replays whole blocks on screen
 
-**Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host. The persona instructs the agent that user-facing SQL results live in tabs (`open_query_tab`), not pasted into chat — BASED-AGENT-TAB-TOOLS.
+**Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host. The persona instructs the agent that user-facing results live in tabs (`show_results`), not pasted into chat — BASED-AGENT-TAB-TOOLS, BASED-AGENT-SHOW-RESULTS.
+
+### BASED-CHAT-TRANSCRIPT-UI: Download the conversation from the chat header
+**Applies to:** based (ui, core)
+**Test category:** manual (endpoint: integration)
+
+The Capi header carries a **Download transcript** `IconButton` (`DownloadIcon`) immediately left of
+New chat, both in one `ml-auto` group. It posts the live `agent.messages` to
+`POST /api/file/save-transcript`, which renders them with `transcriptMarkdown`
+(BASED-AGENT-TRANSCRIPT) and writes them to a path from the native Save As dialog (`filterFor("md")`,
+default name `based-chat-<yyyymmddhhmmss>.md`); cancelling returns `{ path: null }` and writes
+nothing. The active tab's title becomes the document heading. An explicit `path` in the body skips
+the dialog — the same escape hatch as `/api/file/save-sql`, and what makes the route testable. A
+body without a `messages` array is a 400.
+
+The client posts messages and the **server** formats them, rather than the UI building the markdown
+itself: that keeps one transcript format shared with the `save_chat_transcript` tool, so the file
+you get from the button and the file you get by asking Capi are the same document. The button is
+disabled while streaming and when the thread is empty. It exists because the user should not have
+to ask the agent to save their own conversation — and because `agent.messages` already holds the
+reply Mastra has not yet flushed to `agent.db`, which the agent-side tool structurally cannot see.
+
+**Acceptance criteria (endpoint):**
+- POST with `messages`, `title`, and an explicit `path` writes `# <title>` + `## You` / `## Capi` sections at that path and echoes it
+- Tool and system messages in the payload contribute nothing to the file
+- POST without a `messages` array → 400
+
+**Verification procedure (UI):**
+1. Open the Capi rail on a fresh thread → the download button is present and disabled
+2. Ask a question and let it answer → the button enables; it disables again during the next stream
+3. Click it → the native Save As dialog opens with a `based-chat-<timestamp>.md` default name
+4. Cancel → no file is written and no error appears in the rail
+5. Click it again and save → the `.md` contains every turn **including the most recent reply**, with the tab's title as the heading and no tool-call JSON
 
 ### BASED-AGENT-TAB-TOOLS: Tab-aware chat — per-tab threads, workspace tools, results in tabs
 **Applies to:** based (ui)
@@ -1414,17 +1668,21 @@ The chat is tab-scoped and tab-aware:
   id/kind/title/result summaries), `get_tab({ tabId, maxRows? })` (a query tab's SQL, output,
   stats, and serialized result rows — default 50, max 200, cells truncated at 300 chars; table/
   routine tabs return columns/definition; unknown id → `{ error, validTabIds }`), and
-  `open_query_tab({ sql, run?, title? })` — opens a real query tab via the store, `run !== false`
-  awaits completion (15 s race; on timeout reports `status: "running"` while the tab keeps
-  streaming) and returns `{ tabId, title, status, durationMs, resultSets, preview }` (10-row
-  preview). The agent-opened tab records `originThreadId` so its rail shows the conversation that
-  created it (aliasing — BASED-AGENT-THREADS).
+  `show_results({ sql?, table?, where?, run?, title? })` (BASED-AGENT-SHOW-RESULTS) — with `sql` it
+  opens a real query tab via the store, `run !== false` awaits completion (15 s race; on timeout
+  reports `status: "running"` while the tab keeps streaming) and returns
+  `{ tabId, title, status, durationMs, resultSets, preview }` (10-row preview); with `table` it
+  opens that table's pre-filtered Data tab instead. The agent-opened tab records `originThreadId`
+  so its rail shows the conversation that created it (aliasing — BASED-AGENT-THREADS).
+  Their schemas and the capability policy live in `capiToolDefs` (React-, store- and monaco-free,
+  so they are directly assertable); handlers and approval cards compose onto them in `capiTools`.
+  The map is filtered per connection by `capiToolsFor` — see BASED-AGENT-SURFACE-VARIANT.
 
 **Verification procedure (requires a healthy model backend):**
 1. Open two tabs; chat in each → each tab shows its own conversation; switching flips the thread
 2. Restart the app, reconnect → each tab's history is restored; a brand-new tab starts empty
 3. Close a tab → its thread is deleted (reopening the same table starts fresh); New chat clears only the current tab's thread
-4. Ask "show me the customers table" → the agent calls `open_query_tab`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows
+4. Ask "show me the customers table" → the agent calls `show_results`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows
 5. Click the agent-opened tab → the rail still shows the conversation that created it; closing that tab leaves the origin tab's chat intact; New chat on it starts a fresh thread for that tab only
 6. Switch tabs while a run is streaming → a banner names the busy tab; when the run ends the rail follows to the new tab's thread
 7. Ask "what's in my other tab?" → the agent calls `list_tabs`/`get_tab` and answers from the other tab's SQL/results
@@ -1452,18 +1710,21 @@ Settled tool calls (backend tools, which have no bespoke frontend renderer — o
 **Applies to:** based (core, ui)
 **Test category:** integration (CRUD + migration, `specs/based/tests/integration.agent.test.ts`); manual (active-profile switch actually changing which model the agent runs against, needs a live backend)
 
-Users configure one or more named AI provider profiles (`name`, `kind` — openai-compatible/openai/azure-openai/anthropic —, `baseUrl`, `model`, optional `deployment` for Azure, `instructionSetId`, optional API key) CRUD'd via `GET/POST /api/ai-profiles` and `DELETE /api/ai-profiles/:id`, persisted in `ai_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `ai:` prefix — same convention as `BASED-LANCE-EMBED-PROFILES`). Exactly one profile is active at a time, set via `POST /api/ai-profiles/active` and persisted as `activeAiProfileId` in `AppSettings`; the agent resolves and runs against whichever profile is active. Each profile carries an `instructionSetId` linking it to a reusable instruction set (`BASED-AGENT-INSTRUCTIONS`, default `"default"`); the running agent resolves its instructions from the **active profile's** linked set (via `AgentInstructionsStore.resolveById`), so selecting a profile selects both the model and its persona. A link to a set that no longer exists falls back to the `"default"` set at resolve time. On first use, if no profile exists yet, the legacy single `ai_config` row (or its built-in default) is migrated once into a profile named "Default" (linked to `"default"`) and marked active, carrying over its Credential Manager key. Profiles read from the store without a stored `instructionSetId` (legacy rows) default it to `"default"`.
+Users configure one or more named AI provider profiles (`name`, `kind` — openai-compatible/openai/azure-openai/anthropic —, `baseUrl`, `model`, optional `deployment` for Azure, `instructionSetId`, optional API key) CRUD'd via `GET/POST /api/ai-profiles` and `DELETE /api/ai-profiles/:id`, persisted in `ai_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `ai:` prefix — same convention as `BASED-LANCE-EMBED-PROFILES`). Exactly one profile is active at a time, set via `POST /api/ai-profiles/active` and persisted as `activeAiProfileId` in `AppSettings`; the agent resolves and runs against whichever profile is active. Each profile carries an `instructionSetId` linking it to a reusable instruction set (`BASED-AGENT-INSTRUCTIONS`, default `"default"`); the running agent resolves its instructions from the **active profile's** linked set (via `AgentInstructionsStore.resolveById`), so selecting a profile selects both the model and its persona. A link to a set that no longer exists falls back to the `"default"` set at resolve time. A fresh install has zero profiles and no built-in default — the list stays genuinely empty until the user adds one, and invoking the agent with none configured fails cleanly with a "no agent profile configured" error rather than a raw connection error. If a *real* legacy single `ai_config` row exists (pre-profiles installs), it's migrated once on first use into a profile named "Default" (linked to `"default"`) and marked active, carrying over its Credential Manager key. Profiles read from the store without a stored `instructionSetId` (legacy rows) default it to `"default"`.
 
 **Acceptance criteria:**
-- The migrated "Default" profile has `instructionSetId: "default"`
+- A fresh install with no legacy `ai_config` row and no profiles → `GET /api/ai-profiles` returns `[]`
+- A real legacy `ai_config` row migrates into a profile named "Default" with `instructionSetId: "default"`, on first read
+- Invoking the agent (or `label-clusters`) with zero profiles configured → `400` with an error naming the missing configuration, not a raw fetch/connection error
 - A profile saved with an explicit `instructionSetId` persists and round-trips via `GET`
 - A profile saved with no `instructionSetId` reads back as `"default"`
 
 **Verification procedure:**
-1. Settings (gear icon) → Agent tab → see the migrated "Default" profile (or an empty list on a fresh install) → Add a second profile (the form takes over the tab; see `BASED-AGENT-INSTRUCTIONS-UI`) pointing at a different local model, choose its Instructions set → Save returns to the list
+1. Settings (gear icon) → Agent tab → on a fresh install, see an empty list (or the migrated "Default" profile, for an install with pre-existing single-config data) → Add a profile (the form takes over the tab; see `BASED-AGENT-INSTRUCTIONS-UI`) pointing at a local model, choose its Instructions set → Save returns to the list
 2. Click a profile row to mark it active (✓ appears next to its name) → ask Capi something → the request runs against the newly active profile's endpoint using that profile's linked instruction set
 3. Editing a profile with a blank API key field keeps the previously stored key; deleting a non-active profile removes it from the list and Credential Manager; deleting the active profile clears the active selection
 4. Point a profile's Instructions at a custom set, make it active → the agent's behavior reflects that persona; delete that set → the agent falls back to the Default persona instead of erroring
+5. With zero profiles configured, ask Capi something → a clear "No agent profile configured — add one in Settings → Agent." message appears in the chat rail instead of a raw error
 
 ### BASED-AI-PROVIDER-WIRED: Native openai / azure-openai / anthropic providers
 **Applies to:** based (core, ui)
@@ -1588,32 +1849,267 @@ The adapter's `search()` method (BASED-LANCE-SEARCH-UNIFIED) supports three mode
 - Hybrid search returns fused rows with a relevance/score column
 - `where` narrows results on all three modes
 
-### BASED-LANCE-SEARCH-UNIFIED: One search pipeline for vector/keyword/hybrid, with optional rerank and floor/delta filtering
+### BASED-LANCE-SEARCH-UNIFIED: One search pipeline for vector/keyword/hybrid, with optional rerank and score thresholds
 **Applies to:** based (core)
 **Test category:** integration
 
-`DatabaseAdapter.search(params: LanceSearchParams)` is the single entry point for vector/text/hybrid search, replacing three separate methods. Pipeline: resolve `vector` from `query` via the selected embedding profile if needed (vector/hybrid modes) → fetch `sampleSize` native candidates for the chosen mode (prefiltered by `where`) → if a reranker profile is given, call it with the candidate documents and keep its scores as `_rerank_score`; otherwise sort by whichever native score column is present (`_distance` ascending, anything else descending) → apply `floor` (drop results worse than an absolute threshold) and `delta` (drop results trailing the #1 result's score by more than this) against the active score column → truncate to `keepSize`. `EngineCapabilities.search` (replacing the old `vectorSearch`/`fullTextSearch`/`hybridSearch` flags) gates whether an engine exposes this at all.
+`DatabaseAdapter.search(params: LanceSearchParams)` is the single entry point for vector/text/hybrid search, replacing three separate methods. Pipeline: resolve `vector` from `query` via the selected embedding profile if needed (vector/hybrid modes) → fetch `candidatePool` native candidates for the chosen mode (prefiltered by `where`) → if a reranker profile is given, call it with the candidate documents and keep its scores as `_rerank_score`; otherwise sort by whichever native score column is present (`_distance` ascending, anything else descending) → apply `minScore` (drop results scoring worse than a threshold, direction-aware) and `maxScoreGapFromTop` (drop results trailing the #1 result's score by more than this) against the active score column → truncate to `keepSize` (BASED-SEARCH-PARAM-NAMES). `EngineCapabilities.search` (replacing the old `vectorSearch`/`fullTextSearch`/`hybridSearch` flags) gates whether an engine exposes this at all.
 
 **Acceptance criteria:**
-- `search({mode:"vector", vector, sampleSize, keepSize})` returns at most `keepSize` rows sorted by ascending `_distance`
-- `delta` drops rows whose `_distance` exceeds the top result's by more than the given delta
-- `floor` drops rows scoring worse than the given absolute threshold
+- `search({mode:"vector", vector, candidatePool, keepSize})` returns at most `keepSize` rows sorted by ascending `_distance`
+- `maxScoreGapFromTop` drops rows whose `_distance` exceeds the top result's by more than the given gap
+- `minScore` drops rows scoring worse than the threshold — for `_distance`, where lower is better, that means an upper bound
 - A configured reranker profile reorders and truncates results to `keepSize` by `_rerank_score`, independent of the native score order
 - `mssqlAdapter.capabilities.search` is `false`; `lanceAdapter.capabilities.search` is `true`
 
-### BASED-LANCE-AGENT-SURFACE: Per-engine agent tools + persona + skills
+### BASED-LANCE-AGENT-SURFACE: Per-connection agent tools + persona + skills
 **Applies to:** based (core)
 **Test category:** unit + integration
 
-The agent surface is a property of the engine. `agentSurfaceFor(engine, deps)` returns the engine's tools, persona fragment, and skill tags. SQL Server exposes `get_schema`/`sample_rows`/`run_query`; LanceDB exposes `get_schema`/`sample_rows`/`vector_search`/`text_search`/`hybrid_search` — each a thin wrapper over the adapter's unified `search()`, additionally accepting `sampleSize`, `where`, `embeddingProfileId`, `rerankerProfileId`, `floor`, and `delta` — plus its own `run_query` for read-only DuckDB SQL on local connections (BASED-LANCE-AGENT-SQL). The system prompt is a generic core + the engine persona + the engine-filtered skill catalog. `buildAgent` selects the surface by the session connection's engine.
+The agent surface is a property of the **connection**, not just the engine.
+`agentSurfaceFor(capabilities, deps)` takes the live adapter's `EngineCapabilities` — the only thing
+that distinguishes cloud from local from base-folder — and returns the tools, persona fragment, and
+skill tags for that connection. `buildAgent` passes `requireAdapter(sid).capabilities`; callers with
+no live adapter use `defaultCapabilitiesFor(engine)`.
+
+Two rules govern the surface, and they pull in opposite directions on purpose (see
+BASED-AGENT-SURFACE-VARIANT for the variant matrix):
+
+1. **Names are stable.** `read_table`, `count_rows`, `describe_table`, `list_objects`,
+   `get_indexes`, `run_query`, `export_data`, `get_connection_info` carry the same name on every
+   engine. A chat thread stays coherent when the user switches connections mid-conversation, and the
+   model never learns three names for one concept.
+2. **Availability and parameters vary, and absence is total.** A capability the connection lacks
+   means the tool or parameter is omitted from the schema, never present-and-refusing.
+
+Engine-specific tools remain: LanceDB adds `vector_search`/`text_search`/`hybrid_search` (thin
+wrappers over the adapter's unified `search()`) plus `list_search_profiles` and `take_rows`.
+
+`agentSurfaceFor` returns `{tools, briefing, persona, skillTags}`. The system prompt composes as
+core + **briefing** (generated, not editable) + persona (editable) + the engine-filtered skill
+catalog — see BASED-AGENT-INSTRUCTIONS for why those last two are separate.
 
 **Acceptance criteria:**
-- The MSSQL surface contains `run_query` and no `vector_search`; the LanceDB surface contains `vector_search`/`text_search`/`hybrid_search` (and its own `run_query` — BASED-LANCE-AGENT-SQL) but no `run_mutation` — the two toolsets do not match
+- Every variant's surface contains `get_connection_info`, `list_objects`, `describe_table`,
+  `read_table`, `count_rows`, `get_indexes`, `export_data`, `load_skill`
+- The MSSQL surface has no `vector_search`, no `list_search_profiles`, no `take_rows`; the LanceDB
+  surfaces have all three
+- No variant's backend surface contains `run_mutation`
 - The LanceDB surface carries `skillTags: ["lancedb"]`; `lance-search` appears only in a LanceDB catalog
 - The `vector_search` tool runs end-to-end against a live LanceDB table
-- The three tools accept `embeddingProfileId`/`rerankerProfileId`/`floor`/`delta` and pass them through to `search()`
-- Both engine surfaces additionally contain `read_rows` (BASED-AGENT-READ-ROWS), `export_data` (BASED-AGENT-EXPORT), and `script_object` (BASED-SCRIPT-OBJECT); the vector/hybrid search tools carry the tuning knobs of BASED-LANCE-SEARCH-KNOBS
-- The LanceDB surface also contains `list_search_profiles` (BASED-LANCE-PROFILE-DISCOVERY); the MSSQL surface does not
+- The search tools accept `embeddingProfileId`/`rerankerProfileId`/`minScore`/`maxScoreGapFromTop`/
+  `candidatePool`/`vectorColumn` and pass them through to `search()`; the vector/hybrid tools carry
+  the tuning knobs of BASED-LANCE-SEARCH-KNOBS under one nested `tuning` object
+
+### BASED-AGENT-SURFACE-VARIANT: Tools, parameters, and prose generated from capabilities
+**Applies to:** based (core, ui)
+**Test category:** unit
+
+`EngineCapabilities` gains everything needed to *generate* the surface rather than describe it in
+prose the model must evaluate against a variant it cannot see: `engine`, `variant`
+(`mssql` | `lancedb-local` | `lancedb-basefolder` | `lancedb-cloud`), `containers` (base-folder
+names), `wherePredicate`, `structuredFilters`, `countRows`, `takeByKey`, `indexIntrospect`. It rides
+`/api/session/state` and `/api/session/connect` like the rest of BASED-CAPABILITIES-WIRE.
+
+Every tool description and **capability-briefing** line is generated from that object and must be
+**unconditionally true for the connection it was generated for** — no "on local connections…", and
+no naming a tool the surface lacks (naming it is itself a suggestion). The briefing is the half of
+the prompt that adapts; the persona beside it is fixed and variant-neutral, which is what keeps a
+user's custom persona from going stale (BASED-AGENT-INSTRUCTIONS). The `schema` parameter, which
+meant either a SQL schema or a base-folder name depending on engine, splits: mssql tools take
+`schema`, base-folder connections take `folder` (whose description lists the real folder names), and
+the other two LanceDB variants take neither.
+
+The **frontend** tool map is filtered the same way (`capiToolsFor`): `run_mutation` and `import_csv`
+are dropped when `!capabilities.write`. This half was previously unfiltered, and the backend surface
+test asserting `not.toContain("run_mutation")` passed while the model was being handed it on every
+connection — a test covering half a surface is not covering the surface.
+
+**Acceptance criteria:**
+- `run_query` is absent on `lancedb-cloud` and present on the other three variants
+- `folder` is a parameter only on `lancedb-basefolder`, on the shared tools *and* the search tools
+  (a table name present in two folders was previously unreachable, with no way to disambiguate)
+- `read_table` exposes `orderBy`/`filters` only where `structuredFilters`, `where` only where
+  `wherePredicate`, and never both
+- `export_data` exposes a `sql` source only where `caps.sql`
+- The shared tool names are identical across engines (no per-engine aliases)
+- No briefing, persona, or tool description names a tool absent from its own surface, for any variant
+- Only a base-folder session's briefing mentions `folder.main.table`, and it names the real folders
+- The frontend map drops `run_mutation`/`import_csv` when `!write` and keeps them when `write`
+
+### BASED-AGENT-CAPABILITY-DISCOVERY: `get_connection_info` tool
+**Applies to:** based (core)
+**Test category:** unit
+
+A shared `get_connection_info()` tool reports what the connection is and what it can do: engine,
+variant, read-only status, each capability flag, which filtering style applies, the folder namespace
+and its qualification rule, the row caps, and the connection's default embedding/reranker profiles
+with the embedding dimension. On search-capable connections it also states the search pipeline order.
+
+Without it the agent could only infer its column of the capability matrix from the *shape* of other
+tools' output, which meant discovering a limit by hitting it: offering a fix on a read-only
+connection, or reaching for SQL on Cloud.
+
+**Acceptance criteria:**
+- Present on every variant
+- Reports `variant`, `readOnly`, and the capability flags matching the live adapter
+- Reports the base folders on a base-folder connection and `null` elsewhere
+- Reports the default embedding profile's model and dimension when one is configured
+
+### BASED-INDEX-INTROSPECT: Index metadata on every engine that has it
+**Applies to:** based (core, ui)
+**Test category:** integration + manual
+
+`DatabaseAdapter.getIndexes?(schema, table)` returns `TableIndex[]` wherever
+`capabilities.indexIntrospect` is set, surfaced by `GET /api/session/indexes` — deliberately **not**
+gated on `capabilities.script` the way `/table-details` is, because LanceDB has no DDL to script but
+very much has indexes. `TableIndex` gains optional vector-engine fields: `distanceType`,
+`numIndexedRows`, `numUnindexedRows`, `numIndices`.
+
+On LanceDB these come from `listIndices()` + `indexStats()` — the same round-trip `vectorMetricsFor`
+already made for BASED-LANCE-VECTOR-METRIC and from which everything except `distanceType` was
+discarded. The cache is now keyed on the whole `TableIndex[]`, so the per-column metric lookup and
+the index panel share one memoized call. On SQL Server the index recordset inside `getTableDetails`
+is extracted into a shared query + assembler, so the Details panel and the standalone route can never
+disagree.
+
+The agent gets a `get_indexes` tool. This is what makes "IVF or HNSW?" a lookup instead of a guess:
+`nprobes` only applies to an IVF index and `ef` only to HNSW, so without it the agent sets both and
+concludes the knob does nothing. An empty result is reported explicitly, with what it means —
+`text_search`/`hybrid_search` cannot run at all without a full-text index — and a non-zero
+`numUnindexedRows` is surfaced as a warning, being the usual explanation for "search got slow" or
+"search can't find a row I just added".
+
+The Details tab renders the panel for **both** engines (it previously lived inside the mssql-only
+`DetailSections`), with vector columns shown when the engine is search-capable, and renders
+"no indexes" explicitly rather than hiding the section.
+
+**Acceptance criteria:**
+- `getIndexes` reports the seeded FTS index's type and row coverage on a live LanceDB table
+- A table with no indexes returns `[]`, not an error
+- A second call for the same table is served from the memoized result
+- `get_indexes` returns a note explaining the search consequence when the list is empty
+- `GET /api/session/indexes` answers 200 on LanceDB (an engine with `script: false`)
+- mssql `getIndexes` matches the `indexes` array inside `getTableDetails` for the same table
+
+**Verification procedure (UI):**
+1. Open a LanceDB table → Details → the Indexes panel lists type / metric / indexed / unindexed
+2. A table with no index shows the explicit "None." line naming the search consequence
+3. Open a SQL Server table → Details → the existing Indexes section is unchanged
+4. Both show the exact row count in the header next to the column count
+
+### BASED-LANCE-SCAN: Filtered scan, counting, and take-by-key
+**Applies to:** based (core, ui)
+**Test category:** integration
+
+`readTablePage` accepts a `where` predicate on engines with `capabilities.wherePredicate`;
+`countRows(schema, table, {where|filters})` and `takeRows(schema, table, {keyColumn, keys, columns})`
+join the adapter interface, surfaced as the `count_rows` and `take_rows` agent tools and the
+`/api/session/row-count` route.
+
+This closes the sharpest gap on a LanceDB Cloud connection: with no SQL and no structured filters,
+"show me rows where source = 'discord'" had no path except abusing `vector_search` with a throwaway
+query — which returns ANN-ordered results, not the rows. `hasMore` also told the agent nothing about
+scale, so it could not choose between paging and aggregating or tell the user how large an answer was.
+
+`take_rows` escapes its key literals server-side rather than having the agent write them into a
+`where`. Lance predicates are DataFusion-flavoured: a double-quoted name parses as a **string
+literal**, not an identifier, so the key column goes bare when it is a plain name and backtick-quoted
+otherwise.
+
+**Acceptance criteria:**
+- `readTablePage` with `where` returns the matching rows in table order
+- `countRows` returns the table total and honours the same predicate
+- `takeRows` fetches by key; a quote inside a string key is data, never syntax
+- An unknown key column is rejected by name; an empty key list is a no-op, not a full scan
+- `GET /api/session/row-count` and `table-data?where=` honour the predicate over HTTP
+
+### BASED-LANCE-VECTOR-COLUMN: Targeting one of several embeddings
+**Applies to:** based (core, ui)
+**Test category:** integration
+
+`LanceSearchRequest.vectorColumn` selects which vector column a vector/hybrid search runs against,
+applied via the SDK's `.column()`. Without it LanceDB picks a column itself, so a table with two
+embeddings was only reachable through whichever one it happened to pick. The dimension guard
+(BASED-LANCE-EMBED-DIM-GUARD) checks the **named** column when one is given — otherwise a query
+vector sized for one embedding passes because the other column happens to match. The Data tab's
+search controls show a column picker when a table has more than one vector column.
+
+**Acceptance criteria:**
+- Naming a vector column searches that column (its own nearest neighbour ranks first)
+- A vector sized for a different column fails against the named column's dimension
+- Naming a non-vector column fails by name, listing the real vector columns
+
+### BASED-LANCE-EMBED-DIM: Embedding profiles learn their own dimension
+**Applies to:** based (core)
+**Test category:** integration
+
+`EmbeddingProfile` gains an optional `dimension`, back-filled from the first successful embed:
+`resolveEmbeddingProfile` wires an `onDimension` callback that `embedQuery` invokes with the real
+output size, and `EmbeddingProfileStore.recordDimension` persists it (idempotent, never throwing — a
+failed metadata write must not fail a search). `list_search_profiles` reports it.
+
+Before this the agent had to reason across two tools plus knowledge of model dimensions to avoid a
+mismatch: `list_search_profiles` gave the model name, `describe_table` gave the column dimension.
+The runtime guard (BASED-LANCE-EMBED-DIM-GUARD) remains the backstop — it catches the mismatch this
+lets the agent avoid, and a same-dimension mismatch between different models still cannot be caught
+by any check.
+
+**Acceptance criteria:**
+- A profile used for a search reports its dimension on the next `list_search_profiles`
+- A profile never used reports `dimension: null` rather than a guess
+
+### BASED-SEARCH-PARAM-NAMES: Search parameters named for what they do
+**Applies to:** based (core, ui)
+**Test category:** unit + integration
+
+`sampleSize` → `candidatePool`, `floor` → `minScore`, `delta` → `maxScoreGapFromTop`, everywhere:
+wire type, adapter, server route, agent tools, UI controls, skill, tests. A breaking change to
+`/api/session/lance-search`.
+
+The old names misdescribed the behaviour rather than the behaviour being wrong. `sampleSize` reads as
+row sampling — with `sample_rows` two tools away — but means a candidate over-fetch pool. `floor`
+reads as a lower bound while, for `_distance` where lower is better, it correctly functions as an
+upper one; the filtering was always direction-aware, so the parameter was used backwards by anyone
+who trusted its name. The vector tuning knobs additionally move under one nested `tuning` object:
+Mastra's OpenAI schema-compat layer marks every top-level property required with
+`anyOf: [..., null]` (it matches on `provider.includes("openai")`, which the default
+`openai-compatible` provider satisfies), and a model under that pressure fills plausible values
+rather than nulls — so eight flat knobs produced eight spurious values on tables with no index.
+
+Every search tool states the pipeline order verbatim:
+`probe (nprobes/ef) → prefilter (where, unless postfilter) → candidatePool → rerank (rerankTopN) →
+threshold (minScore/maxScoreGapFromTop) → k`, with `k` clamped to `candidatePool`.
+
+**Acceptance criteria:**
+- The search tools offer `candidatePool`/`minScore`/`maxScoreGapFromTop` and none of the old names
+- The tuning knobs are absent from the top level and present under `tuning`; `text_search` has no
+  `tuning` object at all
+- Filtering behaviour is unchanged by the rename (same rows kept for the same thresholds)
+
+### BASED-AGENT-SHOW-RESULTS: `show_results` on every connection
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+The frontend `open_query_tab` becomes `show_results`, present on every variant and dispatching on
+capability: with `sql` it opens a query tab and runs it; with `table` (and optional `where`) it opens
+that table's Data tab through `openTableTabWithQuery`, pre-filtered, with the predicate shown as a
+clearable chip so a filtered grid never looks like the whole table.
+
+It must not simply disappear on SQL-less connections. Dropping it there would strip the "rows land in
+a real grid, don't paste them into chat" norm from `GENERIC_CORE` exactly where the agent also cannot
+aggregate — every Cloud answer would degrade to rows in chat.
+
+**Acceptance criteria:**
+- Present on both a writable SQL connection and a read-only SQL-less one
+- Accepts both a `sql` source and a `table`+`where` source; neither is required
+- `open_query_tab` no longer exists
+
+**Verification procedure:**
+1. On a LanceDB Cloud connection ask "show me rows where source = 'discord'" → the rows land in a
+   Data-tab grid with a `where …` chip, not in chat
+2. Clear the chip → the unfiltered page returns
+3. On a SQL connection the same request still opens and runs a query tab
 
 ### BASED-LANCE-UI: Engine selector, vector display, read-only browse, SQL gating
 **Applies to:** based (ui)
@@ -1631,12 +2127,13 @@ The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB s
 **Applies to:** based (core, ui)
 **Test category:** manual
 
-`GET /api/session/state` and `POST /api/session/connect`'s responses both carry `capabilities: EngineCapabilities | null` (the live adapter's `{sql, search, write, orderedBrowse}` — see BASED-TABLE-ORDERBY for `orderedBrowse` — or `null` when disconnected). The frontend store keeps a `capabilities` field set from every connect response and resets it to `null` on disconnect; `TableDetailsView`'s SQL-tab gate, `TableDataGrid`'s Browse/Search toggle, `TabStrip`'s "+" new-query button, and the store's `newQueryTab` guard all read it instead of hand-rolling `engineOf(conn) === "mssql"`. (Capabilities may be **dynamic per config**: the Lance adapter reports `sql: true` locally and `false` on Cloud.)
+`GET /api/session/state` and `POST /api/session/connect`'s responses both carry `capabilities: EngineCapabilities | null` — the live adapter's full capability object, or `null` when disconnected. Alongside `{sql, search, write, orderedBrowse, script, relations}` it carries the fields BASED-AGENT-SURFACE-VARIANT generates the agent surface from (`engine`, `variant`, `containers`, `wherePredicate`, `structuredFilters`, `countRows`, `takeByKey`, `indexIntrospect`), so the UI, the server routes, and the agent all gate on one object rather than three parallel notions of what an engine can do. The frontend store keeps a `capabilities` field set from every connect response and resets it to `null` on disconnect; `TableDetailsView`'s SQL-tab gate and index panel, `TableDataGrid`'s Browse/Search toggle, `TabStrip`'s "+" new-query button, the store's `newQueryTab` guard and its index/row-count fetches, and the frontend agent tool map (`capiToolsFor`) all read it instead of hand-rolling `engineOf(conn) === "mssql"`. (Capabilities may be **dynamic per config**: the Lance adapter reports `sql: true` locally and `false` on Cloud.)
 
 **Verification procedure:**
 1. Connect to a SQL Server connection → the SQL tab is visible, no Search toggle appears in the Data tab
 2. Connect to a LanceDB Cloud connection → the SQL tab is hidden, a Browse/Search toggle appears in the Data tab; a local LanceDB connection shows both
 3. Disconnect → reconnecting to either engine re-derives the gating correctly (no stale capabilities from the prior connection)
+4. On a read-only connection, ask the agent to change a row → it says the connection is read-only without proposing a mutation card (BASED-AGENT-SURFACE-VARIANT)
 
 ### BASED-LANCE-EMBED-PROFILES: Named, user-configured embedding profiles
 **Applies to:** based (core, ui)
@@ -1671,7 +2168,7 @@ A LanceDB connection carries an optional default embedding profile and default r
 
 Resolution, in both the agent tools and `POST /api/session/lance-search`, is: explicit id from the caller → the connected connection's default → none. The connection is re-read per call, so editing it applies without reconnecting and a mid-session connection switch never carries the previous default over. The two ids fail differently on purpose: an explicit unknown id throws `Unknown embedding profile: <id>` (a caller naming something that doesn't exist, usually the model), while a **dangling** default resolves to no profile so the caller gets the actionable "configure one" guidance. Deleting a profile sweeps it off every connection that named it (`ConnectionStore.clearSearchProfileRefs`).
 
-The embedding default is applied automatically; the reranker default is **not** applied to an agent search — on the `openai` api it costs one chat completion per candidate (up to `sampleSize` per search), so the agent must pass `rerankerProfileId` explicitly (it learns the id from BASED-LANCE-PROFILE-DISCOVERY). The Data tab seeds both of its pickers from the connection's defaults, so an absent id on the route means the user chose "None" and is honored; that panel never re-seeds once the user has touched either dropdown.
+The embedding default is applied automatically; the reranker default is **not** applied to an agent search — on the `openai` api it costs one chat completion per candidate (up to `candidatePool` per search), so the agent must pass `rerankerProfileId` explicitly (it learns the id from BASED-LANCE-PROFILE-DISCOVERY). The Data tab seeds both of its pickers from the connection's defaults, so an absent id on the route means the user chose "None" and is honored; that panel never re-seeds once the user has touched either dropdown.
 
 **Acceptance criteria:**
 - Agent `vector_search` with `query` and no `embeddingProfileId`, connection default set → results ranked by that profile's embedding
@@ -1774,6 +2271,11 @@ connection's lifetime (cleared on `disconnect()`) — `getTableColumns` runs on 
 search, and index metadata doesn't churn mid-session. Any introspection failure degrades to
 `null`, never an error.
 
+Since BASED-INDEX-INTROSPECT the memoized value is the full `TableIndex[]` rather than a
+column→metric map: the same round-trip already fetched `indexType`, `numIndexedRows`, and
+`numUnindexedRows` and discarded them. The metric here is derived from that shared cache, so the
+per-column lookup and the index panel cost one call between them.
+
 **Acceptance criteria:**
 - An indexed vector column reports the index's metric; unindexed columns report `null` *(test creates a small IVF index; self-skips if index training fails on the small fixture)*
 - A second `getTableColumns` call for the same table does not re-run the index introspection (memoized)
@@ -1782,13 +2284,13 @@ search, and index metadata doesn't churn mid-session. Any introspection failure 
 **Applies to:** based (ui)
 **Test category:** manual
 
-For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab's toolbar gains a Browse/Search toggle. Search mode replaces the browse toolbar with: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `sampleSize`/`keepSize`/`floor`/`delta` number inputs, a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
+For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab's toolbar gains a Browse/Search toggle. Search mode replaces the browse toolbar with: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
 
 **Verification procedure:**
 1. Open a LanceDB table's Data tab → click Search → the browse toolbar is replaced by search controls
 2. Pick vector mode, enter a query, pick an embedding profile, Run → results render in the grid, read-only
 3. Switch to Browse → the original paginated rows reappear unaffected
-4. Set `floor`/`delta`/`sampleSize`/`keepSize` and rerun → the result count and order change accordingly
+4. Set `min score`/`max gap`/`pool`/`keep` and rerun → the result count and order change accordingly
 
 ### BASED-LANCE-SEARCH-PROFILES-UI: Search tab in the settings popover
 **Applies to:** based (ui)
@@ -1985,13 +2487,13 @@ The UI keeps plain `monaco-editor` (no monaco-languageclient/@codingame migratio
 **Applies to:** based (core)
 **Test category:** integration
 
-The LanceDB agent surface gains `run_query`: read-only DuckDB SQL over the attached Lance tables, gated by `isReadOnly` and, at execute time, by `capabilities.sql` (cloud sessions get a graceful error pointing at the search tools). Reuses the engine-agnostic `collectQuery` with `AGENT_ROW_CAP`; reads are audited. `LANCE_PERSONA` explains the DuckDB dialect, `folder.main.table` qualification, and that search tools remain the primary path. `run_mutation` still does not exist for Lance (`capabilities.write` false). The shared `get_schema` tool's default-schema fallback keys off the **engine** (`"dbo"` only for mssql), not `capabilities.sql`.
+The LanceDB agent surface gains `run_query`: read-only DuckDB SQL over the attached Lance tables, gated by `isReadOnly` and, at execute time, by `capabilities.sql` (cloud sessions get a graceful error pointing at the search tools). Reuses the engine-agnostic `collectQuery` with `AGENT_ROW_CAP`; reads are audited. The generated persona explains the DuckDB dialect and that search tools remain the primary path, and mentions `folder.main.table` qualification only on a base-folder connection; on a Cloud connection `run_query` is absent from the surface entirely rather than error-gated (BASED-AGENT-SURFACE-VARIANT). `run_mutation` still does not exist for Lance (`capabilities.write` false). The shared tools' default-namespace fallback keys off the **engine** (`"dbo"` only for mssql), not `capabilities.sql`.
 
 **Acceptance criteria:**
 - The Lance surface contains `run_query` and no `run_mutation`
 - `run_query` executes a SELECT against a live seeded table and returns result sets; a mutating statement is refused
 - Reads appear in the audit log
-- `get_schema` with a bare table name on a base-folder connection searches subfolders (never guesses `dbo`)
+- `describe_table` with a bare table name on a base-folder connection searches subfolders (never guesses `dbo`), and accepts an explicit `folder` to disambiguate
 
 ## Embeddings visualization — the Atlas view (Phase 5)
 

@@ -708,6 +708,25 @@ function InstructionsField({
   );
 }
 
+/** Traces: BASED-AGENT-INSTRUCTIONS — the generated half of the prompt, shown read-only next to the
+ *  persona it is injected with. Without it the split is invisible: the user sees a persona that says
+ *  nothing about which tools exist and has no way to know that a connection-aware briefing is
+ *  already handling it, so they'd write those facts back in by hand — and pin them to whichever
+ *  connection they had in mind. */
+function BriefingField({ label, value, live }: { label: string; value: string; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="rounded border border-line-soft bg-ink-950/40" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer select-none px-2 py-1 text-faint">
+        {label} <span className="text-[length:var(--fs-xs)]">· generated, not editable{live ? " · this connection" : ""}</span>
+      </summary>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap border-t border-line-soft px-2 py-1 text-[length:var(--fs-sm)] text-muted">
+        {value}
+      </pre>
+    </details>
+  );
+}
+
 /** Sentinel id for a duplicated-but-not-yet-saved set: it lives only in the editor's `draft` until
  *  Save POSTs it (the id is stripped from the POST), so Cancel simply discards it. Server ids are
  *  UUIDs (or the reserved "default"), so this can't collide. */
@@ -747,12 +766,16 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
   const [draft, setDraft] = useState<InstructionSet | null>(null);
   const [isNew, setIsNew] = useState(!!duplicate);
   const [busy, setBusy] = useState(false);
+  const [briefings, setBriefings] = useState<{ mssql: string; lancedb: string } | null>(null);
+  const [liveEngine, setLiveEngine] = useState<string | null>(null);
 
   useEffect(() => {
     void getAgentInstructions().then((c) => {
       const source = c.sets.find((s) => s.id === id);
       if (!source) return onClose();
       setDraft(duplicate ? { ...source, id: NEW_SET_ID, name: `${source.name} copy`, editable: true } : source);
+      setBriefings(c.briefings ?? null);
+      setLiveEngine(c.briefingIsLive ?? null);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once for the id this editor opened with
   }, []);
@@ -809,9 +832,16 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
           />
         </label>
       )}
+      <p className="text-faint">
+        A persona sets the agent's voice and working habits. What the connection <em>is</em> — which tools exist, whether it
+        accepts writes, how to qualify a table — is generated per connection and always injected alongside whatever you
+        write here, so don't restate it (and don't worry about it going stale).
+      </p>
       <InstructionsField label="Core (shared)" value={draft.core} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, core: v })} />
       <InstructionsField label="SQL Server persona" value={draft.mssqlPersona} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, mssqlPersona: v })} />
+      {briefings && <BriefingField label="SQL Server capability briefing" value={briefings.mssql} live={liveEngine === "mssql"} />}
       <InstructionsField label="LanceDB persona" value={draft.lancePersona} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, lancePersona: v })} />
+      {briefings && <BriefingField label="LanceDB capability briefing" value={briefings.lancedb} live={liveEngine === "lancedb"} />}
       <div className="flex items-center gap-2 pt-1">
         {!readOnly && !isNew && (
           <button className={btnDanger} onClick={() => void remove()} disabled={busy}>

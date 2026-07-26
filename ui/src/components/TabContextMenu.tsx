@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore, visibleTabs } from "../store";
 
 const MENU_WIDTH = 220;
@@ -12,7 +12,11 @@ interface Props {
 
 export function TabContextMenu({ tabId, x, y, onClose }: Props) {
   const closeTabs = useStore((s) => s.closeTabs);
-  const visible = useStore(visibleTabs);
+  // Subscribe to the stable `tabs` array, not `visibleTabs` — that selector allocates a new array
+  // per call and zustand v5 compares snapshots with Object.is, so selecting it directly re-renders
+  // forever ("Maximum update depth exceeded").
+  const tabs = useStore((s) => s.tabs);
+  const visible = useMemo(() => visibleTabs({ tabs }), [tabs]);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: y, left: x });
 

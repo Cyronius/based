@@ -4,7 +4,8 @@ Plan: [.claude/plans/feasibility-and-architecture.md](../../.claude/plans/feasib
 Spike code: deleted after Phase 1 started; results below are the retained record.
 
 Environment: Windows 11 Pro, system Bun 1.3.14, Node v24.9.0, az CLI 2.80.0.
-Test DB: `zl5qolt7t8.database.windows.net` / `learnermobile_db_ci` (read-only queries only).
+Test DB: a private Azure SQL database (read-only queries only), supplied via `BASED_TEST_SERVER` /
+`BASED_TEST_DB` — see [docs/development.md](../../docs/development.md).
 
 | # | Spike | Verdict | Date |
 |---|-------|---------|------|

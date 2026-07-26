@@ -10,5 +10,7 @@ export async function embedQuery(profile: ResolvedEmbeddingProfile, text: string
   const key = profile.apiKey && profile.apiKey.length > 0 ? profile.apiKey : "not-needed";
   const provider = createOpenAICompatible({ name: "based-embed", baseURL: profile.baseUrl, apiKey: key });
   const { embedding } = await embed({ model: provider.embeddingModel(profile.model), value: text });
+  // Traces: BASED-LANCE-EMBED-DIM — the only place a profile's real output size is ever observed.
+  profile.onDimension?.(embedding.length);
   return embedding;
 }

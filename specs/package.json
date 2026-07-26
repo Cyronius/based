@@ -1,6 +1,7 @@
 {
   "name": "@based/specs",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "test": "bun test ."
@@ -11,6 +12,7 @@
   },
   "devDependencies": {
     "@lancedb/lancedb": "^0.24.0",
-    "@types/bun": "^1.2.0"
+    "@types/bun": "^1.2.0",
+    "ai": "^7.0.34"
   }
 }

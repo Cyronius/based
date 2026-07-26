@@ -1,12 +1,13 @@
 // Traces: BASED-API-AUTH, BASED-HISTORY, BASED-CONN-TEST (endpoint), BASED-SECRET-STORE (delete via API),
 //         BASED-TABLE-COMMIT (endpoint + history row), BASED-UI-SESSION-RESUME (session-lost signal)
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, getSecret, testConnection } from "@based/core";
+import { startServer, getSecret } from "@based/core";
 import { MssqlAdapter } from "@based/core/mssql";
 import type { ConnectionInput, ConnectionConfig } from "@based/core";
+import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const TOKEN = "spec-token";
 const server = startServer({ token: TOKEN, dbPath: join(mkdtempSync(join(tmpdir(), "based-spec-srv-")), "app.db") });
@@ -117,6 +118,37 @@ describe("BASED-FILE-OPEN-SQL: open .sql file content", () => {
     expect(body.error).toContain("nope.sql");
   });
 
+  // Traces: BASED-CHAT-TRANSCRIPT-UI — explicit-path mode (the Save As dialog path is manual).
+  // The server, not the client, renders the markdown; that is what keeps the button's output
+  // identical to the save_chat_transcript tool's.
+  test("save-transcript renders the posted messages as markdown at the given path", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "based-spec-chat-")), "chat.md");
+    const messages = [
+      { id: "1", role: "user", content: "how many orders?" },
+      { id: "2", role: "assistant", toolCalls: [{ id: "t1", type: "function", function: { name: "run_query", arguments: "{}" } }] },
+      { id: "3", role: "tool", toolCallId: "t1", content: '{"rowCount":1204}' },
+      { id: "4", role: "assistant", content: "1,204 orders." },
+    ];
+    const saved = (await (
+      await api("/api/file/save-transcript", { method: "POST", body: JSON.stringify({ messages, title: "Orders", path }) })
+    ).json()) as { path: string | null };
+    expect(saved.path).toBe(path);
+
+    const written = await Bun.file(path).text();
+    expect(written.startsWith("# Orders\n")).toBe(true);
+    expect(written).toContain("## You\n\nhow many orders?");
+    expect(written).toContain("## Capi\n\n1,204 orders.");
+    // Prose only: the tool call and its result are not part of the document.
+    expect(written).not.toContain("run_query");
+    expect(written).not.toContain("rowCount");
+    expect(written.match(/^## .+$/gm)).toEqual(["## You", "## Capi"]);
+  });
+
+  test("save-transcript without a messages array is a 400", async () => {
+    const res = await api("/api/file/save-transcript", { method: "POST", body: JSON.stringify({ title: "nope" }) });
+    expect(res.status).toBe(400);
+  });
+
   test("UTF-8 BOM is stripped", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "based-spec-sql-")), "bom.sql");
     await Bun.write(path, "\uFEFFSELECT 1;");
@@ -136,20 +168,9 @@ describe("BASED-FILE-OPEN-SQL: open .sql file content", () => {
 });
 
 // --- history requires a live DB session; self-skips like integration.mssql ---
-const devCfg: ConnectionConfig = {
-  id: "spec-srv-dev",
-  name: "spec-srv-dev",
-  server: process.env.BASED_TEST_SERVER ?? "zl5qolt7t8.database.windows.net",
-  database: process.env.BASED_TEST_DB ?? "learnermobile_db_ci",
-  authType: "azure-cli",
-  encrypt: true,
-  trustServerCertificate: false,
-  createdAt: "",
-  updatedAt: "",
-};
-const probe = await testConnection(devCfg, () => null);
-const d = probe.ok ? describe : describe.skip;
-if (!probe.ok) console.warn(`[integration.server] dev DB unavailable, skipping history-over-API: ${probe.error}`);
+const devCfg: ConnectionConfig = devConnection("spec-srv-dev");
+const d = DEV_DB_AVAILABLE ? describe : describe.skip;
+if (!DEV_DB_AVAILABLE) warnDevDbSkip("integration.server", "history-over-API");
 
 d("BASED-HISTORY: query history via API", () => {
   test("ok and error executions are recorded most-recent-first", async () => {
@@ -190,7 +211,7 @@ d("BASED-HISTORY: query history via API", () => {
 
 // --- table-edit endpoint: needs CREATE/DROP TABLE; probes once and self-skips otherwise ---
 let canWrite = false;
-if (probe.ok) {
+if (DEV_DB_AVAILABLE) {
   const a = new MssqlAdapter(devCfg, () => null);
   const name = `based_spec_srv_probe_${Date.now()}`;
   try {
@@ -536,6 +557,113 @@ describe("BASED-LANCE-CONN-DEFAULT-PROFILES: lance-search route honors the conne
       await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
     }
   }, 120_000);
+});
+
+// Traces: BASED-AGENT-MUTATION-GATE, BASED-INDEX-INTROSPECT, BASED-LANCE-SCAN, BASED-CAPABILITIES-WIRE
+// The server-side gates and the two new read routes, against a real read-only LanceDB connection.
+//
+// The mutation gate is the one that mattered: /api/agent/mutation was the ONLY write path with no
+// capabilities.write check — CSV import and grid edit both had one. So on a LOCAL LanceDB connection
+// an approved mutation went straight into the DuckDB/Lance bridge; only cloud was saved, and only by
+// accident (execute emits an error chunk there). "Read-only" was being enforced by the frontend
+// simply not offering the tool — except it offered it unconditionally.
+describe("BASED-AGENT-MUTATION-GATE: writes are refused on a read-only connection", () => {
+  const SID = "lance-gate";
+  let connectionId = "";
+
+  beforeAll(async () => {
+    const lancedb = await import("@lancedb/lancedb");
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-gate-"));
+    const ldb = await lancedb.connect(dir);
+    await ldb.createTable(
+      "docs",
+      Array.from({ length: 12 }, (_, i) => ({ id: i, text: `document ${i}` })),
+      { mode: "overwrite" },
+    );
+    const conn = (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "srv-lance-gate",
+          server: "",
+          database: "lancedb",
+          engine: "lancedb",
+          authType: "lancedb-local",
+          uri: dir,
+          encrypt: false,
+          trustServerCertificate: false,
+        } satisfies ConnectionInput),
+      })
+    ).json()) as ConnectionConfig;
+    connectionId = conn.id;
+    const connected = await api(`/api/session/connect?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ connectionId }),
+    });
+    expect(connected.status).toBe(200);
+  }, 120_000);
+
+  afterAll(async () => {
+    await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+  });
+
+  test("an APPROVED mutation is still refused when the engine cannot write", async () => {
+    // approved:true is the user having clicked Approve. The gate is not about consent — the user
+    // consented — it is about the connection being incapable.
+    const res = await api(`/api/agent/mutation?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ sql: "INSERT INTO docs (id) VALUES (99)", approved: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/read-only/i);
+  });
+
+  test("the connect response advertises the variant and the read-only capability set", async () => {
+    // Traces: BASED-CAPABILITIES-WIRE — everything the agent surface and the UI gate on rides here.
+    const state = (await (await api(`/api/session/state?sid=${SID}`)).json()) as {
+      capabilities: {
+        write: boolean;
+        sql: boolean;
+        engine: string;
+        variant: string;
+        wherePredicate: boolean;
+        structuredFilters: boolean;
+        countRows: boolean;
+        indexIntrospect: boolean;
+      };
+    };
+    expect(state.capabilities.write).toBe(false);
+    expect(state.capabilities.engine).toBe("lancedb");
+    expect(state.capabilities.variant).toBe("lancedb-local");
+    expect(state.capabilities.wherePredicate).toBe(true);
+    expect(state.capabilities.structuredFilters).toBe(false);
+    expect(state.capabilities.countRows).toBe(true);
+    expect(state.capabilities.indexIntrospect).toBe(true);
+  });
+
+  test("GET /api/session/row-count returns the total and honours a where predicate", async () => {
+    const all = (await (await api(`/api/session/row-count?sid=${SID}&schema=&table=docs`)).json()) as { count: number };
+    expect(all.count).toBe(12);
+    const some = (await (
+      await api(`/api/session/row-count?sid=${SID}&schema=&table=docs&where=${encodeURIComponent("id < 4")}`)
+    ).json()) as { count: number };
+    expect(some.count).toBe(4);
+  });
+
+  test("GET /api/session/indexes answers on an engine with no DDL scripting", async () => {
+    // Deliberately NOT gated on `script` the way /table-details is: LanceDB has no DDL to script but
+    // very much has indexes, and their absence is the actionable fact for text/hybrid search.
+    const res = await api(`/api/session/indexes?sid=${SID}&schema=&table=docs`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { indexes: unknown[] }).indexes).toEqual([]);
+  });
+
+  test("GET /api/session/table-data honours a where predicate", async () => {
+    const page = (await (
+      await api(`/api/session/table-data?sid=${SID}&schema=&table=docs&offset=0&limit=50&where=${encodeURIComponent("id < 3")}`)
+    ).json()) as { rows: unknown[][] };
+    expect(page.rows.length).toBe(3);
+  });
 });
 
 describe("BASED-UI-SESSION-RESUME: session-lost signal", () => {

@@ -1,6 +1,7 @@
 {
   "name": "@based/ui",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -142,6 +142,9 @@ export function App() {
       } else if (e.key.toLowerCase() === "t" && e.ctrlKey) {
         e.preventDefault();
         if (state.activeConnectionId) state.newQueryTab();
+      } else if (e.key.toLowerCase() === "n" && e.ctrlKey) {
+        e.preventDefault();
+        void state.newWindow();
       } else if (e.key.toLowerCase() === "w" && e.ctrlKey) {
         e.preventDefault();
         if (state.activeTabId) state.closeTab(state.activeTabId);

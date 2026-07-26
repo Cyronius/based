@@ -1,5 +1,5 @@
 // Collect a streamed adapter execution into a bounded, JSON-friendly result. Shared by the agent
-// tools (run_query / sample_rows) and the approval-gated mutation endpoint. Applies an agent-side
+// tools (run_query / read_table) and the approval-gated mutation endpoint. Applies an agent-side
 // row cap on top of the adapter's own cap so tool output stays small for the model's context.
 import type { ColumnInfo, QueryChunk, WireValue } from "../db/types";
 

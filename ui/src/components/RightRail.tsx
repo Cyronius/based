@@ -12,7 +12,7 @@ import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
 import { useActivity } from "../agent/activityStore";
 import { token, sessionId, AGENT_BASE_URL } from "../api/client";
-import { capiTools } from "../agent/capiTools";
+import { capiToolsFor } from "../agent/capiTools";
 import { activeProfileTimeoutSeconds, resolveAiTimeouts } from "../agent/aiTimeouts";
 import { buildTabContext } from "../agent/tabContext";
 import {
@@ -24,9 +24,11 @@ import {
   setActiveChatThreadId,
   threadMessageCache,
 } from "../agent/threads";
+import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar } from "./CapiAvatar";
 import { CapiChat } from "./CapiChat";
 import { IconButton } from "./IconButton";
+import { DownloadIcon } from "./icons";
 
 const WIDTH_KEY = "based:rightRailWidth";
 const MIN_WIDTH = 280;
@@ -47,7 +49,19 @@ function NewChatIcon() {
   );
 }
 
-function CapiHeader({ toggle, onNewChat, newChatDisabled }: { toggle: () => void; onNewChat?: () => void; newChatDisabled?: boolean }) {
+function CapiHeader({
+  toggle,
+  onNewChat,
+  newChatDisabled,
+  onDownload,
+  downloadDisabled,
+}: {
+  toggle: () => void;
+  onNewChat?: () => void;
+  newChatDisabled?: boolean;
+  onDownload?: () => void;
+  downloadDisabled?: boolean;
+}) {
   return (
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
       <button
@@ -58,16 +72,34 @@ function CapiHeader({ toggle, onNewChat, newChatDisabled }: { toggle: () => void
         <span>›</span>
       </button>
       <span className="font-sans text-[length:var(--fs-md)] font-semibold text-faint">Ask Capi</span>
-      {onNewChat && (
-        <button
-          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-faint hover:bg-ink-800 hover:text-brass disabled:opacity-40"
-          title="New chat"
-          onClick={onNewChat}
-          disabled={newChatDisabled}
-        >
-          <NewChatIcon />
-        </button>
-      )}
+      {/* One trailing group with the auto margin on the wrapper: `ml-auto` on each button would put
+          an auto gap BETWEEN them and push them apart instead of grouping them at the right edge. */}
+      <div className="ml-auto flex items-center gap-1">
+        {/* Traces: BASED-CHAT-TRANSCRIPT-UI — the user shouldn't have to ask the agent to save their
+            own conversation, and this path also catches the reply the agent-side tool can't see yet. */}
+        {onDownload && (
+          <IconButton
+            className="text-faint hover:text-brass"
+            title="Download transcript"
+            aria-label="Download transcript"
+            onClick={onDownload}
+            disabled={downloadDisabled}
+          >
+            <DownloadIcon />
+          </IconButton>
+        )}
+        {onNewChat && (
+          <IconButton
+            className="text-faint hover:text-brass"
+            title="New chat"
+            aria-label="New chat"
+            onClick={onNewChat}
+            disabled={newChatDisabled}
+          >
+            <NewChatIcon />
+          </IconButton>
+        )}
+      </div>
     </header>
   );
 }
@@ -92,10 +124,14 @@ function ChatSession({
   // the timers rebuild when these change, so editing the profile takes effect without a remount.
   const timeoutSeconds = useStore((s) => activeProfileTimeoutSeconds(s.aiProfiles, s.activeAiProfileId));
   const timeouts = resolveAiTimeouts(timeoutSeconds);
+  const capabilities = useStore((s) => s.capabilities);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
     agentId: "capi",
-    tools: capiTools,
+    // Traces: BASED-AGENT-SURFACE-VARIANT — the frontend half of capability-driven tool exposure.
+    // These definitions ride RunAgentInput.tools straight into the model's tool list, so an
+    // unfiltered map advertises run_mutation/import_csv on read-only connections.
+    tools: capiToolsFor(capabilities),
     idleTimeoutMs: timeouts.idleMs,
     safetyTimeoutMs: timeouts.runMs,
     tokenProvider: async () => token,
@@ -112,6 +148,10 @@ function ChatSession({
   });
 
   const seededRef = useRef(false);
+  // `useAgent` returns a fresh memo object whenever the messages change, so the mount-only effect
+  // below closes over the mount-time snapshot (forever empty). Async guards must read this ref.
+  const liveMessages = useRef(agent.messages);
+  liveMessages.current = agent.messages;
   useEffect(() => {
     setActiveChatThreadId(threadId);
     const cached = threadMessageCache.get(threadId);
@@ -120,8 +160,9 @@ function ChatSession({
       seededRef.current = true;
     } else {
       void fetchThreadHistory(threadId, connectionId).then((msgs) => {
-        // Don't clobber a conversation the user already started while history was in flight.
-        if (msgs.length > 0 && !seededRef.current && agent.messages.length === 0) agent.setMessages(msgs);
+        // Don't clobber a conversation the user already started while history was in flight — nor
+        // one they cleared with New chat (fetchThreadHistory returns [] for a reset thread).
+        if (msgs.length > 0 && !seededRef.current && liveMessages.current.length === 0) agent.setMessages(msgs);
         seededRef.current = true;
       });
     }
@@ -154,10 +195,25 @@ function ChatSession({
     agent.clearMessages();
   };
 
+  // Traces: BASED-CHAT-TRANSCRIPT-UI — `agent.messages` is the transcript source, not the server's
+  // copy: it already holds the reply that Mastra has not flushed to agent.db yet. The originating
+  // tab's title becomes the document heading so a saved file says what it is about.
+  const downloadChat = () => {
+    const tabTitle = useStore.getState().tabs.find((t) => t.id === useStore.getState().activeTabId)?.title;
+    setErr(null);
+    void downloadTranscript(agent.messages, tabTitle).catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+  };
+
   return (
     <AgentProvider value={agent}>
       <div className="flex flex-1 min-h-0 min-w-0 flex-col">
-        <CapiHeader toggle={toggle} onNewChat={newChat} newChatDisabled={agent.isStreaming} />
+        <CapiHeader
+          toggle={toggle}
+          onNewChat={newChat}
+          newChatDisabled={agent.isStreaming}
+          onDownload={downloadChat}
+          downloadDisabled={agent.messages.length === 0 || agent.isStreaming}
+        />
         {deferredTabTitle && (
           <div className="border-b border-brass/30 bg-brass/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-brass">
             Capi is finishing in <span className="font-semibold">{deferredTabTitle}</span> — the chat will follow when it's done.

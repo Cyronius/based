@@ -17,9 +17,10 @@ function runPwshDialog(script: string): Promise<string | null> {
 const SQL_FILTER = "SQL files (*.sql)|*.sql|All files (*.*)|*.*";
 const CSV_FILTER = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
 const XLSX_FILTER = "Excel workbook (*.xlsx)|*.xlsx|All files (*.*)|*.*";
+const MD_FILTER = "Markdown files (*.md)|*.md|All files (*.*)|*.*";
 
-export function filterFor(kind: "sql" | "csv" | "xlsx"): string {
-  return kind === "sql" ? SQL_FILTER : kind === "csv" ? CSV_FILTER : XLSX_FILTER;
+export function filterFor(kind: "sql" | "csv" | "xlsx" | "md"): string {
+  return kind === "sql" ? SQL_FILTER : kind === "csv" ? CSV_FILTER : kind === "md" ? MD_FILTER : XLSX_FILTER;
 }
 
 // PowerShell single-quoted strings do zero escape processing (only '' -> literal '), unlike

@@ -63,13 +63,41 @@ async function rerankCohere(
     throw new Error(`Rerank endpoint returned ${res.status}${text ? `: ${sanitizeErrorBody(text)}` : ""}`);
   }
   const json = (await res.json()) as unknown;
+  return parseCohereRerankResults(json, documents.length);
+}
+
+/** Pull {index, relevanceScore} pairs out of a Cohere/TEI-shaped response. Exported for testing:
+ *  this parse is the one place where a wire-shape mismatch can turn into a silently uniform score,
+ *  which would make the caller's sort a no-op and return confidently-ordered garbage. */
+export function parseCohereRerankResults(json: unknown, documentCount: number): RerankResult[] {
   // Cohere wraps results in {results:[...]}; some TEI builds return a bare array. Field name also
   // varies (relevance_score vs score) — handle both defensively.
   const arr: CohereShapeResult[] | undefined = Array.isArray(json)
     ? (json as CohereShapeResult[])
-    : (json as { results?: CohereShapeResult[] }).results;
+    : (json as { results?: CohereShapeResult[] } | null)?.results;
   if (!arr) throw new Error("Rerank endpoint returned an unrecognized response shape");
-  return arr.map((r) => ({ index: r.index, relevanceScore: r.relevance_score ?? r.score ?? 0 }));
+
+  const scored = arr.map((r) => ({ index: r.index, score: r.relevance_score ?? r.score ?? null }));
+  // Nothing carried a recognized score field: that is a third wire shape we don't speak, not a set
+  // of genuinely-zero relevances. Fail like the shape check above rather than defaulting to 0 —
+  // an all-zero result is indistinguishable from a working rerank at every layer above this one.
+  if (scored.length > 0 && scored.every((s) => s.score === null)) {
+    const seen = Object.keys(arr[0] ?? {}).join(", ");
+    throw new Error(
+      `Rerank endpoint returned results with no recognized score field (expected relevance_score or score${seen ? `; saw: ${seen}` : ""})`,
+    );
+  }
+
+  return scored.map(({ index, score }) => {
+    // The index pairs a score back to its document; an absent or out-of-range one would spread
+    // `records[undefined]` into a row carrying nothing but the score.
+    if (!Number.isInteger(index) || index < 0 || index >= documentCount) {
+      throw new Error(
+        `Rerank endpoint returned an out-of-range document index (${String(index)} for ${documentCount} document${documentCount === 1 ? "" : "s"})`,
+      );
+    }
+    return { index, relevanceScore: score ?? 0 };
+  });
 }
 
 // --- openai api: Qwen3-Reranker yes/no logprob scoring over chat completions ---

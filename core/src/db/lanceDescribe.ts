@@ -1,5 +1,5 @@
 // Traces: BASED-SCRIPT-OBJECT (LanceDB half)
-// Pure schema description for a LanceDB table — Lance has no SQL DDL, so the agent's script_object
+// Pure schema description for a LanceDB table — Lance has no SQL DDL, so describe_table's pyarrow
 // tool returns a readable column listing plus a pyarrow schema snippet (Lance tooling is
 // Python-first). No DB access; unit-testable with fixture columns.
 import type { TableColumn } from "./types";

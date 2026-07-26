@@ -1,6 +1,6 @@
 // Traces: BASED-AI-PROVIDER, BASED-AI-PROVIDER-WIRED, BASED-AI-PROFILE-PARAMS, BASED-AI-PROFILE-TIMEOUT
 // Provider configuration (persisted, secret-free) + resolution to an AI SDK LanguageModel.
-// All four kinds are wired natively: openai-compatible (the local LM Studio default) plus
+// All four kinds are wired natively: openai-compatible (e.g. a local LM Studio server) plus
 // openai / azure-openai / anthropic via their official @ai-sdk providers (the ai@7 generation —
 // @ai-sdk/provider@4.x; Mastra's ai@6 transitive copies are a separate, untouched tree).
 import type { Database } from "bun:sqlite";
@@ -26,21 +26,13 @@ export interface AiConfig {
   hasKey: boolean;
 }
 
-/** Out-of-box default: local LM Studio, OpenAI-compatible, no key required. */
-export const DEFAULT_AI_CONFIG: AiConfig = {
-  providerId: "default",
-  kind: "openai-compatible",
-  baseUrl: "http://172.18.80.1:1234/v1",
-  model: "google/gemma-4-26b-a4b",
-  hasKey: false,
-};
-
 export class AiConfigStore {
   constructor(private readonly db: Database) {}
 
-  get(): AiConfig {
+  /** `null` when no config has ever been saved — there is no built-in default. */
+  get(): AiConfig | null {
     const row = this.db.query<{ json: string }, []>("SELECT json FROM ai_config WHERE id = 1").get();
-    return row ? { ...DEFAULT_AI_CONFIG, ...(JSON.parse(row.json) as Partial<AiConfig>) } : DEFAULT_AI_CONFIG;
+    return row ? (JSON.parse(row.json) as AiConfig) : null;
   }
 
   save(config: AiConfig): AiConfig {

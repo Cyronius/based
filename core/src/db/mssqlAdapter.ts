@@ -16,6 +16,7 @@ import type {
   DbCommand,
   DbObject,
   DbObjectType,
+  EngineCapabilities,
   ExecuteOptions,
   QueryChunk,
   QueryExecution,
@@ -41,6 +42,46 @@ import type {
  *  stable across every server version and Azure SQL. Single column, one nvarchar(max) XML row. */
 const SHOWPLAN_COLUMN = "Microsoft SQL Server 2005 XML Showplan";
 
+// Traces: BASED-INDEX-INTROSPECT — the index catalog query and its row assembler, shared by
+// getTableDetails (as one recordset of its multi-set batch) and the standalone getIndexes. One
+// query, two callers: they must never drift.
+const INDEX_SELECT = `
+        SELECT i.index_id, i.name, i.type_desc, i.is_unique, i.is_primary_key, i.is_unique_constraint,
+               i.filter_definition, ic.key_ordinal, ic.is_descending_key, ic.is_included_column,
+               col.name AS column_name
+        FROM sys.indexes i
+        JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+        WHERE i.object_id = @oid AND i.type > 0
+        ORDER BY i.index_id, ic.is_included_column, ic.key_ordinal, ic.index_column_id`;
+
+/** Fold the per-column index rows into one TableIndex each, preserving key/INCLUDE order. */
+function assembleIndexes(rows: Array<Record<string, unknown>>): TableIndex[] {
+  const indexes: TableIndex[] = [];
+  const byId = new Map<number, TableIndex>();
+  for (const row of rows) {
+    const id = Number(row.index_id);
+    let idx = byId.get(id);
+    if (!idx) {
+      idx = {
+        name: String(row.name),
+        typeDesc: String(row.type_desc),
+        isUnique: !!row.is_unique,
+        isPrimaryKey: !!row.is_primary_key,
+        isUniqueConstraint: !!row.is_unique_constraint,
+        filterDefinition: row.filter_definition != null ? String(row.filter_definition) : null,
+        keyColumns: [],
+        includedColumns: [],
+      };
+      byId.set(id, idx);
+      indexes.push(idx);
+    }
+    if (row.is_included_column) idx.includedColumns.push(String(row.column_name));
+    else idx.keyColumns.push({ name: String(row.column_name), descending: !!row.is_descending_key });
+  }
+  return indexes;
+}
+
 const TOKEN_REFRESH_AGE_MS = 45 * 60_000;
 const IDLE_PING_AGE_MS = 15 * 60_000;
 
@@ -64,14 +105,24 @@ function parseServer(server: string): { host: string; port: number } {
 }
 
 export class MssqlAdapter implements DatabaseAdapter {
-  readonly capabilities = {
+  readonly capabilities: EngineCapabilities = {
     sql: true,
     search: false,
     write: true,
     orderedBrowse: true,
     script: true,
     relations: true,
-  } as const;
+    // Traces: BASED-AGENT-SURFACE-VARIANT — SQL Server has exactly one shape, and its filtering is
+    // the structured/parameterized kind: a free-text engine predicate would be an injection seam.
+    engine: "mssql",
+    variant: "mssql",
+    containers: null,
+    wherePredicate: false,
+    structuredFilters: true,
+    countRows: true,
+    takeByKey: false,
+    indexIntrospect: true,
+  };
   readonly database: string;
   private pool: sql.ConnectionPool | null = null;
   private credential: TokenCredential | null = null;
@@ -351,6 +402,67 @@ export class MssqlAdapter implements DatabaseAdapter {
     });
   }
 
+  /** Build the parameterized WHERE clause for a structured filter list (BASED-TABLE-ORDERBY), or ""
+   *  when there are none. Column names are membership-validated by `requireCol` and then quoted;
+   *  values ride as typed parameters and are never interpolated. Shared by readTablePage and
+   *  countRows so the two can never disagree about what a filter means. */
+  private static buildWhere(
+    request: sql.Request,
+    filters: TableFilter[] | undefined,
+    requireCol: (name: string) => TableColumn,
+  ): string {
+    const parts: string[] = [];
+    (filters ?? []).forEach((f, i) => {
+      const ident = quoteIdent(requireCol(f.column).name);
+      if (f.op === "is-null") return void parts.push(`${ident} IS NULL`);
+      if (f.op === "not-null") return void parts.push(`${ident} IS NOT NULL`);
+      const OPS: Record<string, string> = { eq: "=", ne: "<>", gt: ">", ge: ">=", lt: "<", le: "<=", like: "LIKE" };
+      const op = OPS[f.op];
+      if (!op) throw new Error(`Unknown filter op "${f.op}"`);
+      const pname = `f${i}`;
+      if (typeof f.value === "number") request.input(pname, f.value);
+      else request.input(pname, sql.NVarChar, f.value ?? "");
+      parts.push(`${ident} ${op} @${pname}`);
+    });
+    return parts.length > 0 ? ` WHERE ${parts.join(" AND ")}` : "";
+  }
+
+  // Traces: BASED-LANCE-SCAN — an exact count, optionally narrowed by the same structured filters
+  // readTablePage accepts. COUNT_BIG because a large fact table overflows int.
+  async countRows(schema: string, table: string, opts?: { filters?: TableFilter[] }): Promise<number> {
+    const columns = await this.getTableColumns(schema, table);
+    if (columns.length === 0) throw new Error(`No columns for ${schema}.${table}`);
+    const byName = new Map(columns.map((c) => [c.name, c]));
+    const requireCol = (name: string): TableColumn => {
+      const col = byName.get(name);
+      if (!col) throw new Error(`Unknown column "${name}" on ${schema}.${table}`);
+      return col;
+    };
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      const where = MssqlAdapter.buildWhere(request, opts?.filters, requireCol);
+      const r = await request.query<{ n: number | bigint }>(
+        `SELECT COUNT_BIG(*) AS n FROM ${qualified(schema, table)}${where}`,
+      );
+      return Number(r.recordset[0]?.n ?? 0);
+    });
+  }
+
+  // Traces: BASED-INDEX-INTROSPECT — the same catalog query getTableDetails runs, standalone, so
+  // the Details index panel and the agent's get_indexes work on views/engines that never call for
+  // full table details.
+  async getIndexes(schema: string, name: string): Promise<TableIndex[]> {
+    return this.withPool(async (pool) => {
+      const request = pool.request();
+      request.input("schema", sql.NVarChar, schema);
+      request.input("table", sql.NVarChar, name);
+      const r = await request.query<Record<string, unknown>>(`
+        DECLARE @oid int = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table));
+        ${INDEX_SELECT}`);
+      return assembleIndexes(r.recordset ?? []);
+    });
+  }
+
   // Traces: BASED-TABLE-BROWSE, BASED-TABLE-ORDERBY — one page ordered by a stable key (user sort
   // first when given, stable key appended as tiebreak), optional parameterized filters, capped by
   // the row cap. Every referenced column is membership-validated against the real column list
@@ -385,28 +497,7 @@ export class MssqlAdapter implements DatabaseAdapter {
       request.input("off", sql.Int, offset);
       request.input("lim", sql.Int, limit);
 
-      const whereParts: string[] = [];
-      (opts.filters ?? []).forEach((f, i) => {
-        const col = requireCol(f.column);
-        const ident = quoteIdent(col.name);
-        if (f.op === "is-null") {
-          whereParts.push(`${ident} IS NULL`);
-          return;
-        }
-        if (f.op === "not-null") {
-          whereParts.push(`${ident} IS NOT NULL`);
-          return;
-        }
-        const OPS: Record<string, string> = { eq: "=", ne: "<>", gt: ">", ge: ">=", lt: "<", le: "<=", like: "LIKE" };
-        const op = OPS[f.op];
-        if (!op) throw new Error(`Unknown filter op "${f.op}"`);
-        const pname = `f${i}`;
-        if (typeof f.value === "number") request.input(pname, f.value);
-        else request.input(pname, sql.NVarChar, f.value ?? "");
-        whereParts.push(`${ident} ${op} @${pname}`);
-      });
-
-      const where = whereParts.length > 0 ? ` WHERE ${whereParts.join(" AND ")}` : "";
+      const where = MssqlAdapter.buildWhere(request, opts.filters, requireCol);
       const r = await request.query<Record<string, unknown>>(
         `SELECT * FROM ${qualified(schema, table)}${where} ORDER BY ${orderParts.join(", ")} OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
       );
@@ -440,14 +531,7 @@ export class MssqlAdapter implements DatabaseAdapter {
         ORDER BY c.column_id;
 
         -- rs1: indexes + key/included columns (covers PK + unique constraints too)
-        SELECT i.index_id, i.name, i.type_desc, i.is_unique, i.is_primary_key, i.is_unique_constraint,
-               i.filter_definition, ic.key_ordinal, ic.is_descending_key, ic.is_included_column,
-               col.name AS column_name
-        FROM sys.indexes i
-        JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
-        JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
-        WHERE i.object_id = @oid AND i.type > 0
-        ORDER BY i.index_id, ic.is_included_column, ic.key_ordinal, ic.index_column_id;
+        ${INDEX_SELECT};
 
         -- rs2: foreign keys with per-column pairs + referential actions
         SELECT fk.name, fk.delete_referential_action_desc AS on_delete, fk.update_referential_action_desc AS on_update,
@@ -504,28 +588,7 @@ export class MssqlAdapter implements DatabaseAdapter {
         };
       });
 
-      const indexes: TableIndex[] = [];
-      const idxById = new Map<number, TableIndex>();
-      for (const row of rsIdx) {
-        const id = Number(row.index_id);
-        let idx = idxById.get(id);
-        if (!idx) {
-          idx = {
-            name: String(row.name),
-            typeDesc: String(row.type_desc),
-            isUnique: !!row.is_unique,
-            isPrimaryKey: !!row.is_primary_key,
-            isUniqueConstraint: !!row.is_unique_constraint,
-            filterDefinition: row.filter_definition != null ? String(row.filter_definition) : null,
-            keyColumns: [],
-            includedColumns: [],
-          };
-          idxById.set(id, idx);
-          indexes.push(idx);
-        }
-        if (row.is_included_column) idx.includedColumns.push(String(row.column_name));
-        else idx.keyColumns.push({ name: String(row.column_name), descending: !!row.is_descending_key });
-      }
+      const indexes = assembleIndexes(rsIdx);
 
       const fks: TableForeignKey[] = [];
       const fkByName = new Map<string, TableForeignKey>();

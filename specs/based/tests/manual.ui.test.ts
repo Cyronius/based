@@ -246,6 +246,25 @@ describe.skip("BASED-AGENT-TAB-TOOLS: manual verification", () => {
   it.todo("see spec.md procedure");
 });
 
+// Traces: BASED-CHAT-UI (canonical spec: specs/based/spec.md)
+// Verification: manual — the chat rail renders each turn once. A multi-round tool run (e.g. "exercise
+// every query tool") streams several text segments under one repeated message id, so with the browser
+// console open there must be no "two children with the same key" warning, no "Maximum update depth
+// exceeded", and no narration paragraph or tool card appearing twice.
+describe.skip("BASED-CHAT-UI: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-CHAT-TRANSCRIPT-UI (canonical spec: specs/based/spec.md)
+// Verification: manual — the chat header's Download transcript button: disabled on an empty thread
+// and while streaming; pops the native Save As dialog with a based-chat-<timestamp>.md default;
+// cancel writes nothing; saving yields a markdown file with every turn INCLUDING the reply that is
+// not yet flushed to agent.db, headed by the tab title, with no tool-call JSON. The formatter and
+// the endpoint behind it are covered executably (unit.transcript, integration.server).
+describe.skip("BASED-CHAT-TRANSCRIPT-UI: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
 // Traces: BASED-AGENT-IMPORT (canonical spec: specs/based/spec.md)
 // Verification: manual — agent import_csv approval card: file+columns inspected, mapping resolved
 // (explicit / header-name / positional) and previewed with unmapped warnings; Approve drives the

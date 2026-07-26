@@ -33,4 +33,4 @@ Modified: none. Removed: none.
 
 ## Verification
 
-Per requirement in spec.md. Integration tests run against the Phase 0 dev DB (`zl5qolt7t8.database.windows.net` / `learnermobile_db_ci`, read-only) using AzureCliCredential; they self-skip when no `az` login is available. UI behavior is `manual` with documented procedures — no stubs.
+Per requirement in spec.md. Integration tests run read-only against the Phase 0 dev DB (configured via `BASED_TEST_SERVER` / `BASED_TEST_DB`) using AzureCliCredential; they self-skip when those aren't set or no `az` login is available. UI behavior is `manual` with documented procedures — no stubs.
