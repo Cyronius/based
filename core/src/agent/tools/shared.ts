@@ -30,6 +30,11 @@ export interface ToolDeps {
   rerankerProfiles?: RerankerProfileStore;
   getEmbeddingKey?: (id: string) => string | null;
   getRerankerKey?: (id: string) => string | null;
+  /** Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the connected connection's default search profiles.
+   *  Getters, not values: they re-read the connection on every call so editing it takes effect
+   *  without reconnecting, and a mid-session connection switch never carries the old default over. */
+  defaultEmbeddingProfileId?: () => string | null;
+  defaultRerankerProfileId?: () => string | null;
   /** Where export_data writes its files. Defaults to the user's Downloads folder (falling back to
    *  the temp dir); tests inject a scratch dir so runs never touch the real Downloads. */
   exportDir?: () => string;

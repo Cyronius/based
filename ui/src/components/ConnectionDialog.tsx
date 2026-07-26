@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { browseFolder } from "../api/client";
 import { IconButton } from "./IconButton";
@@ -18,6 +18,8 @@ export function ConnectionDialog() {
   const connect = useStore((s) => s.connect);
   const deleteConnection = useStore((s) => s.deleteConnection);
   const testConnection = useStore((s) => s.testConnection);
+  const embeddingProfiles = useStore((s) => s.embeddingProfiles);
+  const rerankerProfiles = useStore((s) => s.rerankerProfiles);
 
   const editing = dialog.mode === "edit" ? dialog.connection : null;
   const [form, setForm] = useState<ConnectionInput>(
@@ -60,9 +62,21 @@ export function ConnectionDialog() {
     if (next === "lancedb") {
       setForm({ ...form, engine: "lancedb", authType: "lancedb-local", encrypt: false, trustServerCertificate: false });
     } else {
-      setForm({ ...form, engine: "mssql", authType: "entra-interactive" });
+      // Search profiles are LanceDB-only — don't leave them on a SQL Server config.
+      setForm({ ...form, engine: "mssql", authType: "entra-interactive", defaultEmbeddingProfileId: null, defaultRerankerProfileId: null });
     }
   }
+
+  // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — with exactly one embedding profile configured (the
+  // single-endpoint case, e.g. one LM Studio) a new LanceDB connection adopts it, so the common
+  // setup needs no extra choice. Never on edit: a stored choice — including an explicit "None" — is
+  // authoritative, and the ref keeps a later profile-list change from overriding the user's pick.
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (editing || prefilled.current || (form.engine ?? "mssql") !== "lancedb" || embeddingProfiles.length !== 1) return;
+    prefilled.current = true;
+    setForm((f) => (f.defaultEmbeddingProfileId ? f : { ...f, defaultEmbeddingProfileId: embeddingProfiles[0]!.id }));
+  }, [editing, embeddingProfiles, form.engine]);
 
   function payload(): ConnectionInput {
     const p = { ...form };
@@ -201,6 +215,49 @@ export function ConnectionDialog() {
                   <input className={field} value={form.region ?? ""} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east-1" />
                 </div>
               )}
+              {/* Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the embedding model that built THIS
+                  directory's vectors belongs to the connection, not to app-wide settings. */}
+              <div>
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className={label}>Embedding profile</label>
+                    <select
+                      className={field}
+                      value={form.defaultEmbeddingProfileId ?? ""}
+                      disabled={embeddingProfiles.length === 0}
+                      onChange={(e) => setForm({ ...form, defaultEmbeddingProfileId: e.target.value || null })}
+                    >
+                      <option value="">None</option>
+                      {embeddingProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className={label}>Reranker profile</label>
+                    <select
+                      className={field}
+                      value={form.defaultRerankerProfileId ?? ""}
+                      disabled={rerankerProfiles.length === 0}
+                      onChange={(e) => setForm({ ...form, defaultRerankerProfileId: e.target.value || null })}
+                    >
+                      <option value="">None</option>
+                      {rerankerProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
+                  {embeddingProfiles.length === 0 && rerankerProfiles.length === 0
+                    ? "No search profiles configured yet — add them under Settings → Search, then pick them here."
+                    : "Capi embeds text queries for this connection with the embedding profile above, and the Data tab's search preselects both. The reranker is only applied when explicitly asked for — it can cost one model call per candidate row."}
+                </p>
+              </div>
             </>
           )}
 

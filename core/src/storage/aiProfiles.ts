@@ -15,6 +15,9 @@ export interface AiProfile {
   instructionSetId: string;
   /** Model parameter JSON (BASED-AI-PROFILE-PARAMS): call settings + provider options, no secrets. */
   params?: Record<string, unknown>;
+  /** No-activity window for this profile's requests, in seconds (BASED-AI-PROFILE-TIMEOUT).
+   *  Absent = DEFAULT_AI_TIMEOUT_SECONDS; see `resolveAiTimeouts`. */
+  timeoutSeconds?: number;
   hasKey: boolean;
   createdAt: string;
   updatedAt: string;

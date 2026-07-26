@@ -55,6 +55,75 @@ describe("BASED-CONN-STORE: connection metadata persistence", () => {
   });
 });
 
+// Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the search profiles a LanceDB connection defaults to
+// live on the connection itself (not app-global), so two datasets built by different embedding
+// pipelines can never borrow each other's model.
+describe("BASED-LANCE-CONN-DEFAULT-PROFILES: per-connection default search profiles", () => {
+  const lanceInput: ConnectionInput = {
+    name: "vectors",
+    server: "",
+    database: "lancedb",
+    engine: "lancedb",
+    authType: "lancedb-local",
+    uri: "C:\\data\\my-lancedb",
+    encrypt: false,
+    trustServerCertificate: false,
+  };
+
+  test("the two profile ids persist, round-trip, and clear back to null", () => {
+    const path = tempDbPath();
+    let db = openDb(path);
+    let store = new ConnectionStore(db);
+
+    const saved = store.save({ ...lanceInput, defaultEmbeddingProfileId: "emb-1", defaultRerankerProfileId: "rrk-1" });
+
+    db.close();
+    db = openDb(path);
+    store = new ConnectionStore(db);
+
+    const reloaded = store.get(saved.id)!;
+    expect(reloaded.defaultEmbeddingProfileId).toBe("emb-1");
+    expect(reloaded.defaultRerankerProfileId).toBe("rrk-1");
+
+    // "None" in the dialog → explicit null, not a stale id
+    const cleared = store.save({ ...lanceInput, id: saved.id, defaultEmbeddingProfileId: null, defaultRerankerProfileId: null });
+    expect(cleared.defaultEmbeddingProfileId).toBeNull();
+    expect(store.get(saved.id)!.defaultRerankerProfileId).toBeNull();
+
+    // A connection saved without the fields (every pre-existing config) reads back undefined, not a throw.
+    const legacy = store.save(input);
+    expect(store.get(legacy.id)!.defaultEmbeddingProfileId ?? null).toBeNull();
+    db.close();
+  });
+
+  test("clearSearchProfileRefs sweeps a deleted profile off every connection that named it", () => {
+    const db = openDb(tempDbPath());
+    const store = new ConnectionStore(db);
+
+    const a = store.save({ ...lanceInput, name: "a", defaultEmbeddingProfileId: "emb-1", defaultRerankerProfileId: "rrk-1" });
+    const b = store.save({ ...lanceInput, name: "b", defaultEmbeddingProfileId: "emb-1" });
+    const c = store.save({ ...lanceInput, name: "c", defaultEmbeddingProfileId: "emb-2", defaultRerankerProfileId: "rrk-1" });
+
+    store.clearSearchProfileRefs("emb-1");
+
+    expect(store.get(a.id)!.defaultEmbeddingProfileId).toBeNull();
+    expect(store.get(b.id)!.defaultEmbeddingProfileId).toBeNull();
+    // untouched: a different embedding profile, and every reranker reference
+    expect(store.get(c.id)!.defaultEmbeddingProfileId).toBe("emb-2");
+    expect(store.get(a.id)!.defaultRerankerProfileId).toBe("rrk-1");
+    expect(store.get(c.id)!.defaultRerankerProfileId).toBe("rrk-1");
+
+    // the same sweep covers reranker references (ids are unique across both stores)
+    store.clearSearchProfileRefs("rrk-1");
+    expect(store.get(a.id)!.defaultRerankerProfileId).toBeNull();
+    expect(store.get(c.id)!.defaultRerankerProfileId).toBeNull();
+
+    // updatedAt-only churn on unrelated rows is fine, but the sweep must not invent connections
+    expect(store.list().length).toBe(3);
+    db.close();
+  });
+});
+
 describe("BASED-TABSTORE: tab persistence", () => {
   test("upsert, ordering, per-connection scoping, survives reopen, delete", () => {
     const path = tempDbPath();

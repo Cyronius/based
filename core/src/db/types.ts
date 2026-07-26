@@ -24,6 +24,15 @@ export interface ConnectionConfig {
   uri?: string;
   /** LanceDB cloud only: e.g. "us-east-1". */
   region?: string;
+  // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — which embedding model to use is a property of how
+  // THIS dataset's vectors were built, so the default lives on the connection rather than app-wide:
+  // two directories built by different pipelines can never borrow each other's model (a same-dim
+  // mismatch would return plausible garbage that no dimension check can catch).
+  /** LanceDB only: embedding profile used when a search supplies text with no explicit profile id. */
+  defaultEmbeddingProfileId?: string | null;
+  /** LanceDB only: reranker profile offered for this connection. Never auto-applied to an agent
+   *  search (one chat completion per candidate on the openai api) — the id must be passed. */
+  defaultRerankerProfileId?: string | null;
   username?: string;
   tenantId?: string;
   clientId?: string;

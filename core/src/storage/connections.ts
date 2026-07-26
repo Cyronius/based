@@ -39,4 +39,24 @@ export class ConnectionStore {
     this.db.run("DELETE FROM connections WHERE id = ?", [id]);
     this.db.run("DELETE FROM tabs WHERE connection_id = ?", [id]);
   }
+
+  /** Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — a deleted embedding/reranker profile must stop
+   *  being any connection's default. Profile ids are uuids unique across both stores, so one sweep
+   *  covers whichever kind was deleted. Resolution tolerates a dangling id anyway; this keeps the
+   *  stored config honest (and the connection dialog showing "None"). */
+  clearSearchProfileRefs(profileId: string): void {
+    for (const cfg of this.list()) {
+      const embedding = cfg.defaultEmbeddingProfileId === profileId;
+      const reranker = cfg.defaultRerankerProfileId === profileId;
+      if (!embedding && !reranker) continue;
+      this.db.run("UPDATE connections SET json = ? WHERE id = ?", [
+        JSON.stringify({
+          ...cfg,
+          defaultEmbeddingProfileId: embedding ? null : (cfg.defaultEmbeddingProfileId ?? null),
+          defaultRerankerProfileId: reranker ? null : (cfg.defaultRerankerProfileId ?? null),
+        }),
+        cfg.id,
+      ]);
+    }
+  }
 }

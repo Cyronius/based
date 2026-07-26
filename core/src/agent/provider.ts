@@ -1,4 +1,4 @@
-// Traces: BASED-AI-PROVIDER, BASED-AI-PROVIDER-WIRED, BASED-AI-PROFILE-PARAMS
+// Traces: BASED-AI-PROVIDER, BASED-AI-PROVIDER-WIRED, BASED-AI-PROFILE-PARAMS, BASED-AI-PROFILE-TIMEOUT
 // Provider configuration (persisted, secret-free) + resolution to an AI SDK LanguageModel.
 // All four kinds are wired natively: openai-compatible (the local LM Studio default) plus
 // openai / azure-openai / anthropic via their official @ai-sdk providers (the ai@7 generation —
@@ -166,4 +166,38 @@ export function resolveExecutionDefaults(kind: ProviderKind, params: Record<stri
   if (Object.keys(modelSettings).length > 0) result.modelSettings = modelSettings;
   if (providerOptions) result.providerOptions = providerOptions;
   return result;
+}
+
+// --- per-profile request timeouts (BASED-AI-PROFILE-TIMEOUT) ---
+
+/**
+ * Default no-activity window for an AI request, in seconds. Sized for slow local backends: a big
+ * model on a busy local GPU can sit silent for many minutes before its first token, and the old
+ * hard-coded windows (180 s idle in the AG-UI client, 60 s on cluster labeling) killed those runs
+ * mid-flight. Profiles pointed at a fast hosted provider can dial this back.
+ */
+export const DEFAULT_AI_TIMEOUT_SECONDS = 900;
+
+/** A whole agent run gets this multiple of the idle window as an absolute backstop. */
+export const AI_RUN_TIMEOUT_MULTIPLIER = 4;
+
+export interface AiTimeouts {
+  /** No-activity window in ms — the chat client's idle timer and the abort on one-shot calls. */
+  idleMs: number;
+  /** Absolute cap on a whole agent run in ms; never reset by activity. */
+  runMs: number;
+}
+
+/**
+ * Resolve a profile's `timeoutSeconds` into the two windows the app enforces. Absent, non-finite or
+ * non-positive values fall back to the default, so a blank field means "use the default" rather
+ * than "no timeout". Pure — unit-tested (BASED-AI-PROFILE-TIMEOUT).
+ */
+export function resolveAiTimeouts(timeoutSeconds: number | null | undefined): AiTimeouts {
+  const seconds =
+    typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+      ? Math.floor(timeoutSeconds)
+      : DEFAULT_AI_TIMEOUT_SECONDS;
+  const idleMs = seconds * 1000;
+  return { idleMs, runMs: idleMs * AI_RUN_TIMEOUT_MULTIPLIER };
 }

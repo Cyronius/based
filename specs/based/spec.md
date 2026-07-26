@@ -13,12 +13,13 @@ Test infrastructure: `bun test` from `specs/` (`bun test` is the doctrine deviat
 **Applies to:** based (core)
 **Test category:** integration
 
-Connections (name, server, initial database, auth type, options) shall persist in the local SQLite store across restarts. Secrets are never written to this store.
+Connections (name, server, initial database, auth type, options) shall persist in the local SQLite store across restarts. Secrets are never written to this store. LanceDB connections additionally persist `defaultEmbeddingProfileId` / `defaultRerankerProfileId` (BASED-LANCE-CONN-DEFAULT-PROFILES); both are optional, so configs saved before they existed load unchanged.
 
 **Acceptance criteria:**
 - Create → list returns the connection with identical fields; reopening the store still returns it
 - Update changes fields in place (same id); delete removes the row
 - The stored record contains no password/client-secret material
+- The two search-profile ids round-trip, can be cleared back to `null`, and read as absent on a config saved without them
 
 ### BASED-SECRET-STORE: Secrets in Windows Credential Manager
 **Applies to:** based (core)
@@ -1492,6 +1493,20 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 
 **UI (manual):** the profile Add/Edit form gains a "Model parameters (JSON)" textarea; invalid JSON blocks Save with an inline error; clearing it removes the params. A `reasoning_effort` value observably changes the request the model backend receives.
 
+### BASED-AI-PROFILE-TIMEOUT: Per-profile AI response timeout
+**Applies to:** based (core, ui)
+**Test category:** unit (resolution); integration (persistence); manual (a slow local model is no longer cut off)
+
+`AiProfile` gains an optional `timeoutSeconds` — the no-activity window for requests made with that profile, configurable per profile in the settings Agent tab. A pure `resolveAiTimeouts(timeoutSeconds)` resolves it into `{ idleMs, runMs }`: `idleMs` is the window in ms, `runMs` is `idleMs × AI_RUN_TIMEOUT_MULTIPLIER` (4) as an absolute cap on a whole run. Absent, non-finite or non-positive values resolve to `DEFAULT_AI_TIMEOUT_SECONDS` (900 s), so a blank field means "default", never "no timeout". The chat client passes the resolved pair to `useAgent` as `idleTimeoutMs` / `safetyTimeoutMs`, replacing the vendored library's 180 s / 900 s defaults, which killed slow local models mid-answer; the one-shot cluster-labeling call (`BASED-EMBED-LABELS-AI`) aborts on `idleMs` instead of a fixed 60 s. The UI resolves the timeout from the **active** profile, falling back to the first profile the same way the server's `activeAiProfile()` does; because the chat timers rebuild when the values change, editing the active profile takes effect without a chat remount.
+
+**Acceptance criteria:**
+- `resolveAiTimeouts(1800)` → `{ idleMs: 1_800_000, runMs: 1_800_000 × 4 }`
+- `resolveAiTimeouts` of `undefined` / `null` / `0` / a negative / `NaN` / `Infinity` → `idleMs` = `DEFAULT_AI_TIMEOUT_SECONDS × 1000`
+- Fractional seconds floor to whole seconds (`90.7` → `90_000` ms)
+- A profile saved with `timeoutSeconds` round-trips through the ai-profiles API; re-saving without it clears the value (integration)
+
+**UI (manual):** the profile Add/Edit form gains a "Response timeout (seconds)" number field with helper text; blank shows the default in the placeholder. Set a small value (e.g. 5) on the active profile, ask Capi something a slow model can't answer in time → the run aborts with "The request timed out."; raise it to 1800 and the same question completes.
+
 ### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
 **Applies to:** based (ui + core)
 **Test category:** unit
@@ -1598,18 +1613,19 @@ The agent surface is a property of the engine. `agentSurfaceFor(engine, deps)` r
 - The `vector_search` tool runs end-to-end against a live LanceDB table
 - The three tools accept `embeddingProfileId`/`rerankerProfileId`/`floor`/`delta` and pass them through to `search()`
 - Both engine surfaces additionally contain `read_rows` (BASED-AGENT-READ-ROWS), `export_data` (BASED-AGENT-EXPORT), and `script_object` (BASED-SCRIPT-OBJECT); the vector/hybrid search tools carry the tuning knobs of BASED-LANCE-SEARCH-KNOBS
+- The LanceDB surface also contains `list_search_profiles` (BASED-LANCE-PROFILE-DISCOVERY); the MSSQL surface does not
 
 ### BASED-LANCE-UI: Engine selector, vector display, read-only browse, SQL gating
 **Applies to:** based (ui)
 **Test category:** manual
 
-The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB shows a Cloud/Local mode with URI/region/API-key or a directory path (SQL fields hidden). Vector columns render as `vector[dim] type`; vector cells render as `vec[dim] [v0, v1, …]`. LanceDB tables (no PK) browse read-only. The SQL editor / new-query affordance is hidden for LanceDB **Cloud** connections only — local connections have a SQL editor via the embedded DuckDB (BASED-LANCE-SQL / BASED-LANCE-SQL-GATING). SQL-tab and Data-tab-search gating are both driven by the real `EngineCapabilities` from the connection response (BASED-CAPABILITIES-WIRE), not a hardcoded `engine === "mssql"` check.
+The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB shows a Cloud/Local mode with URI/region/API-key or a directory path (SQL fields hidden), plus the connection's embedding/reranker profile pickers (BASED-LANCE-CONN-DEFAULT-PROFILES). Vector columns render as `vector[dim] type`; vector cells render as `vec[dim] [v0, v1, …]`. LanceDB tables (no PK) browse read-only. The SQL editor / new-query affordance is hidden for LanceDB **Cloud** connections only — local connections have a SQL editor via the embedded DuckDB (BASED-LANCE-SQL / BASED-LANCE-SQL-GATING). SQL-tab and Data-tab-search gating are both driven by the real `EngineCapabilities` from the connection response (BASED-CAPABILITIES-WIRE), not a hardcoded `engine === "mssql"` check.
 
 **Verification procedure:**
 1. New connection → Engine: LanceDB → Local → set a directory with a LanceDB table → Test → ok → Save
 2. Connect → object tree lists tables (no schemas/procs) → open one → the vector column shows `vector[dim]`; the grid is read-only; cells show `vec[dim] […]`
 3. The "+" new-query button is present for a local LanceDB connection and absent for a Cloud one (BASED-LANCE-SQL-GATING)
-4. Open the Capi rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` and renders results (needs a healthy model backend)
+4. Open the Capi rail → "find rows similar to X" → the agent calls `vector_search`/`hybrid_search` with no `embeddingProfileId` (the connection's profile supplies it) and renders results (needs a healthy model backend); "what rerankers do I have?" → it calls `list_search_profiles` and names them without inventing ids
 
 ### BASED-CAPABILITIES-WIRE: Real EngineCapabilities exposed end-to-end
 **Applies to:** based (core, ui)
@@ -1626,18 +1642,19 @@ The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB s
 **Applies to:** based (core, ui)
 **Test category:** manual
 
-Users configure one or more named embedding profiles (`name`, `baseUrl`, `model`, optional API key) pointing at any OpenAI-compatible `/v1/embeddings` endpoint (LM Studio, OpenAI, etc.), CRUD'd via `GET/POST /api/embedding-profiles` and `DELETE /api/embedding-profiles/:id`, persisted in `embedding_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `embed:` prefix). A search picks one via `embeddingProfileId`.
+Users configure one or more named embedding profiles (`name`, `baseUrl`, `model`, optional API key) pointing at any OpenAI-compatible `/v1/embeddings` endpoint (LM Studio, OpenAI, etc.), CRUD'd via `GET/POST /api/embedding-profiles` and `DELETE /api/embedding-profiles/:id`, persisted in `embedding_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `embed:` prefix). A search picks one via `embeddingProfileId`, or inherits the connection's (BASED-LANCE-CONN-DEFAULT-PROFILES). The Search settings tab is CRUD only — it has no "default" affordance, because the default belongs to a connection. Deleting a profile also clears it from every connection that named it.
 
 **Verification procedure:**
 1. Settings (gear icon) → Search tab → Embedding profiles → Add → name it, point `baseUrl` at a running LM Studio embeddings endpoint, set the model id → Save
-2. The profile appears in the Data tab's Search toolbar's embedding-profile dropdown for a LanceDB table
+2. The profile appears in the Data tab's Search toolbar's embedding-profile dropdown for a LanceDB table, and in the connection dialog's "Embedding profile" picker
 3. Editing the profile with a blank API key field keeps the previously stored key; Delete removes it from both the list and Credential Manager
+4. Delete a profile that a connection used as its default → editing that connection shows "None" for it
 
 ### BASED-LANCE-RERANK-PROFILES: Named, user-configured reranker profiles
 **Applies to:** based (core, ui)
 **Test category:** manual
 
-Users configure one or more named reranker profiles (`name`, `baseUrl`, optional `model`, optional API key, optional `api`, optional `instruction`), CRUD'd via `GET/POST /api/reranker-profiles` and `DELETE /api/reranker-profiles/:id`, persisted the same way as embedding profiles (`reranker_profiles` table + Credential Manager `rerank:` prefix). `api` selects the endpoint shape: `"rerank"` (default, and what legacy api-less rows mean) is a generic Cohere/TEI-shape rerank endpoint (`POST {baseUrl}/rerank {query, documents, top_n?} -> [{index, relevance_score}]`); `"openai"` is an OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (BASED-LANCE-RERANK-OPENAI), for which the profile form requires `model` and offers the `instruction` override. A search picks a profile via `rerankerProfileId` plus optional `rerankerOptions` (`topN`, `temperature`).
+Users configure one or more named reranker profiles (`name`, `baseUrl`, optional `model`, optional API key, optional `api`, optional `instruction`), CRUD'd via `GET/POST /api/reranker-profiles` and `DELETE /api/reranker-profiles/:id`, persisted the same way as embedding profiles (`reranker_profiles` table + Credential Manager `rerank:` prefix). `api` selects the endpoint shape: `"rerank"` (default, and what legacy api-less rows mean) is a generic Cohere/TEI-shape rerank endpoint (`POST {baseUrl}/rerank {query, documents, top_n?} -> [{index, relevance_score}]`); `"openai"` is an OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (BASED-LANCE-RERANK-OPENAI), for which the profile form requires `model` and offers the `instruction` override. A search picks a profile via `rerankerProfileId` plus optional `rerankerOptions` (`topN`, `temperature`). A connection may name a reranker as its default (BASED-LANCE-CONN-DEFAULT-PROFILES); that seeds the Data tab's picker but is never auto-applied to an agent search. Deleting a profile also clears it from every connection that named it.
 
 **Verification procedure:**
 1. Settings → Search tab → Reranker profiles → Add a profile pointing at a running rerank server → Save
@@ -1645,6 +1662,53 @@ Users configure one or more named reranker profiles (`name`, `baseUrl`, optional
 3. Add a second profile with API = "OpenAI chat completions (yes/no logprobs)", Base URL = an LM Studio `…/v1` running a non-thinking Qwen3-Reranker GGUF, Model = its LM Studio identifier → run the same search with this profile → rows carry `_rerank_score` in (0,1) and the order changes vs. the native score
 4. Editing either profile with a blank API key keeps the stored key; a legacy profile (saved before `api` existed) still calls `POST {baseUrl}/rerank`
 5. With a reranker selected, the search toolbar shows a "Rerank col" picker listing the table's string columns (default "auto" = the content-column heuristic); picking one sends it as `rerankTextColumn` and the rerank documents come from that column
+
+### BASED-LANCE-CONN-DEFAULT-PROFILES: Per-connection default search profiles
+**Applies to:** based (core, ui)
+**Test category:** integration (resolution, persistence, delete sweep, route fallback); manual (connection dialog pickers + prefill, Data-tab preselect)
+
+A LanceDB connection carries an optional default embedding profile and default reranker profile (`ConnectionConfig.defaultEmbeddingProfileId` / `defaultRerankerProfileId`, set in the connection dialog). The scope is deliberately the **connection**, not app-wide settings: which embedding model to use is a property of how that dataset's vectors were built, and a global default would silently reuse one model across datasets built by different pipelines — where a *same-dimension* mismatch returns plausible garbage that no dimension check can catch. There is no app-level default; instead a **new** connection prefills the embedding picker when exactly one embedding profile exists (the single-endpoint case), and never prefills on edit.
+
+Resolution, in both the agent tools and `POST /api/session/lance-search`, is: explicit id from the caller → the connected connection's default → none. The connection is re-read per call, so editing it applies without reconnecting and a mid-session connection switch never carries the previous default over. The two ids fail differently on purpose: an explicit unknown id throws `Unknown embedding profile: <id>` (a caller naming something that doesn't exist, usually the model), while a **dangling** default resolves to no profile so the caller gets the actionable "configure one" guidance. Deleting a profile sweeps it off every connection that named it (`ConnectionStore.clearSearchProfileRefs`).
+
+The embedding default is applied automatically; the reranker default is **not** applied to an agent search — on the `openai` api it costs one chat completion per candidate (up to `sampleSize` per search), so the agent must pass `rerankerProfileId` explicitly (it learns the id from BASED-LANCE-PROFILE-DISCOVERY). The Data tab seeds both of its pickers from the connection's defaults, so an absent id on the route means the user chose "None" and is honored; that panel never re-seeds once the user has touched either dropdown.
+
+**Acceptance criteria:**
+- Agent `vector_search` with `query` and no `embeddingProfileId`, connection default set → results ranked by that profile's embedding
+- Connection default pointing at a deleted profile → the "no embedding profile" guidance, not `Unknown embedding profile`; an explicitly-passed unknown id still throws by name
+- After `DELETE /api/embedding-profiles/:id` (or the reranker equivalent), no connection JSON still names it; other connections' unrelated references are untouched
+- Connection reranker set, no `rerankerProfileId` passed → the result carries no `_rerank_score` and the rerank endpoint is never called; passing the id explicitly does rerank
+- `POST /api/session/lance-search` with no `embeddingProfileId` embeds via the connected connection's default
+
+**Verification procedure (UI half):**
+1. Settings → Search → add one embedding profile → New connection → Engine: LanceDB → the "Embedding profile" picker is prefilled with it; add a second profile and create another connection → no prefill
+2. Edit an existing LanceDB connection → pick an embedding profile and a reranker → Save → reopen → both persisted; switch Engine to SQL Server and back → the pickers are absent for SQL Server
+3. Connect → open a table with a vector column → Data tab → Search → both dropdowns are seeded from the connection; set the reranker to "Reranker: none" and run → no `_rerank_score` column appears (the connection default does not come back)
+4. Edit the connection to a different embedding profile while the Data tab stays open → a fresh search in an untouched panel picks it up without reconnecting
+
+### BASED-LANCE-PROFILE-DISCOVERY: The agent can enumerate search profiles
+**Applies to:** based (core)
+**Test category:** unit (surface membership) + integration (output shape)
+
+The LanceDB agent surface exposes `list_search_profiles` (no input), returning `{embedding: [{id, name, model, isConnectionDefault}], reranker: [{id, name, model, api, isConnectionDefault}]}`. It exists because profile ids are uuids the model cannot guess and the persona tells it to ask rather than assume a reranker exists — without it, it can do neither. No API key material is returned in any form. Absent from the MSSQL surface (no search there).
+
+**Acceptance criteria:**
+- Present in the LanceDB toolset, absent from the MSSQL toolset
+- With two embedding profiles and one reranker configured, all three are returned, with the connection's defaults flagged `isConnectionDefault: true` and the others `false`
+- The serialized result contains no API key and no `apiKey` field
+- A reranker profile saved before `api` existed reports `api: "rerank"`
+
+### BASED-LANCE-EMBED-DIM-GUARD: Query-vector dimension checked against the column
+**Applies to:** based (core)
+**Test category:** integration
+
+Before querying, `search()` compares the query vector's length against the table's vector columns' `vectorDimension` (already known from BASED-LANCE-BROWSE) and throws if it matches none: `Query vector has N dimensions but the "<col>" column of <table> holds M.`, naming the embedding profile's model when the vector came from one. This replaces LanceDB's own `No vector column found to match with the query vector dimension: N`, which names neither the column nor the model — exactly what you need when a connection's default profile points at the wrong model. Applies equally to a caller-supplied raw vector. A table with no vector column is left to LanceDB (nothing to compare against).
+
+**Acceptance criteria:**
+- A raw `vector` whose length matches no vector column throws, naming the column, its dimension, and the produced dimension
+- An embedded query of the wrong size additionally names the profile's `model`
+- A correctly-sized vector behaves exactly as before
+- A table with no vector column produces LanceDB's own error, not the guard's
 
 ### BASED-LANCE-RERANK-OPENAI: OpenAI chat-completions scoring mode (yes/no logprobs)
 **Applies to:** based (core)
@@ -1734,11 +1798,13 @@ The settings popover (gear icon in the left rail, `ThemePicker`) has four tabs �
 Agent (`BASED-AI-PROVIDER-PROFILES`) — at a fixed width/height (480×560) that does not change when
 switching tabs; a tab whose content is taller than that scrolls internally. The Search tab lists
 embedding and reranker profiles with inline Add/Edit/Delete forms (`name`/`baseUrl`/`model`/API key,
-blank key on edit = keep stored).
+blank key on edit = keep stored). The tab is CRUD only — it carries no active/default marker (unlike
+the Agent tab's profiles), just a line pointing at the connection dialog as where a profile is chosen
+for use (BASED-LANCE-CONN-DEFAULT-PROFILES).
 
 **Verification procedure:**
 1. Click the gear icon → Search tab → Add an embedding profile and a reranker profile
-2. Both appear in the Data tab's Search toolbar dropdowns for a LanceDB table
+2. Both appear in the Data tab's Search toolbar dropdowns for a LanceDB table, and in the connection dialog's profile pickers; no row in the Search tab is clickable-to-activate
 3. Edit a profile leaving the API key blank → the previously stored key is preserved (verified by the search still authenticating successfully)
 4. Switch between General/Theme/Search/Agent repeatedly → the popover's width and height never change; a tab whose content overflows the fixed height scrolls internally instead of resizing the popover
 
@@ -1770,11 +1836,11 @@ On a local connect, if the target directory has no LanceDB tables directly but c
 **Applies to:** based (core)
 **Test category:** integration
 
-`based` computes query embeddings itself rather than relying on LanceDB's native registered-embedding-function mechanism (which requires per-table setup outside based on a per-table basis). When `search()` is called in `vector`/`hybrid` mode with a `query` string and no raw `vector`, and an `embeddingProfile` is resolved (from a user-configured `EmbeddingProfile`, BASED-LANCE-EMBED-PROFILES), `embedQuery()` calls the profile's OpenAI-compatible `/v1/embeddings` endpoint via `@ai-sdk/openai-compatible`'s `embeddingModel()` + `ai`'s `embed()`, and the resulting vector is passed to LanceDB's `vectorSearch`/`nearestTo`. With no embedding profile and no raw vector, the call errors with a message pointing at the alternatives (supply a vector, use `text_search`, or configure a profile).
+`based` computes query embeddings itself rather than relying on LanceDB's native registered-embedding-function mechanism (which requires per-table setup outside based on a per-table basis). When `search()` is called in `vector`/`hybrid` mode with a `query` string and no raw `vector`, and an `embeddingProfile` is resolved (from a user-configured `EmbeddingProfile`, BASED-LANCE-EMBED-PROFILES), `embedQuery()` calls the profile's OpenAI-compatible `/v1/embeddings` endpoint via `@ai-sdk/openai-compatible`'s `embeddingModel()` + `ai`'s `embed()`, and the resulting vector is passed to LanceDB's `vectorSearch`/`nearestTo`. With no embedding profile (neither named by the caller nor inherited from the connection, BASED-LANCE-CONN-DEFAULT-PROFILES) and no raw vector, the call errors with a message pointing at the alternatives (set the connection's profile, pass a profile id, or supply a vector). The table's columns are read *before* embedding so the produced vector can be dimension-checked (BASED-LANCE-EMBED-DIM-GUARD).
 
 **Acceptance criteria:**
 - `vector`/`hybrid` mode with `query` + a resolved embedding profile computes a vector and returns results ranked by it
-- `vector`/`hybrid` mode with `query` and no embedding profile and no raw `vector` throws a descriptive error rather than silently misusing the text as a vector
+- `vector`/`hybrid` mode with `query`, no embedding profile, no connection default, and no raw `vector` throws a descriptive error rather than silently misusing the text as a vector
 
 ## Lance SQL + LSP (Phase 4)
 

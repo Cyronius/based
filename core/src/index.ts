@@ -59,10 +59,14 @@ export {
   resolveModel,
   resolveExecutionDefaults,
   providerOptionsNamespace,
+  resolveAiTimeouts,
   DEFAULT_AI_CONFIG,
+  DEFAULT_AI_TIMEOUT_SECONDS,
+  AI_RUN_TIMEOUT_MULTIPLIER,
   type AiConfig,
   type ProviderKind,
   type ExecutionDefaults,
+  type AiTimeouts,
 } from "./agent/provider";
 export { AuditStore, type AuditEntry } from "./agent/audit";
 export { collectQuery, AGENT_ROW_CAP, type CollectedResult } from "./agent/runSql";

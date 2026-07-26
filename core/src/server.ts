@@ -39,7 +39,7 @@ import { parseCsv } from "./import/csvParse";
 import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
 import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
-import { AiConfigStore, resolveModel, resolveExecutionDefaults } from "./agent/provider";
+import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
 import { buildAgent, AGENT_ID } from "./agent/agent";
@@ -145,6 +145,15 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const list = ensureAiProfiles();
     const activeId = settings.get().activeAiProfileId;
     return list.find((p) => p.id === activeId) ?? list[0]!;
+  }
+
+  // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the connected connection's default search profiles.
+  // Re-read per call (never captured at connect/agent-build time) so editing the connection applies
+  // immediately and a mid-session switch can't carry the previous connection's profile over.
+  function connectionDefaults(sid: string): { embedding: string | null; reranker: string | null } {
+    const connectionId = sessions.get(sid)?.connectionId;
+    const cfg = connectionId ? connections.get(connectionId) : null;
+    return { embedding: cfg?.defaultEmbeddingProfileId ?? null, reranker: cfg?.defaultRerankerProfileId ?? null };
   }
   const agentInstructions = new AgentInstructionsStore(db);
   const audit = new AuditStore(db);
@@ -490,7 +499,10 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         return json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
       try {
-        const labels = await labelClusters(model, body.clusters, AbortSignal.timeout(60_000));
+        // The abort window comes from the profile, not a fixed 60 s — a slow local model can take
+        // minutes to answer (BASED-AI-PROFILE-TIMEOUT).
+        const { idleMs } = resolveAiTimeouts(profile.timeoutSeconds);
+        const labels = await labelClusters(model, body.clusters, AbortSignal.timeout(idleMs));
         return json({ labels, model: profile.model });
       } catch (err) {
         return json({ error: err instanceof Error ? err.message : String(err) }, 400);
@@ -505,7 +517,16 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       }
       try {
         const { embeddingProfileId, rerankerProfileId, ...rest } = body;
-        const embeddingProfile = resolveEmbeddingProfile(embeddingProfiles, getEmbeddingKey, embeddingProfileId);
+        // A caller that names no embedding profile falls back to the connection's
+        // (BASED-LANCE-CONN-DEFAULT-PROFILES). The reranker gets no fallback on this route either:
+        // the Data tab preselects the connection's reranker into its dropdown, so an absent id here
+        // means the user explicitly chose "None" and must be honored.
+        const embeddingProfile = resolveEmbeddingProfile(
+          embeddingProfiles,
+          getEmbeddingKey,
+          embeddingProfileId,
+          connectionDefaults(sid).embedding,
+        );
         const rerankerProfile = resolveRerankerProfile(rerankerProfiles, getRerankerKey, rerankerProfileId);
         const result = await adapter.search({ ...rest, embeddingProfile, rerankerProfile });
         return json(result);
@@ -612,6 +633,8 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (embedProfileMatch && method === "DELETE") {
       embeddingProfiles.delete(embedProfileMatch[1]!);
       deleteEmbeddingKey(embedProfileMatch[1]!);
+      // BASED-LANCE-CONN-DEFAULT-PROFILES: a deleted profile stops being any connection's default.
+      connections.clearSearchProfileRefs(embedProfileMatch[1]!);
       return json({ ok: true });
     }
 
@@ -632,6 +655,8 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (rerankProfileMatch && method === "DELETE") {
       rerankerProfiles.delete(rerankProfileMatch[1]!);
       deleteRerankerKey(rerankProfileMatch[1]!);
+      // BASED-LANCE-CONN-DEFAULT-PROFILES: a deleted profile stops being any connection's default.
+      connections.clearSearchProfileRefs(rerankProfileMatch[1]!);
       return json({ ok: true });
     }
 
@@ -1018,6 +1043,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         rerankerProfiles,
         getEmbeddingKey,
         getRerankerKey,
+        // BASED-LANCE-CONN-DEFAULT-PROFILES — resolved per tool call, not captured here.
+        defaultEmbeddingProfileId: () => connectionDefaults(sid).embedding,
+        defaultRerankerProfileId: () => connectionDefaults(sid).reranker,
       },
     });
 

@@ -1,4 +1,5 @@
-// Traces: BASED-THEME, BASED-FONT-SCALE, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES
+// Traces: BASED-THEME, BASED-FONT-SCALE, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES,
+// BASED-AI-PROFILE-TIMEOUT
 // Settings modal (gear icon) mounted in the LeftRail header: General (font-size scale), Theme (color
 // theme picker), Search (embedding/reranker profile CRUD), and Agent (AI-provider profile CRUD + agent
 // instruction sets) tabs. On the Agent tab, editing a profile or an instruction set takes over the
@@ -16,6 +17,7 @@ import {
   saveAgentInstructionSet,
   deleteAgentInstructionSet,
 } from "../api/client";
+import { AI_RUN_TIMEOUT_MULTIPLIER, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
 
@@ -279,6 +281,12 @@ function SearchProfilesTab() {
 
   return (
     <div className="px-3 py-3 space-y-4">
+      {/* Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — this tab stays pure CRUD; which profile a
+          search uses by default is a property of the connection, set in the connection dialog. */}
+      <p className="text-[length:var(--fs-sm)] text-faint leading-snug">
+        Endpoints for embedding and reranking. Each LanceDB connection picks which of these it uses by default — edit
+        the connection to choose.
+      </p>
       <div>
         <div className="ledger-label mb-1.5 flex items-center justify-between">
           <span>Embedding profiles</span>
@@ -461,6 +469,15 @@ function AiProfileForm({
   // while valid; invalid JSON blocks Save with an inline error.
   const [paramsText, setParamsText] = useState(() => (form.params ? JSON.stringify(form.params, null, 2) : ""));
   const [paramsError, setParamsError] = useState<string | null>(null);
+  // Response timeout (BASED-AI-PROFILE-TIMEOUT): edited as text so a half-typed number doesn't get
+  // snapped back; anything not a positive number clears the field and the default applies.
+  const [timeoutText, setTimeoutText] = useState(() => (form.timeoutSeconds != null ? String(form.timeoutSeconds) : ""));
+  function onTimeoutChange(text: string) {
+    setTimeoutText(text);
+    const n = Number(text.trim());
+    const valid = text.trim() !== "" && Number.isFinite(n) && n > 0;
+    setForm({ ...form, timeoutSeconds: valid ? Math.floor(n) : undefined });
+  }
   function onParamsChange(text: string) {
     setParamsText(text);
     if (!text.trim()) {
@@ -541,6 +558,22 @@ function AiProfileForm({
             </option>
           ))}
         </select>
+      </label>
+      <label className="block">
+        <span className="text-faint">Response timeout (seconds)</span>
+        <input
+          type="number"
+          min={1}
+          className={`${field} mt-0.5`}
+          placeholder={`${DEFAULT_AI_TIMEOUT_SECONDS} (default)`}
+          value={timeoutText}
+          onChange={(e) => onTimeoutChange(e.target.value)}
+        />
+        <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
+          How long to wait with no response from the model before giving up. Raise it for slow local
+          models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s). A whole chat turn gets{" "}
+          {AI_RUN_TIMEOUT_MULTIPLIER}× this as a hard cap.
+        </span>
       </label>
       <label className="block">
         <span className="text-faint">

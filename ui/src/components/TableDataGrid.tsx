@@ -154,6 +154,23 @@ export function TableDataGrid({
   const embeddingProfiles = useStore((s) => s.embeddingProfiles);
   const rerankerProfiles = useStore((s) => s.rerankerProfiles);
 
+  // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — seed both pickers from the active connection's
+  // defaults, once. `touched` means the user has driven the dropdown (including to "None"), and from
+  // then on this panel never re-seeds: an edit to the connection must not stomp the current search.
+  // Selected as primitives, never as a fresh object — an unstable selector result re-renders on every
+  // unrelated store change.
+  const activeConnectionId = useStore((s) => s.activeConnectionId);
+  const connections = useStore((s) => s.connections);
+  const activeConn = connections.find((c) => c.id === activeConnectionId);
+  const defaultEmbeddingId = activeConn?.defaultEmbeddingProfileId ?? "";
+  const defaultRerankerId = activeConn?.defaultRerankerProfileId ?? "";
+  const profilesTouched = useRef(false);
+  useEffect(() => {
+    if (profilesTouched.current) return;
+    setEmbeddingProfileId(embeddingProfiles.some((p) => p.id === defaultEmbeddingId) ? defaultEmbeddingId : "");
+    setRerankerProfileId(rerankerProfiles.some((p) => p.id === defaultRerankerId) ? defaultRerankerId : "");
+  }, [defaultEmbeddingId, defaultRerankerId, embeddingProfiles, rerankerProfiles]);
+
   // Pending change set (all keyed against the *current* page's original row indexes).
   const [edits, setEdits] = useState<Record<number, Record<string, WireValue>>>({});
   const [newRows, setNewRows] = useState<Array<Record<string, WireValue>>>([]);
@@ -586,8 +603,11 @@ export function TableDataGrid({
               <select
                 className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
                 value={embeddingProfileId}
-                onChange={(e) => setEmbeddingProfileId(e.target.value)}
-                title="Embedding profile"
+                onChange={(e) => {
+                  profilesTouched.current = true;
+                  setEmbeddingProfileId(e.target.value);
+                }}
+                title="Embedding profile (seeded from this connection's default)"
               >
                 <option value="">Embedding: none</option>
                 {embeddingProfiles.map((p) => (
@@ -602,8 +622,11 @@ export function TableDataGrid({
                 <select
                   className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
                   value={rerankerProfileId}
-                  onChange={(e) => setRerankerProfileId(e.target.value)}
-                  title="Reranker profile"
+                  onChange={(e) => {
+                    profilesTouched.current = true;
+                    setRerankerProfileId(e.target.value);
+                  }}
+                  title="Reranker profile (seeded from this connection's default)"
                 >
                   <option value="">Reranker: none</option>
                   {rerankerProfiles.map((p) => (

@@ -150,6 +150,21 @@ describe.skip("BASED-AI-PROFILE-PARAMS: manual verification", () => {
   it.todo("see spec.md procedure");
 });
 
+// Traces: BASED-AI-PROFILE-TIMEOUT (canonical spec: specs/based/spec.md)
+// Verification: manual — the profile form's "Response timeout (seconds)" field, blank showing the
+// 900 s default in its placeholder.
+// 1. Settings → Agent → edit the ACTIVE profile → set Response timeout to 5 → Save
+// 2. Ask Capi something a slow local model can't answer within 5 s → the run aborts and
+//    "The request timed out. Please try again." appears (no chat remount was needed for the new
+//    value to take effect)
+// 3. Edit the same profile → set 1800 → Save → ask again → the answer streams to completion even
+//    if the model sits silent for several minutes before its first token
+// 4. Clear the field → Save → reopen the profile → the field is blank and the placeholder shows the
+//    default (the stored value was removed, not zeroed)
+describe.skip("BASED-AI-PROFILE-TIMEOUT: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
 // Traces: BASED-HISTORY-UI (canonical spec: specs/based/spec.md)
 // Verification: manual — left-rail Objects | History toggle (persisted); History panel with
 // Queries + Agent sub-tabs scoped to the active connection, search + status chips, inline expand
@@ -271,5 +286,15 @@ describe.skip("BASED-GRID-CONTEXT-MENU: manual verification", () => {
 // replaced by a name derived from the executed SQL ("select Customers"); later runs, errored
 // runs, file-backed tabs, and manually renamed tabs keep their titles.
 describe.skip("BASED-TAB-AUTONAME-APPLY: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-LANCE-CONN-DEFAULT-PROFILES (canonical spec: specs/based/spec.md)
+// Verification: manual (UI half; the resolution/persistence/sweep half is covered by
+// integration.storage, integration.lancedb, and integration.server) — a LanceDB connection's
+// embedding + reranker pickers persist and prefill (only on a new connection, only when exactly one
+// embedding profile exists); the Data tab's search dropdowns seed from the connection but honor an
+// explicit "none"; editing the connection applies without reconnecting.
+describe.skip("BASED-LANCE-CONN-DEFAULT-PROFILES: manual verification", () => {
   it.todo("see spec.md procedure");
 });

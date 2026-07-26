@@ -31,6 +31,8 @@ describe("BASED-LANCE-AGENT-SURFACE: engine-specific toolsets", () => {
     expect(names).toContain("export_data");
     expect(names).toContain("script_object");
     expect(names).not.toContain("vector_search");
+    // BASED-LANCE-PROFILE-DISCOVERY: search-profile discovery is a LanceDB-only affordance
+    expect(names).not.toContain("list_search_profiles");
     expect(s.skillTags).toBeUndefined();
   });
 
@@ -47,6 +49,9 @@ describe("BASED-LANCE-AGENT-SURFACE: engine-specific toolsets", () => {
     expect(names).toContain("export_data");
     expect(names).toContain("script_object");
     expect(names).not.toContain("run_mutation"); // still read-only
+    // BASED-LANCE-PROFILE-DISCOVERY: the agent can enumerate embedding/reranker profiles instead of
+    // guessing uuids it has no way to know.
+    expect(names).toContain("list_search_profiles");
     expect(s.skillTags).toEqual(["lancedb"]);
   });
 

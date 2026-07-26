@@ -21,6 +21,11 @@ export interface ConnectionConfig {
   uri?: string;
   /** LanceDB cloud only. */
   region?: string;
+  /** LanceDB only (BASED-LANCE-CONN-DEFAULT-PROFILES): the embedding profile this connection's
+   *  searches use when none is named, and the reranker profile offered for it. Per-connection
+   *  because the right embedding model is a property of how this dataset's vectors were built. */
+  defaultEmbeddingProfileId?: string | null;
+  defaultRerankerProfileId?: string | null;
   username?: string;
   tenantId?: string;
   clientId?: string;
@@ -348,6 +353,9 @@ export interface AiProfile {
   instructionSetId: string;
   /** Model parameter JSON (BASED-AI-PROFILE-PARAMS): call settings + provider options, no secrets. */
   params?: Record<string, unknown>;
+  /** No-activity window for this profile's requests, in seconds (BASED-AI-PROFILE-TIMEOUT).
+   *  Absent = DEFAULT_AI_TIMEOUT_SECONDS; see ui/src/agent/aiTimeouts.ts. */
+  timeoutSeconds?: number;
   hasKey: boolean;
   createdAt: string;
   updatedAt: string;

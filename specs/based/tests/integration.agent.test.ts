@@ -136,6 +136,27 @@ describe("BASED-AI-PROVIDER-PROFILES: profile CRUD + migration", () => {
     await api(`/api/ai-profiles/${created.id}`, { method: "DELETE" });
   });
 
+  // Traces: BASED-AI-PROFILE-TIMEOUT
+  test("a profile's timeoutSeconds persists, round-trips, and clears when re-saved without it", async () => {
+    const created = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ name: "Timeout profile", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m", timeoutSeconds: 1800 }),
+      })
+    ).json()) as { id: string; timeoutSeconds?: number };
+    expect(created.timeoutSeconds).toBe(1800);
+    const profiles = (await (await api("/api/ai-profiles")).json()) as Array<{ id: string; timeoutSeconds?: number }>;
+    expect(profiles.find((p) => p.id === created.id)?.timeoutSeconds).toBe(1800);
+    const updated = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ id: created.id, name: "Timeout profile", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m" }),
+      })
+    ).json()) as { timeoutSeconds?: number };
+    expect(updated.timeoutSeconds).toBeUndefined();
+    await api(`/api/ai-profiles/${created.id}`, { method: "DELETE" });
+  });
+
   // Traces: BASED-AI-PROFILE-PARAMS — store-level persistence across reopen
   test("params survive a store reopen", () => {
     const dir = mkdtempSync(join(tmpdir(), "based-aiprof-params-"));

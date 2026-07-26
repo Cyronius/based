@@ -22,8 +22,9 @@ export const LANCE_PERSONA = `You are connected to a LanceDB vector database.
 - Tables hold rows with regular columns plus one or more vector (embedding) columns; call get_schema to see which columns are vectors and their dimension.
 - Tables have no primary key and are search/append-oriented; you cannot update or delete rows.
 - To find rows by meaning, use vector_search. To find rows by keyword, use text_search (needs a full-text index on a text column). To combine both with reranking, use hybrid_search. These search tools are the primary way to find relevant rows.
-- vector_search and hybrid_search embed your text query automatically using the session's default embedding profile (pass embeddingProfileId to pick a specific one), or a raw vector you supply. If no embedding profile is configured and no vector is given, the tool errors — fall back to text_search or tell the user to set up an embedding profile.
-- Any of the three tools can take a rerankerProfileId to narrow noisy candidate pools through an external reranker — only use one if the user has configured one; ask rather than assuming. vector_search/hybrid_search additionally expose the Lance tuning knobs (nprobes, ef, refineFactor, postfilter, bypassVectorIndex, distance range) — load the lance-search skill before reaching for them.
+- vector_search and hybrid_search embed your text query automatically using the embedding profile this connection is configured with (pass embeddingProfileId to override it), or a raw vector you supply. If the connection has no embedding profile and no vector is given, the tool errors — call list_search_profiles to see what exists, and either name one or fall back to text_search / run_query. Tell the user to set the connection's embedding profile (connection settings) rather than asking them for it every time.
+- list_search_profiles reports the configured embedding and reranker profiles with their ids and models, and flags which the connection defaults to. Call it before claiming nothing is configured, and to get an id — never invent one.
+- Reranking is opt-in: pass rerankerProfileId when the user asks to tighten or narrow noisy results. It is never applied automatically, even when the connection names a reranker, because it can cost one model call per candidate row. vector_search/hybrid_search additionally expose the Lance tuning knobs (nprobes, ef, refineFactor, postfilter, bypassVectorIndex, distance range) — load the lance-search skill before reaching for them.
 - read_rows pages through a table (offset/limit) when you need more than sample_rows' peek; script_object describes a table's schema (columns, vector dims/metric, pyarrow snippet); export_data writes a table or local-SQL result to a CSV/XLSX file and returns the path.
 - Local (file-based) connections also support read-only SQL via run_query: DuckDB dialect (LIMIT not TOP, double-quoted identifiers) over the attached Lance tables — use it for aggregates, JOINs, and filters that search can't express. In base-folder connections qualify tables as folder.main.table. LanceDB Cloud connections have no SQL; run_query will error there.
 - Put every SQL statement in its own \`\`\`sql fenced code block so the user can insert or run it with one click. Make the first line a single-line comment (\`-- ...\`) briefly stating what it does.
@@ -138,10 +139,20 @@ export function lanceTools(deps: ToolDeps) {
     },
   });
 
+  // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — an omitted embeddingProfileId falls back to the
+  // connection's profile, because embedding is required for the search to run at all and the model
+  // has no way to know a uuid. The reranker deliberately gets NO fallback: on the openai api it
+  // costs one chat completion per candidate (up to sampleSize per search), so it stays opt-in and
+  // the agent must name it — list_search_profiles is how it learns the id.
   function resolveProfiles(embeddingProfileId?: string, rerankerProfileId?: string) {
     const embeddingProfile =
       deps.embeddingProfiles && deps.getEmbeddingKey
-        ? resolveEmbeddingProfile(deps.embeddingProfiles, deps.getEmbeddingKey, embeddingProfileId)
+        ? resolveEmbeddingProfile(
+            deps.embeddingProfiles,
+            deps.getEmbeddingKey,
+            embeddingProfileId,
+            deps.defaultEmbeddingProfileId?.(),
+          )
         : undefined;
     const rerankerProfile =
       deps.rerankerProfiles && deps.getRerankerKey
@@ -149,6 +160,35 @@ export function lanceTools(deps: ToolDeps) {
         : undefined;
     return { embeddingProfile, rerankerProfile };
   }
+
+  // Traces: BASED-LANCE-PROFILE-DISCOVERY — profile ids are uuids the model cannot guess and the
+  // persona tells it to ask rather than assume a reranker exists; without this tool it can do
+  // neither. Returns metadata only: no API keys, not even a hasKey flag the model could act on.
+  const listSearchProfiles = createTool({
+    id: "list_search_profiles",
+    description:
+      "List the user's configured embedding and reranker profiles (id, name, model), marking which ones this connection uses by default. Call this to get a profile id before passing embeddingProfileId/rerankerProfileId, or to tell the user what is configured. The connection's embedding profile is already applied automatically to text queries; its reranker is not — pass the id to use it.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const defaultEmbeddingId = deps.defaultEmbeddingProfileId?.() ?? null;
+      const defaultRerankerId = deps.defaultRerankerProfileId?.() ?? null;
+      return {
+        embedding: (deps.embeddingProfiles?.list() ?? []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          model: p.model,
+          isConnectionDefault: p.id === defaultEmbeddingId,
+        })),
+        reranker: (deps.rerankerProfiles?.list() ?? []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          model: p.model,
+          api: p.api ?? "rerank",
+          isConnectionDefault: p.id === defaultRerankerId,
+        })),
+      };
+    },
+  });
 
   const vectorSearch = createTool({
     id: "vector_search",
@@ -188,7 +228,7 @@ export function lanceTools(deps: ToolDeps) {
         auditRead(deps, `vector_search(${table}, k=${k ?? 10})`, "error", Math.round(performance.now() - t0), msg);
         return {
           error: msg,
-          hint: "If you passed text with no embedding profile configured, supply a raw `vector`, or use text_search.",
+          hint: "If the connection has no embedding profile, call list_search_profiles and pass an embeddingProfileId, supply a raw `vector`, or use text_search.",
         };
       }
     },
@@ -340,6 +380,7 @@ export function lanceTools(deps: ToolDeps) {
     vector_search: vectorSearch,
     text_search: textSearch,
     hybrid_search: hybridSearch,
+    list_search_profiles: listSearchProfiles,
     script_object: scriptObjectTool,
   };
 }

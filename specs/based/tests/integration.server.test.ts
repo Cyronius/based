@@ -443,6 +443,101 @@ dw("BASED-IMPORT-CSV-RUN: inspect + batched transactional import", () => {
   }, 120_000);
 });
 
+// Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the Data tab's search panel sends no profile id until
+// the user picks one, so the route must fall back to the connected connection's default the same way
+// the agent tools do. File-based LanceDB needs no external service, so this always runs.
+describe("BASED-LANCE-CONN-DEFAULT-PROFILES: lance-search route honors the connection's default", () => {
+  const SID = "lance-defaults";
+  const DIM = 8;
+  const target = Array.from({ length: DIM }, (_, j) => Math.sin(12 * 0.7 + j * 0.13));
+
+  test("a vector search with no embeddingProfileId embeds via the connection's profile; deleting it sweeps the reference", async () => {
+    const lancedb = await import("@lancedb/lancedb");
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-lance-"));
+    const ldb = await lancedb.connect(dir);
+    await ldb.createTable(
+      "docs",
+      Array.from({ length: 20 }, (_, i) => ({
+        id: i,
+        text: `document ${i}`,
+        vector: Array.from({ length: DIM }, (_, j) => Math.sin(i * 0.7 + j * 0.13)),
+      })),
+      { mode: "overwrite" },
+    );
+
+    const embedSrv = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as { input?: unknown };
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return Response.json({
+          data: inputs.map((_, index) => ({ object: "embedding", index, embedding: target })),
+          model: "stub-embed",
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+        });
+      },
+    });
+
+    try {
+      const profile = (await (
+        await api("/api/embedding-profiles", {
+          method: "POST",
+          body: JSON.stringify({ name: "stub", baseUrl: `http://127.0.0.1:${embedSrv.port}/v1`, model: "stub-embed" }),
+        })
+      ).json()) as { id: string };
+
+      const conn = (await (
+        await api("/api/connections", {
+          method: "POST",
+          body: JSON.stringify({
+            name: "srv-lance",
+            server: "",
+            database: "lancedb",
+            engine: "lancedb",
+            authType: "lancedb-local",
+            uri: dir,
+            encrypt: false,
+            trustServerCertificate: false,
+            defaultEmbeddingProfileId: profile.id,
+          } satisfies ConnectionInput),
+        })
+      ).json()) as ConnectionConfig;
+      expect(conn.defaultEmbeddingProfileId).toBe(profile.id);
+
+      const connected = await api(`/api/session/connect?sid=${SID}`, { method: "POST", body: JSON.stringify({ connectionId: conn.id }) });
+      expect(connected.status).toBe(200);
+
+      // No embeddingProfileId in the body — the connection's default must supply it.
+      const res = await api(`/api/session/lance-search?sid=${SID}`, {
+        method: "POST",
+        body: JSON.stringify({ table: "docs", mode: "vector", query: "anything", keepSize: 2 }),
+      });
+      expect(res.status).toBe(200);
+      const found = (await res.json()) as { columns: Array<{ name: string }>; rows: unknown[][] };
+      const idIdx = found.columns.findIndex((c) => c.name === "id");
+      expect(found.rows[0]![idIdx]).toBe(12);
+
+      // Deleting the profile clears it off the connection and degrades the same search to a
+      // descriptive error instead of "Unknown embedding profile".
+      expect((await api(`/api/embedding-profiles/${profile.id}`, { method: "DELETE" })).status).toBe(200);
+      const conns = (await (await api("/api/connections")).json()) as ConnectionConfig[];
+      expect(conns.find((c) => c.id === conn.id)!.defaultEmbeddingProfileId).toBeNull();
+
+      const after = await api(`/api/session/lance-search?sid=${SID}`, {
+        method: "POST",
+        body: JSON.stringify({ table: "docs", mode: "vector", query: "anything", keepSize: 2 }),
+      });
+      expect(after.status).toBe(400);
+      const err = (await after.json()) as { error: string };
+      expect(err.error).toMatch(/embedding profile/i);
+      expect(err.error).not.toMatch(/unknown embedding profile/i);
+    } finally {
+      embedSrv.stop(true);
+      await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+    }
+  }, 120_000);
+});
+
 describe("BASED-UI-SESSION-RESUME: session-lost signal", () => {
   // A server restart wipes in-memory sessions; a fresh sid that never connected reproduces that exact
   // state (no adapter). The endpoint must answer with the distinct 409 `session-lost` the client keys on

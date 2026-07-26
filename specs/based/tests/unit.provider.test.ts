@@ -1,9 +1,16 @@
-// Traces: BASED-AI-PROVIDER-WIRED, BASED-AI-PROFILE-PARAMS
+// Traces: BASED-AI-PROVIDER-WIRED, BASED-AI-PROFILE-PARAMS, BASED-AI-PROFILE-TIMEOUT
 // resolveModel must construct a real AI SDK model for every ProviderKind (openai / azure-openai /
-// anthropic natively, not just the openai-compatible gateway), and resolveExecutionDefaults must
-// split a profile's params JSON into modelSettings + namespaced providerOptions.
+// anthropic natively, not just the openai-compatible gateway), resolveExecutionDefaults must
+// split a profile's params JSON into modelSettings + namespaced providerOptions, and
+// resolveAiTimeouts must turn a profile's timeoutSeconds into the idle + whole-run windows.
 import { describe, expect, test } from "bun:test";
-import { resolveModel, resolveExecutionDefaults } from "@based/core";
+import {
+  resolveModel,
+  resolveExecutionDefaults,
+  resolveAiTimeouts,
+  DEFAULT_AI_TIMEOUT_SECONDS,
+  AI_RUN_TIMEOUT_MULTIPLIER,
+} from "@based/core";
 
 const base = { id: "p1", baseUrl: "", model: "m", deployment: undefined as string | undefined };
 
@@ -96,5 +103,29 @@ describe("BASED-AI-PROFILE-PARAMS: resolveExecutionDefaults split", () => {
   test("empty or absent params yield no settings at all", () => {
     expect(resolveExecutionDefaults("openai", undefined)).toEqual({});
     expect(resolveExecutionDefaults("openai", {})).toEqual({});
+  });
+});
+
+describe("BASED-AI-PROFILE-TIMEOUT: resolveAiTimeouts", () => {
+  test("a configured value drives the idle window and the whole-run cap", () => {
+    expect(resolveAiTimeouts(1800)).toEqual({ idleMs: 1_800_000, runMs: 1_800_000 * AI_RUN_TIMEOUT_MULTIPLIER });
+  });
+
+  test("an absent value falls back to the default", () => {
+    const expected = { idleMs: DEFAULT_AI_TIMEOUT_SECONDS * 1000, runMs: DEFAULT_AI_TIMEOUT_SECONDS * 1000 * AI_RUN_TIMEOUT_MULTIPLIER };
+    expect(resolveAiTimeouts(undefined)).toEqual(expected);
+    expect(resolveAiTimeouts(null)).toEqual(expected);
+  });
+
+  test.each([0, -30, Number.NaN, Number.POSITIVE_INFINITY])("a non-positive/non-finite value (%p) falls back to the default", (v) => {
+    expect(resolveAiTimeouts(v).idleMs).toBe(DEFAULT_AI_TIMEOUT_SECONDS * 1000);
+  });
+
+  test("fractional seconds floor to whole seconds", () => {
+    expect(resolveAiTimeouts(90.7).idleMs).toBe(90_000);
+  });
+
+  test("the default is well above the AG-UI library's 180 s idle default", () => {
+    expect(DEFAULT_AI_TIMEOUT_SECONDS).toBeGreaterThan(180);
   });
 });

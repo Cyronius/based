@@ -528,6 +528,25 @@ export class LanceDbAdapter implements DatabaseAdapter {
     return q;
   }
 
+  // Traces: BASED-LANCE-EMBED-DIM-GUARD — LanceDB's own failure ("No vector column found to match
+  // with the query vector dimension: N") names neither the column nor the model that produced the
+  // vector, which is precisely what you need to know when a connection's default embedding profile
+  // points at the wrong model. A table with no vector column is left alone: there's nothing to
+  // compare against, and the engine's error is already the right one.
+  private assertVectorDimension(vector: number[], baseCols: TableColumn[], table: string, model?: string): void {
+    const vectorCols = baseCols.filter((c) => c.isVector && typeof c.vectorDimension === "number");
+    if (vectorCols.length === 0) return;
+    if (vectorCols.some((c) => c.vectorDimension === vector.length)) return;
+    const expected =
+      vectorCols.length === 1
+        ? `the "${vectorCols[0]!.name}" column of ${table} holds ${vectorCols[0]!.vectorDimension}`
+        : `${table}'s vector columns hold ${vectorCols.map((c) => `"${c.name}" (${c.vectorDimension})`).join(", ")}`;
+    const blame = model
+      ? ` Embedding model "${model}" produced the wrong size — pick a profile whose model matches the column.`
+      : "";
+    throw new Error(`Query vector has ${vector.length} dimensions but ${expected}.${blame}`);
+  }
+
   private static readonly VECTOR_KNOB_KEYS = [
     "distanceType",
     "nprobes",
@@ -555,17 +574,22 @@ export class LanceDbAdapter implements DatabaseAdapter {
     const sampleSize = Math.min(Math.max(1, Math.floor(params.sampleSize ?? 50)), this.rowCap);
     const keepSize = Math.min(Math.max(1, Math.floor(params.keepSize ?? 10)), sampleSize);
 
+    // Resolved before embedding so the dimension guard below can compare against the real column
+    // (BASED-LANCE-EMBED-DIM-GUARD).
+    const t = await this.resolveTable(params.table, params.schema || undefined);
+    const baseCols = await this.getTableColumns(params.schema ?? "", params.table);
+
     let vector = params.vector;
     if ((params.mode === "vector" || params.mode === "hybrid") && !vector) {
       if (!params.query) throw new Error(`${params.mode} search needs a query vector or a text query`);
       if (!params.embeddingProfile) {
-        throw new Error("No embedding profile selected — supply a raw vector or pick an embedding profile");
+        throw new Error(
+          "No embedding profile selected — set this connection's embedding profile, pass an embedding profile id, or supply a raw vector",
+        );
       }
       vector = await embedQuery(params.embeddingProfile, params.query);
     }
-
-    const t = await this.resolveTable(params.table, params.schema || undefined);
-    const baseCols = await this.getTableColumns(params.schema ?? "", params.table);
+    if (vector) this.assertVectorDimension(vector, baseCols, params.table, params.embeddingProfile?.model);
 
     let records: Array<Record<string, unknown>>;
     if (params.mode === "vector") {
