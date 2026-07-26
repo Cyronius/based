@@ -1,5 +1,7 @@
 import type { ElectrobunConfig } from "electrobun";
 import { readFile } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 
 // @napi-rs/keyring's loader reassigns `require = createRequire(__filename)`
 // (index.js:7) so that, when run unbundled, it resolves its native binding
@@ -78,11 +80,12 @@ const DUCKDB_BINDING_TARGETS: Record<string, string> = {
   "linux-x64": "linux-x64",
   "linux-arm64": "linux-arm64",
 };
+const duckdbTarget =
+  DUCKDB_BINDING_TARGETS[`${process.platform}-${process.arch}`] ?? "win32-x64";
 const fixDuckdbNativeRequire = {
   name: "fix-duckdb-native-require",
   setup(build: import("bun").PluginBuilder) {
-    const target =
-      DUCKDB_BINDING_TARGETS[`${process.platform}-${process.arch}`] ?? "win32-x64";
+    const target = duckdbTarget;
     build.onLoad(
       { filter: /@duckdb[\\/]node-bindings[\\/]duckdb\.js$/ },
       async () => {
@@ -92,6 +95,37 @@ const fixDuckdbNativeRequire = {
     );
   },
 };
+
+// BASED-PACKAGE-WIN: duckdb.node is only a thin N-API shim dynamically linked against a large
+// companion library (duckdb.dll / libduckdb.dylib / libduckdb.so) shipped beside it in the
+// platform package. Bun's bundler copies the required .node next to the bundle output but not
+// its dependent library, so the packaged app fails the first LanceDB/DuckDB query with
+// "LoadLibrary failed: The specified module could not be found." Copy the companion next to the
+// bundled .node — the OS loader searches the addon's own directory first for its dependents.
+// Located by scanning the workspace .bun store directly (version-agnostic prefix match) rather
+// than Bun.resolveSync: electrobun's compiled CLI evaluates this config inside a standalone
+// binary whose baked-in resolver can't resolve workspace deps from arbitrary parent paths
+// ("Cannot find module '@duckdb/node-api'"), and the platform package is a transitive dep of
+// core, not of shell, so it has no top-level node_modules entry either.
+const DUCKDB_COMPANION_LIBS: Record<string, string> = {
+  win32: "duckdb.dll",
+  darwin: "libduckdb.dylib",
+  linux: "libduckdb.so",
+};
+function duckdbCompanionLibCopyEntry(): Record<string, string> {
+  const lib = DUCKDB_COMPANION_LIBS[process.platform] ?? "duckdb.dll";
+  const store = join(import.meta.dir, "../node_modules/.bun");
+  const prefix = `@duckdb+node-bindings-${duckdbTarget}@`;
+  const entry = readdirSync(store).find((d) => d.startsWith(prefix));
+  const libPath = entry
+    ? join(store, entry, "node_modules", "@duckdb", `node-bindings-${duckdbTarget}`, lib)
+    : null;
+  if (!libPath || !existsSync(libPath)) {
+    throw new Error(`duckdb companion library not found: ${prefix}*/…/${lib} under ${store}`);
+  }
+  // electrobun joins copy keys onto the project root, so the key must be relative to shell/.
+  return { [relative(import.meta.dir, libPath)]: `bun/${lib}` };
+}
 
 export default {
   app: {
@@ -115,6 +149,7 @@ export default {
       // installed app serves the real frontend without a repo checkout. findUiDist() in
       // src/bun/index.ts looks here first, relative to bun.exe.
       "../ui/dist": "ui/dist",
+      ...duckdbCompanionLibCopyEntry(),
     },
     // On Windows, electrobun 1.18.1's compiled CLI (bin/electrobun.exe) embeds
     // this icon via `require.resolve("rcedit/package.json")` — but since that

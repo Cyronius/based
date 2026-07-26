@@ -59,6 +59,15 @@ export class LanceSqlBridge {
     if (this.init) return this.init;
     this.init = (async () => {
       const duckdb = await import("@duckdb/node-api");
+      // In the bundled shell, @duckdb/node-api is CJS: if its first load threw (e.g. the native
+      // binding's LoadLibrary failed), a retry gets the cached, partially-initialized exports back
+      // instead of a rethrow — an empty namespace that would surface as the baffling "undefined is
+      // not an object (evaluating 'duckdb.DuckDBInstance.create')". Name the real problem instead.
+      if (typeof duckdb.DuckDBInstance?.create !== "function") {
+        throw new LanceSqlSetupError(
+          "DuckDB failed to initialize — its native binding did not load (the original error was reported on the first attempt this session). Restart the app and retry.",
+        );
+      }
       const instance = await duckdb.DuckDBInstance.create(":memory:");
       const internal = await instance.connect();
       try {

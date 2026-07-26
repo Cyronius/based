@@ -2019,9 +2019,17 @@ repo checkout present.
 **Verification procedure:**
 1. Build + install via `scripts/package-win.ps1` → run from the Start Menu shortcut on a path
    with no repo → the full UI renders (not the bare core page).
+2. In the installed app, run a query on a LanceDB connection (exercises the DuckDB native
+   stack). It must return results — not "LoadLibrary failed: The specified module could not
+   be found." (`duckdb.node` is a thin shim linked against a companion `duckdb.dll`; the
+   `duckdbCompanionLibCopyEntry()` copy rule in `shell/electrobun.config.ts` ships the DLL
+   beside the bundled `.node`.)
 
 - 2026-07-25 PASS (installed via silent Setup; core server on the installed app returned the
   built `ui/dist` index.html).
+- 2026-07-25 step 2 verified at addon-load level: bundled `duckdb-*.node` in
+  `build/dev-win-x64/.../Resources/app/bun/` loads with `duckdb.dll` beside it (279 exports,
+  identical to loading from the package); previously failed with "LoadLibrary failed".
 
 ### BASED-INSTALLER-WIN: Windows installer
 **Applies to:** based (repo `scripts/`)
