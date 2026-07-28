@@ -1,5 +1,8 @@
-// Traces: BASED-CONN-STORE
+// Traces: BASED-CONN-STORE, BASED-CONN-SETTINGS-BAG
+// Rows are read through migrateConnection, so a connection saved before engine-specific fields
+// moved into `settings` still resolves; it is rewritten in the new shape the next time it is saved.
 import type { Database } from "bun:sqlite";
+import { migrateConnection } from "../db/connectionSettings";
 import type { ConnectionConfig, ConnectionInput } from "../db/types";
 
 export class ConnectionStore {
@@ -8,13 +11,13 @@ export class ConnectionStore {
   list(): ConnectionConfig[] {
     const rows = this.db.query<{ json: string }, []>("SELECT json FROM connections").all();
     return rows
-      .map((r) => JSON.parse(r.json) as ConnectionConfig)
+      .map((r) => migrateConnection(JSON.parse(r.json) as ConnectionConfig))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   get(id: string): ConnectionConfig | null {
     const row = this.db.query<{ json: string }, [string]>("SELECT json FROM connections WHERE id = ?").get(id);
-    return row ? (JSON.parse(row.json) as ConnectionConfig) : null;
+    return row ? migrateConnection(JSON.parse(row.json) as ConnectionConfig) : null;
   }
 
   /** Persists metadata only — the transient `secret` on ConnectionInput never reaches this store. */
@@ -22,12 +25,13 @@ export class ConnectionStore {
     const now = new Date().toISOString();
     const existing = input.id ? this.get(input.id) : null;
     const { secret: _secret, ...meta } = input;
-    const cfg: ConnectionConfig = {
+    const cfg: ConnectionConfig = migrateConnection({
       ...meta,
+      settings: meta.settings ?? {},
       id: input.id ?? crypto.randomUUID(),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-    };
+    });
     this.db.run(
       "INSERT INTO connections (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json",
       [cfg.id, JSON.stringify(cfg)],

@@ -3,11 +3,11 @@
 // This module preserves the original buildAgentTools/ToolDeps entry points, which return the SQL
 // Server toolset.
 import { sharedTools, type ToolDeps } from "./tools/shared";
-import { defaultCapabilitiesFor } from "./surface";
+import { defaultCapabilitiesFor, descriptorFor } from "../engines/registry";
 
 export type { ToolDeps };
 
 /** The SQL Server agent toolset. Prefer agentSurfaceFor with the live adapter's capabilities. */
 export function buildAgentTools(deps: ToolDeps) {
-  return sharedTools(deps, defaultCapabilitiesFor("mssql"));
+  return sharedTools(deps, defaultCapabilitiesFor("mssql"), descriptorFor("mssql").agentProse);
 }

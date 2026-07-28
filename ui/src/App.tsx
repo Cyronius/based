@@ -56,6 +56,7 @@ function EmptyState() {
 export function App() {
   const loadConnections = useStore((s) => s.loadConnections);
   const loadSettings = useStore((s) => s.loadSettings);
+  const loadEngines = useStore((s) => s.loadEngines);
   const loadEmbeddingProfiles = useStore((s) => s.loadEmbeddingProfiles);
   const loadRerankerProfiles = useStore((s) => s.loadRerankerProfiles);
   const loadAiProfiles = useStore((s) => s.loadAiProfiles);
@@ -72,6 +73,9 @@ export function App() {
 
   useEffect(() => {
     void loadSettings();
+    // BASED-ENGINE-PROFILE-WIRE: the engine catalog drives the connection dialog, the object tree
+    // shape and identifier quoting, so it loads with the rest of the app-level config.
+    void loadEngines();
     void loadEmbeddingProfiles();
     void loadRerankerProfiles();
     void loadAiProfiles();
@@ -92,7 +96,7 @@ export function App() {
       }
     });
     return () => es.close();
-  }, [loadConnections, loadSettings, loadEmbeddingProfiles, loadRerankerProfiles, loadAiProfiles, restoreWindow, setStatus, resumeSession]);
+  }, [loadConnections, loadEngines, loadSettings, loadEmbeddingProfiles, loadRerankerProfiles, loadAiProfiles, restoreWindow, setStatus, resumeSession]);
 
   // BASED-OPEN-SQL-ARGV: open the OS-requested file once this window has a connection to attach
   // the tab to (query tabs live under a connection). Fresh windows have no restored connection,

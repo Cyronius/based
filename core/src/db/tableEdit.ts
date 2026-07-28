@@ -1,15 +1,16 @@
 // Traces: BASED-TABLE-DML
-// Pure edit→SQL builder: turns a grid change set into parameterized, bracket-quoted T-SQL commands.
-// No DB access, no string-interpolated cell data — every value rides as a param. Identifier-validated
-// so a malicious/garbled column or table name can never inject SQL (it throws before emitting anything).
+// Pure edit→SQL builder: turns a grid change set into parameterized commands. No DB access, no
+// string-interpolated cell data — every value rides as a param. Identifier-validated so a
+// malicious/garbled column or table name can never inject SQL (it throws before emitting anything).
+// Spelling (quoting, bind placeholders) comes from a SqlDialect so this stays one builder across
+// engines; the *guard* is dialect-independent and lives in dialect.ts.
+import { TSQL_DIALECT, type SqlDialect } from "./dialect";
 import type { DbCommand, WireValue } from "./types";
 
-/** Column names contain only letters, digits, spaces, underscores — rejects `;`, brackets, quotes. */
-const IDENT = /^[A-Za-z0-9_ ]+$/;
-
+/** T-SQL bracket-quoting with the strict injection guard. Retained for existing callers; new code
+ *  should reach for a SqlDialect's quoteIdent so it works on every engine. */
 export function quoteIdent(name: string): string {
-  if (!IDENT.test(name)) throw new Error(`Invalid identifier: ${JSON.stringify(name)}`);
-  return `[${name}]`;
+  return TSQL_DIALECT.quoteIdent(name);
 }
 
 export function qualified(schema: string, table: string): string {
@@ -42,11 +43,14 @@ function keyValue(key: Record<string, WireValue>, col: string): WireValue {
 /**
  * Build the parameterized commands for a change set, in delete→update→insert order.
  * Update/delete require a primary key (throws otherwise — no command emitted). Param names are
- * per-command (`@p0…` for set/insert values, `@k0…` for key predicates), so each command binds
- * independently under its own request.
+ * per-command (`p0…` for set/insert values, `k0…` for key predicates), so each command binds
+ * independently under its own request. On a positional dialect the placeholders are all `?` and
+ * `params` order IS the bind order — so within one command, params must be pushed in the same
+ * order their placeholders appear in the SQL. UPDATE therefore pushes SET params before WHERE.
  */
-export function buildEditCommands(change: TableChangeSet): DbCommand[] {
-  const target = qualified(change.schema, change.table);
+export function buildEditCommands(change: TableChangeSet, dialect: SqlDialect = TSQL_DIALECT): DbCommand[] {
+  const q = (name: string) => dialect.quoteIdent(name);
+  const target = `${q(change.schema)}.${q(change.table)}`;
   const pkCols = change.columns.filter((c) => c.isPrimaryKey).map((c) => c.name);
   const commands: DbCommand[] = [];
 
@@ -56,7 +60,7 @@ export function buildEditCommands(change: TableChangeSet): DbCommand[] {
     const where = pkCols
       .map((col, i) => {
         params!.push({ name: `k${i}`, value: keyValue(del, col) });
-        return `${quoteIdent(col)}=@k${i}`;
+        return `${q(col)}=${dialect.param(params!.length - 1, `k${i}`)}`;
       })
       .join(" AND ");
     commands.push({ sql: `DELETE FROM ${target} WHERE ${where}`, params });
@@ -70,13 +74,13 @@ export function buildEditCommands(change: TableChangeSet): DbCommand[] {
     const setSql = setCols
       .map((col, i) => {
         params!.push({ name: `p${i}`, value: up.set[col]! });
-        return `${quoteIdent(col)}=@p${i}`;
+        return `${q(col)}=${dialect.param(params!.length - 1, `p${i}`)}`;
       })
       .join(", ");
     const where = pkCols
       .map((col, i) => {
         params!.push({ name: `k${i}`, value: keyValue(up.key, col) });
-        return `${quoteIdent(col)}=@k${i}`;
+        return `${q(col)}=${dialect.param(params!.length - 1, `k${i}`)}`;
       })
       .join(" AND ");
     commands.push({ sql: `UPDATE ${target} SET ${setSql} WHERE ${where}`, params });
@@ -85,15 +89,18 @@ export function buildEditCommands(change: TableChangeSet): DbCommand[] {
   for (const ins of change.inserts ?? []) {
     const cols = Object.keys(ins);
     if (cols.length === 0) {
+      if (!dialect.supportsDefaultValues) {
+        throw new Error(`${dialect.name} cannot insert an all-defaults row: set at least one column`);
+      }
       commands.push({ sql: `INSERT INTO ${target} DEFAULT VALUES`, params: [] });
       continue;
     }
     const params: DbCommand["params"] = [];
-    const colSql = cols.map((c) => quoteIdent(c)).join(",");
+    const colSql = cols.map((c) => q(c)).join(",");
     const valSql = cols
       .map((col, i) => {
         params!.push({ name: `p${i}`, value: ins[col]! });
-        return `@p${i}`;
+        return dialect.param(params!.length - 1, `p${i}`);
       })
       .join(",");
     commands.push({ sql: `INSERT INTO ${target} (${colSql}) VALUES (${valSql})`, params });

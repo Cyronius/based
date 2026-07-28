@@ -3,12 +3,14 @@ import monaco from "../monacoSetup";
 import { getModel } from "../editorModels";
 import { useStore } from "../store";
 import { monoFont, syncMonacoTheme } from "../theme";
+import { attachVim, VIM_STATUS_NODE_ID, type VimAttachment } from "../vimMode";
 
 export function EditorPane({ tabId, initialContent }: { tabId: string; initialContent: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const themeId = useStore((s) => s.theme);
   const fontScale = useStore((s) => s.fontScale);
+  const editorKeymap = useStore((s) => s.editorKeymap);
 
   useEffect(() => {
     const model = getModel(tabId, initialContent);
@@ -68,6 +70,30 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize: 13 * fontScale });
   }, [fontScale]);
+
+  // Traces: BASED-EDITOR-VIM — deliberately separate from the creation effect: folding it in would
+  // rebuild the editor on every keymap toggle and throw away the undo stack. Keyed on tabId too, so
+  // the adapter re-attaches to the editor the creation effect just rebuilt. The status node belongs
+  // to StatusBar (only one EditorPane is mounted at a time, so nothing else is competing for it);
+  // it exists by the time effects run because both components render in the same commit.
+  useEffect(() => {
+    if (editorKeymap !== "vim") return;
+    const editor = editorRef.current;
+    const statusNode = document.getElementById(VIM_STATUS_NODE_ID);
+    if (!editor || !statusNode) return;
+    let attachment: VimAttachment | null = null;
+    let cancelled = false;
+    void attachVim(editor, statusNode).then((a) => {
+      // StrictMode double-invokes this effect; without the guard two adapters end up on one editor
+      // and every keystroke lands twice.
+      if (cancelled) a.dispose();
+      else attachment = a;
+    });
+    return () => {
+      cancelled = true;
+      attachment?.dispose();
+    };
+  }, [editorKeymap, tabId]);
 
   return <div ref={hostRef} className="h-full w-full" />;
 }

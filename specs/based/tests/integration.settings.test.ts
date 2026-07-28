@@ -78,6 +78,23 @@ describe("BASED-SETTINGS: app settings persistence", () => {
     db.close();
   });
 
+  // Traces: BASED-EDITOR-VIM — the keymap choice is a settings key like any other; the modal editing
+  // it switches on is verified manually (manual.ui.test.ts).
+  test("editor keymap defaults to default and round-trips", async () => {
+    const fresh = (await (await api("/api/settings")).json()) as { editorKeymap: string };
+    expect(fresh.editorKeymap).toBe("default");
+
+    const saved = (await (
+      await api("/api/settings", { method: "POST", body: JSON.stringify({ editorKeymap: "vim" }) })
+    ).json()) as { editorKeymap: string; explorerTableAction: string };
+    expect(saved.editorKeymap).toBe("vim");
+    expect(saved.explorerTableAction).toBe("data"); // prior test's value — untouched by this patch
+
+    const db = openDb(dbPath);
+    expect(new SettingsStore(db).get().editorKeymap).toBe("vim");
+    db.close();
+  });
+
   test("a partial patch merges over existing settings", () => {
     const db = openDb(dbPath);
     const store = new SettingsStore(db);

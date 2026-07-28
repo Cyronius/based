@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "../api/client";
 import { activeQueryTab, useStore } from "../store";
+import { VIM_STATUS_NODE_ID } from "../vimMode";
+import { connTarget } from "../lib/engineProfile";
 
 export function StatusBar() {
   // The running build's version, so a bug report can name it. Fetched once; a failure just leaves
@@ -17,9 +19,11 @@ export function StatusBar() {
   const statusDetail = useStore((s) => s.statusDetail);
   const database = useStore((s) => s.database);
   const connections = useStore((s) => s.connections);
+  const engines = useStore((s) => s.engines);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const resumeSession = useStore((s) => s.resumeSession);
   const tab = useStore(activeQueryTab);
+  const editorKeymap = useStore((s) => s.editorKeymap);
 
   const conn = connections.find((c) => c.id === activeConnectionId);
   const statusColor =
@@ -42,10 +46,14 @@ export function StatusBar() {
       )}
       {conn && (
         <span className="text-muted truncate">
-          {conn.server}
+          {connTarget(conn, engines)}
           {database ? ` · ${database}` : ""}
         </span>
       )}
+      {/* Traces: BASED-EDITOR-VIM — monaco-vim renders the mode and its `:` command input in here.
+          Sits before the spacer so a long `:` command has the middle of the bar to grow into; the
+          contents are written by monaco-vim, never by React (see vimMode.ts). */}
+      {editorKeymap === "vim" && <span id={VIM_STATUS_NODE_ID} className="vim-status min-w-0 text-muted" />}
       <div className="flex-1" />
       {tab?.running && <span className="text-brass pulse-soft">executing…</span>}
       {tab?.stats && !tab.running && (

@@ -1,6 +1,6 @@
 // Traces: BASED-UI-TABLE-EDIT, BASED-TABLE-SQL-VIEW, BASED-VIEW-DEFINITION (manual), BASED-CAPABILITIES-WIRE,
 //         BASED-TABLE-DETAILS-UI (indexes/FKs/constraints/triggers sections + DDL + Script dropdown)
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { TableTabState, TableViewId } from "../store";
 import { useStore } from "../store";
@@ -12,6 +12,8 @@ import { DefinitionBlock } from "./DefinitionBlock";
 import { BottomTabPanel } from "./BottomTabPanel";
 import { CellView } from "./CellView";
 import { ScriptDropdown } from "./ScriptDropdown";
+import { IconButton } from "./IconButton";
+import { CopyIcon } from "./icons";
 
 function typeDisplay(c: TableColumn): string {
   const t = c.type;
@@ -45,6 +47,33 @@ function DetailSection({ label, headers, children }: { label: string; headers: s
 }
 
 const td = "px-3 py-1.5 border-b border-line-soft";
+
+/** Copy-to-clipboard control for a text block (the DDL). Swaps to a transient ✓ because the
+ *  clipboard itself gives no feedback that the copy landed. */
+function CopyTextButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  return (
+    <IconButton
+      size="sm"
+      title={copied ? "Copied" : label}
+      aria-label={label}
+      className={copied ? "text-ok" : "text-faint hover:text-brass"}
+      onClick={async () => {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+      }}
+    >
+      {copied ? "✓" : <CopyIcon />}
+    </IconButton>
+  );
+}
 
 // Traces: BASED-INDEX-INTROSPECT — indexes for EVERY engine that exposes them, not just the
 // DDL-scriptable ones. It used to live inside DetailSections, which only renders when getTableDetails
@@ -251,7 +280,10 @@ function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEng
       {/* Traces: BASED-TABLE-DETAILS-UI — tables show their CREATE DDL like views show their definition. */}
       {tab.createScript && (
         <div className="mx-5 mb-4">
-          <div className="ledger-label mb-1.5">DDL</div>
+          <div className="flex items-center gap-1 mb-1.5">
+            <div className="ledger-label">DDL</div>
+            <CopyTextButton text={tab.createScript} label="Copy DDL to clipboard" />
+          </div>
           <pre className="text-[length:var(--fs-base)] font-mono text-paper-dim bg-ink-950 border border-line-soft rounded px-3 py-2.5 overflow-auto whitespace-pre">
             {tab.createScript}
           </pre>

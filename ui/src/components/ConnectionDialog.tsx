@@ -1,19 +1,57 @@
-import { useEffect, useRef, useState } from "react";
+// Traces: BASED-ENGINE-PROFILE-WIRE, BASED-CONN-SETTINGS-BAG
+// The connection dialog renders from engine profiles served by core, not from per-engine JSX. It
+// knows the closed set of FieldSpec kinds and nothing else — no engine names, no auth-type
+// comparisons, no `isLance` flag. That is the whole point: adding the fourth through eighth engines
+// is a core-only change, and this file cannot drift out of step with the registry the way a
+// hand-mirrored copy of the engine list would.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { browseFolder } from "../api/client";
 import { IconButton } from "./IconButton";
-import type { AuthType, ConnectionInput, TestResult } from "../api/types";
+import type { ConnectionInput, EngineProfile, FieldSpec, TestResult } from "../api/types";
 
-const AUTH_OPTIONS: Array<{ value: AuthType; label: string }> = [
-  { value: "entra-interactive", label: "Entra ID (interactive browser)" },
-  { value: "azure-cli", label: "Azure CLI credential" },
-  { value: "sql-login", label: "SQL login" },
-  { value: "service-principal", label: "Service principal" },
-];
+/** ConnectionConfig keys that stay top-level; every other FieldSpec key addresses `settings`. */
+const TOP_LEVEL_KEYS = new Set(["name", "database", "defaultEmbeddingProfileId", "defaultRerankerProfileId"]);
+
+function readField(form: ConnectionInput, key: string): unknown {
+  if (TOP_LEVEL_KEYS.has(key)) return (form as unknown as Record<string, unknown>)[key];
+  return form.settings?.[key];
+}
+
+function writeField(form: ConnectionInput, key: string, value: unknown): ConnectionInput {
+  if (TOP_LEVEL_KEYS.has(key)) return { ...form, [key]: value } as ConnectionInput;
+  return { ...form, settings: { ...(form.settings ?? {}), [key]: value } };
+}
+
+/** A field is shown when it has no `visibleWhen`, or when the named field currently holds one of
+ *  the listed values. `authType` is the only cross-cutting one today, but the rule is general. */
+function isVisible(form: ConnectionInput, spec: FieldSpec): boolean {
+  if (!spec.visibleWhen) return true;
+  const current =
+    spec.visibleWhen.field === "authType" ? form.authType : String(readField(form, spec.visibleWhen.field) ?? "");
+  return spec.visibleWhen.equals.includes(String(current));
+}
+
+/** Seed a form for an engine: its FieldSpec defaults, plus the first auth mode. */
+function blankForm(profile: EngineProfile): ConnectionInput {
+  const settings: Record<string, unknown> = {};
+  for (const f of profile.fields) {
+    if (f.default !== undefined && !TOP_LEVEL_KEYS.has(f.key)) settings[f.key] = f.default;
+  }
+  return {
+    name: "",
+    database: "",
+    engine: profile.id,
+    authType: profile.authModes[0]?.id ?? "",
+    settings,
+    secret: "",
+  };
+}
 
 export function ConnectionDialog() {
   const dialog = useStore((s) => s.dialog);
   const setDialog = useStore((s) => s.setDialog);
+  const engines = useStore((s) => s.engines);
   const saveConnection = useStore((s) => s.saveConnection);
   const connect = useStore((s) => s.connect);
   const deleteConnection = useStore((s) => s.deleteConnection);
@@ -22,25 +60,20 @@ export function ConnectionDialog() {
   const rerankerProfiles = useStore((s) => s.rerankerProfiles);
 
   const editing = dialog.mode === "edit" ? dialog.connection : null;
-  const [form, setForm] = useState<ConnectionInput>(
+  const firstEngine = engines[0];
+  const [form, setForm] = useState<ConnectionInput>(() =>
     editing
-      ? { ...editing, secret: "" }
-      : {
-          name: "",
-          server: "",
-          database: "",
-          authType: "entra-interactive",
-          encrypt: true,
-          trustServerCertificate: false,
-          secret: "",
-        },
+      ? { ...editing, settings: { ...(editing.settings ?? {}) }, secret: "" }
+      : firstEngine
+        ? blankForm(firstEngine)
+        : { name: "", database: "", authType: "", settings: {}, secret: "" },
   );
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [browsing, setBrowsing] = useState(false);
+  const [browsing, setBrowsing] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -50,33 +83,38 @@ export function ConnectionDialog() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setDialog]);
 
-  const engine = form.engine ?? "mssql";
-  const isLance = engine === "lancedb";
-  const isLanceCloud = form.authType === "lancedb-cloud";
-  const needsSecret = form.authType === "sql-login" || form.authType === "service-principal" || isLanceCloud;
-  const secretLabel = isLanceCloud ? "API key" : form.authType === "sql-login" ? "Password" : "Client secret";
+  const profile = useMemo(
+    () => engines.find((e) => e.id === (form.engine ?? "mssql")) ?? engines[0],
+    [engines, form.engine],
+  );
+  const authMode = profile?.authModes.find((m) => m.id === form.authType) ?? profile?.authModes[0];
+  const visibleFields = useMemo(
+    () => (profile ? profile.fields.filter((f) => isVisible(form, f)) : []),
+    [profile, form],
+  );
 
-  /** Switch the whole form between engines, resetting engine-specific fields to sane defaults. */
-  function selectEngine(next: "mssql" | "lancedb") {
+  /** Switch engines: reseed from the new engine's defaults, keeping only the connection's name.
+   *  Carrying settings across would leave another engine's keys in the bag. */
+  function selectEngine(nextId: string) {
+    const next = engines.find((e) => e.id === nextId);
+    if (!next) return;
     setTestResult(null);
-    if (next === "lancedb") {
-      setForm({ ...form, engine: "lancedb", authType: "lancedb-local", encrypt: false, trustServerCertificate: false });
-    } else {
-      // Search profiles are LanceDB-only — don't leave them on a SQL Server config.
-      setForm({ ...form, engine: "mssql", authType: "entra-interactive", defaultEmbeddingProfileId: null, defaultRerankerProfileId: null });
-    }
+    setError(null);
+    setForm({ ...blankForm(next), name: form.name });
   }
 
   // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — with exactly one embedding profile configured (the
-  // single-endpoint case, e.g. one LM Studio) a new LanceDB connection adopts it, so the common
-  // setup needs no extra choice. Never on edit: a stored choice — including an explicit "None" — is
-  // authoritative, and the ref keeps a later profile-list change from overriding the user's pick.
+  // single-endpoint case, e.g. one LM Studio) a new connection whose engine offers the field adopts
+  // it, so the common setup needs no extra choice. Never on edit: a stored choice — including an
+  // explicit "None" — is authoritative, and the ref keeps a later profile-list change from
+  // overriding the user's pick.
   const prefilled = useRef(false);
+  const offersEmbedding = visibleFields.some((f) => f.kind === "embedding-profile");
   useEffect(() => {
-    if (editing || prefilled.current || (form.engine ?? "mssql") !== "lancedb" || embeddingProfiles.length !== 1) return;
+    if (editing || prefilled.current || !offersEmbedding || embeddingProfiles.length !== 1) return;
     prefilled.current = true;
     setForm((f) => (f.defaultEmbeddingProfileId ? f : { ...f, defaultEmbeddingProfileId: embeddingProfiles[0]!.id }));
-  }, [editing, embeddingProfiles, form.engine]);
+  }, [editing, embeddingProfiles, offersEmbedding]);
 
   function payload(): ConnectionInput {
     const p = { ...form };
@@ -84,15 +122,15 @@ export function ConnectionDialog() {
     return p;
   }
 
-  async function onBrowseFolder() {
-    setBrowsing(true);
+  async function onBrowseFolder(key: string) {
+    setBrowsing(key);
     try {
-      const { path } = await browseFolder(form.uri);
-      if (path) setForm({ ...form, uri: path });
+      const { path } = await browseFolder(String(readField(form, key) ?? "") || undefined);
+      if (path) setForm(writeField(form, key, path));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-    setBrowsing(false);
+    setBrowsing(null);
   }
 
   async function onTest() {
@@ -107,22 +145,27 @@ export function ConnectionDialog() {
     setTesting(false);
   }
 
+  /** Required-field validation comes from the profile, so a new engine's rules ship with it. */
+  function missingRequired(): string | null {
+    if (!form.name.trim()) return "Name is required.";
+    for (const f of visibleFields) {
+      if (!f.required) continue;
+      const value = readField(form, f.key);
+      if (typeof value === "string" ? !value.trim() : value == null) return `${f.label} is required.`;
+    }
+    return null;
+  }
+
   async function onSave() {
-    if (isLance) {
-      if (!form.name.trim() || !(form.uri ?? "").trim()) {
-        setError(isLanceCloud ? "Name and database URI (db://…) are required." : "Name and directory path are required.");
-        return;
-      }
-    } else if (!form.name.trim() || !form.server.trim() || !form.database.trim()) {
-      setError("Name, server, and database are required.");
+    const missing = missingRequired();
+    if (missing) {
+      setError(missing);
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      // LanceDB has no SQL server/database; persist placeholders so the wire shape stays uniform.
-      const p = isLance ? { ...payload(), server: "", database: form.database || "lancedb" } : payload();
-      const saved = await saveConnection(p);
+      const saved = await saveConnection(payload());
       setDialog({ mode: "closed" });
       // Saving a connection (new or edited) selects it as the active session.
       void connect(saved.id);
@@ -132,11 +175,104 @@ export function ConnectionDialog() {
     }
   }
 
-  const field = "w-full px-2.5 py-1.5 rounded border border-line bg-ink-950 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft placeholder:text-faint";
+  const field =
+    "w-full px-2.5 py-1.5 rounded border border-line bg-ink-950 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft placeholder:text-faint";
   const label = "ledger-label block mb-1";
+  const help = "mt-1 text-[length:var(--fs-sm)] text-faint leading-snug";
+
+  function renderField(spec: FieldSpec) {
+    const value = readField(form, spec.key);
+    const set = (v: unknown) => setForm(writeField(form, spec.key, v));
+
+    if (spec.kind === "checkbox") {
+      return (
+        <label key={spec.key} className="flex items-center gap-1.5 cursor-pointer text-[length:var(--fs-base)] text-muted">
+          <input
+            type="checkbox"
+            checked={value === true}
+            onChange={(e) => set(e.target.checked)}
+            className="accent-(--color-brass)"
+          />
+          {spec.label}
+        </label>
+      );
+    }
+
+    if (spec.kind === "embedding-profile" || spec.kind === "reranker-profile") {
+      const list = spec.kind === "embedding-profile" ? embeddingProfiles : rerankerProfiles;
+      return (
+        <div key={spec.key}>
+          <label className={label}>{spec.label}</label>
+          <select className={field} value={String(value ?? "")} disabled={list.length === 0} onChange={(e) => set(e.target.value || null)}>
+            <option value="">None</option>
+            {list.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <p className={help}>
+            {list.length === 0 ? "No search profiles configured yet — add them under Settings → Search, then pick them here." : spec.help}
+          </p>
+        </div>
+      );
+    }
+
+    if (spec.kind === "select") {
+      return (
+        <div key={spec.key}>
+          <label className={label}>{spec.label}</label>
+          <select className={field} value={String(value ?? "")} onChange={(e) => set(e.target.value)}>
+            {(spec.options ?? []).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          {spec.help && <p className={help}>{spec.help}</p>}
+        </div>
+      );
+    }
+
+    const browsable = spec.kind === "directory" || spec.kind === "file";
+    return (
+      <div key={spec.key}>
+        <label className={label}>
+          {spec.label}
+          {!spec.required && <span className="normal-case tracking-normal"> (optional)</span>}
+        </label>
+        <div className={browsable ? "flex gap-2" : undefined}>
+          <input
+            className={field}
+            type={spec.kind === "password" ? "password" : "text"}
+            value={String(value ?? "")}
+            onChange={(e) => set(e.target.value)}
+            placeholder={spec.placeholder}
+          />
+          {browsable && (
+            <button
+              type="button"
+              className="shrink-0 px-2.5 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
+              disabled={browsing === spec.key}
+              onClick={() => void onBrowseFolder(spec.key)}
+            >
+              {browsing === spec.key ? "…" : "Browse…"}
+            </button>
+          )}
+        </div>
+        {spec.help && <p className={help}>{spec.help}</p>}
+      </div>
+    );
+  }
+
+  const checkboxes = visibleFields.filter((f) => f.kind === "checkbox");
+  const inputs = visibleFields.filter((f) => f.kind !== "checkbox");
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60" onMouseDown={(e) => e.target === e.currentTarget && setDialog({ mode: "closed" })}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60"
+      onMouseDown={(e) => e.target === e.currentTarget && setDialog({ mode: "closed" })}
+    >
       <div className="w-[440px] max-h-[90vh] overflow-y-auto rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
         <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between">
           <h2 className="font-display text-lg text-paper">{editing ? "Edit connection" : "New connection"}</h2>
@@ -148,17 +284,14 @@ export function ConnectionDialog() {
         <div className="px-5 py-4 space-y-3">
           <div>
             <label className={label}>Engine</label>
-            <select className={field} value={engine} onChange={(e) => selectEngine(e.target.value as "mssql" | "lancedb")}>
-              <option value="mssql">SQL Server</option>
-              <option value="lancedb">LanceDB</option>
+            <select className={field} value={profile?.id ?? ""} onChange={(e) => selectEngine(e.target.value)}>
+              {engines.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.label}
+                </option>
+              ))}
             </select>
-            {isLance && (
-              <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
-                {isLanceCloud
-                  ? "LanceDB Cloud has no SQL editor. Browse tables in the left rail and query them with vector, full-text, or hybrid search through Ask Capi."
-                  : "Local LanceDB folders get a SQL editor (DuckDB with the Lance extension) plus vector, full-text, and hybrid search through Ask Capi."}
-              </p>
-            )}
+            {authMode?.note && <p className={help}>{authMode.note}</p>}
           </div>
 
           <div>
@@ -166,181 +299,64 @@ export function ConnectionDialog() {
             <input className={field} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Production DB" />
           </div>
 
-          {isLance && (
-            <>
-              <div>
-                <label className={label}>Mode</label>
-                <select
-                  className={field}
-                  value={form.authType}
-                  onChange={(e) => {
-                    setForm({ ...form, authType: e.target.value as AuthType });
-                    setTestResult(null);
-                  }}
-                >
-                  <option value="lancedb-local">Local (file-based)</option>
-                  <option value="lancedb-cloud">Cloud</option>
-                </select>
-              </div>
-              <div>
-                <label className={label}>{isLanceCloud ? "Database URI" : "Directory path"}</label>
-                <div className="flex gap-2">
-                  <input
-                    className={field}
-                    value={form.uri ?? ""}
-                    onChange={(e) => setForm({ ...form, uri: e.target.value })}
-                    placeholder={isLanceCloud ? "db://my-database" : "C:\\data\\my-lancedb"}
-                  />
-                  {!isLanceCloud && (
-                    <button
-                      type="button"
-                      className="shrink-0 px-2.5 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
-                      disabled={browsing}
-                      onClick={() => void onBrowseFolder()}
-                    >
-                      {browsing ? "…" : "Browse…"}
-                    </button>
-                  )}
-                </div>
-                {!isLanceCloud && (
-                  <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
-                    Point this at a single LanceDB directory, or at a folder containing several — subfolders holding
-                    their own LanceDB tables are auto-detected and their tables appear flattened in the explorer.
-                  </p>
-                )}
-              </div>
-              {isLanceCloud && (
-                <div>
-                  <label className={label}>Region</label>
-                  <input className={field} value={form.region ?? ""} onChange={(e) => setForm({ ...form, region: e.target.value })} placeholder="us-east-1" />
-                </div>
-              )}
-              {/* Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — the embedding model that built THIS
-                  directory's vectors belongs to the connection, not to app-wide settings. */}
-              <div>
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className={label}>Embedding profile</label>
-                    <select
-                      className={field}
-                      value={form.defaultEmbeddingProfileId ?? ""}
-                      disabled={embeddingProfiles.length === 0}
-                      onChange={(e) => setForm({ ...form, defaultEmbeddingProfileId: e.target.value || null })}
-                    >
-                      <option value="">None</option>
-                      {embeddingProfiles.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className={label}>Reranker profile</label>
-                    <select
-                      className={field}
-                      value={form.defaultRerankerProfileId ?? ""}
-                      disabled={rerankerProfiles.length === 0}
-                      onChange={(e) => setForm({ ...form, defaultRerankerProfileId: e.target.value || null })}
-                    >
-                      <option value="">None</option>
-                      {rerankerProfiles.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <p className="mt-1 text-[length:var(--fs-sm)] text-faint leading-snug">
-                  {embeddingProfiles.length === 0 && rerankerProfiles.length === 0
-                    ? "No search profiles configured yet — add them under Settings → Search, then pick them here."
-                    : "Capi embeds text queries for this connection with the embedding profile above, and the Data tab's search preselects both. The reranker is only applied when explicitly asked for — it can cost one model call per candidate row."}
-                </p>
-              </div>
-            </>
-          )}
-
-          {!isLance && (
-          <div>
-            <label className={label}>Server</label>
-            <input className={field} value={form.server} onChange={(e) => setForm({ ...form, server: e.target.value })} placeholder="myserver.database.windows.net" />
-          </div>
-          )}
-          {!isLance && (
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className={label}>Initial database</label>
-              <input className={field} value={form.database} onChange={(e) => setForm({ ...form, database: e.target.value })} placeholder="mydb" />
-            </div>
-            <div className="flex-1">
+          {(profile?.authModes.length ?? 0) > 1 && (
+            <div>
               <label className={label}>Authentication</label>
               <select
                 className={field}
                 value={form.authType}
                 onChange={(e) => {
-                  setForm({ ...form, authType: e.target.value as AuthType });
+                  setForm({ ...form, authType: e.target.value });
                   setTestResult(null);
                 }}
               >
-                {AUTH_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
+                {profile?.authModes.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
                   </option>
                 ))}
               </select>
             </div>
-          </div>
           )}
 
-          {form.authType === "sql-login" && (
-            <div>
-              <label className={label}>Username</label>
-              <input className={field} value={form.username ?? ""} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-            </div>
-          )}
-          {(form.authType === "service-principal" || form.authType === "entra-interactive" || form.authType === "azure-cli") && (
-            <div>
-              <label className={label}>Tenant id {form.authType !== "service-principal" && <span className="normal-case tracking-normal">(optional)</span>}</label>
-              <input className={field} value={form.tenantId ?? ""} onChange={(e) => setForm({ ...form, tenantId: e.target.value })} />
-            </div>
-          )}
-          {form.authType === "service-principal" && (
-            <div>
-              <label className={label}>Client id</label>
-              <input className={field} value={form.clientId ?? ""} onChange={(e) => setForm({ ...form, clientId: e.target.value })} />
-            </div>
-          )}
-          {needsSecret && (
+          {inputs.map(renderField)}
+
+          {authMode?.secretLabel && (
             <div>
               <label className={label}>
-                {secretLabel}
+                {authMode.secretLabel}
                 {editing && <span className="normal-case tracking-normal"> (blank = keep stored)</span>}
               </label>
-              <input type="password" className={field} value={form.secret ?? ""} onChange={(e) => setForm({ ...form, secret: e.target.value })} />
+              {/* A PEM spans lines and an <input> cannot hold one — the browser strips newlines on
+                  paste, which silently mangles the key rather than rejecting it. Multi-line secrets
+                  therefore get a textarea; it forfeits the masking, which a pasted PEM never had
+                  anywhere else in the flow either. */}
+              {authMode.secretMultiline ? (
+                <textarea
+                  className={`${field} font-mono text-[length:var(--fs-sm)] resize-y`}
+                  rows={6}
+                  spellCheck={false}
+                  value={form.secret ?? ""}
+                  onChange={(e) => setForm({ ...form, secret: e.target.value })}
+                />
+              ) : (
+                <input
+                  type="password"
+                  className={field}
+                  value={form.secret ?? ""}
+                  onChange={(e) => setForm({ ...form, secret: e.target.value })}
+                />
+              )}
+              {authMode.secretHelp && <p className={help}>{authMode.secretHelp}</p>}
             </div>
           )}
 
-          {!isLance && (
-          <div className="flex gap-4 pt-1 text-[length:var(--fs-base)] text-muted">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={form.encrypt} onChange={(e) => setForm({ ...form, encrypt: e.target.checked })} className="accent-(--color-brass)" />
-              Encrypt
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.trustServerCertificate}
-                onChange={(e) => setForm({ ...form, trustServerCertificate: e.target.checked })}
-                className="accent-(--color-brass)"
-              />
-              Trust server certificate
-            </label>
-          </div>
-          )}
+          {checkboxes.length > 0 && <div className="flex gap-4 pt-1">{checkboxes.map(renderField)}</div>}
 
           {testResult && (
-            <div className={`px-3 py-2 rounded border text-[length:var(--fs-base)] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}>
+            <div
+              className={`px-3 py-2 rounded border text-[length:var(--fs-base)] font-mono ${testResult.ok ? "border-ok/40 bg-ok/10 text-ok" : "border-err/40 bg-err/10 text-err"}`}
+            >
               {testResult.ok
                 ? testResult.identity
                   ? `Connected as ${testResult.identity} — ${testResult.serverVersion ?? ""}`
@@ -367,7 +383,11 @@ export function ConnectionDialog() {
             </button>
           )}
           <div className="flex-1" />
-          <button className="px-3 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40" disabled={testing} onClick={() => void onTest()}>
+          <button
+            className="px-3 py-1.5 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper disabled:opacity-40"
+            disabled={testing}
+            onClick={() => void onTest()}
+          >
             {testing ? "Testing…" : "Test connection"}
           </button>
           <button

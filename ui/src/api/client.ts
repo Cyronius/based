@@ -8,6 +8,7 @@ import type {
   HistoryEntry,
   EmbeddingProfile,
   EmbeddingProfileInput,
+  EngineProfile,
   LabelClustersRequest,
   LabelClustersResponse,
   LanceSearchRequest,
@@ -245,8 +246,7 @@ export function saveAgentInstructionSet(set: {
   id?: string;
   name: string;
   core: string;
-  mssqlPersona: string;
-  lancePersona: string;
+  personas: Record<string, string>;
 }): Promise<AgentInstructionsConfig> {
   return api<AgentInstructionsConfig>("/api/agent/instructions", { method: "POST", body: JSON.stringify(set) });
 }
@@ -411,6 +411,13 @@ export function saveRerankerProfile(input: RerankerProfileInput): Promise<Rerank
 
 export function deleteRerankerProfile(id: string): Promise<{ ok: boolean }> {
   return api<{ ok: boolean }>(`/api/reranker-profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Traces: BASED-ENGINE-PROFILE-WIRE — the engine catalog the connection dialog renders from. The
+ *  UI holds no list of engines of its own, so a newly registered engine appears here with no UI
+ *  change at all. */
+export function listEngines(): Promise<EngineProfile[]> {
+  return api<{ engines: EngineProfile[] }>("/api/engines").then((r) => r.engines);
 }
 
 /** Native folder picker for the LanceDB directory-path field (BASED-LANCE-FOLDER-BROWSE). */

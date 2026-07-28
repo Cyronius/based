@@ -10,7 +10,7 @@ import type { ConnectionConfig } from "@based/core";
 // A separate script file (not `bun -e`): multiline -e scripts break Windows argv quoting.
 const CHILD_SCRIPT_PATH = join(import.meta.dir, "helpers", "lazyEnginesChild.ts");
 
-function cfgFor(engine?: "mssql" | "lancedb"): ConnectionConfig {
+function cfgFor(engine?: "mssql" | "lancedb" | "snowflake"): ConnectionConfig {
   return {
     id: "lazy-spec",
     name: "lazy-spec",
@@ -39,11 +39,14 @@ describe("lazy engine loading", () => {
       proc.exited,
     ]);
     expect(code, err).toBe(0);
-    const report = JSON.parse(out.trim()) as { total: number; mssql: number; lance: number; duckdb: number };
+    const report = JSON.parse(out.trim()) as { total: number; mssql: number; lance: number; duckdb: number; snowflake: number };
     expect(report.total).toBeGreaterThan(0); // require.cache is observable at all
     expect(report.mssql).toBe(0);
     expect(report.lance).toBe(0);
     expect(report.duckdb).toBe(0);
+    // The engine registry statically imports every descriptor, so this is the assertion that keeps
+    // a descriptor from reaching for its adapter at module scope instead of inside loadAdapter.
+    expect(report.snowflake).toBe(0);
   }, 30_000);
 
   test("BASED-LAZY-ENGINES: async createAdapter resolves the right class per engine", async () => {
@@ -56,6 +59,10 @@ describe("lazy engine loading", () => {
 
     const lance = await createAdapter(cfgFor("lancedb"), noSecret);
     expect(lance).toBeInstanceOf(LanceDbAdapter);
+
+    const { SnowflakeAdapter } = await import("@based/core/snowflake");
+    const snowflake = await createAdapter(cfgFor("snowflake"), noSecret);
+    expect(snowflake).toBeInstanceOf(SnowflakeAdapter);
 
     // BASED-LANCE-ENGINE back-compat: an engine-less legacy config is MSSQL.
     const legacy = await createAdapter(cfgFor(undefined), noSecret);

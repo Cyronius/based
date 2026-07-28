@@ -10,17 +10,34 @@
 // varies by connection.
 import type { Database } from "bun:sqlite";
 import type { DbEngine } from "../db/types";
+import { ENGINES, ENGINE_IDS, descriptorFor } from "../engines/registry";
 import { GENERIC_CORE } from "./agent";
-import { MSSQL_PERSONA } from "./tools/mssql";
-import { LANCE_PERSONA } from "./tools/lancedb";
 
 export interface InstructionSet {
   id: string;
   name: string;
   /** Shared, engine-neutral core. */
   core: string;
-  mssqlPersona: string;
-  lancePersona: string;
+  /** Persona per engine id. A missing entry falls back to that engine's built-in persona, which is
+   *  what lets a new engine appear without leaving every stored custom set half-populated —
+   *  the reason this is a record rather than one named field per engine. */
+  personas: Partial<Record<DbEngine, string>>;
+}
+
+/** Stored shape before personas became a record (two hardcoded fields). Read-migrated below. */
+interface LegacyInstructionSet {
+  mssqlPersona?: string;
+  lancePersona?: string;
+}
+
+/** Lift a stored set into the current shape. Old rows heal on their next save; nothing is
+ *  rewritten in bulk, so a downgrade never finds a half-migrated table. */
+function migrateSet(raw: InstructionSet & LegacyInstructionSet): InstructionSet {
+  if (raw.personas) return { id: raw.id, name: raw.name, core: raw.core, personas: raw.personas };
+  const personas: Partial<Record<DbEngine, string>> = {};
+  if (raw.mssqlPersona) personas.mssql = raw.mssqlPersona;
+  if (raw.lancePersona) personas.lancedb = raw.lancePersona;
+  return { id: raw.id, name: raw.name, core: raw.core, personas };
 }
 
 export interface AgentInstructionsConfig {
@@ -38,8 +55,9 @@ const DEFAULT_SET: InstructionSet & { editable: false } = {
   id: "default",
   name: "Default",
   core: GENERIC_CORE,
-  mssqlPersona: MSSQL_PERSONA,
-  lancePersona: LANCE_PERSONA,
+  // Built from the registry, so a newly registered engine's persona is present in the default set
+  // the moment it exists — no second place to remember to edit.
+  personas: Object.fromEntries(ENGINE_IDS.map((id) => [id, ENGINES[id].persona])) as Record<DbEngine, string>,
   editable: false,
 };
 
@@ -48,9 +66,9 @@ export class AgentInstructionsStore {
 
   private get(): AgentInstructionsConfig {
     const row = this.db.query<{ json: string }, []>("SELECT json FROM agent_instructions WHERE id = 1").get();
-    return row
-      ? { ...DEFAULT_INSTRUCTIONS_CONFIG, ...(JSON.parse(row.json) as Partial<AgentInstructionsConfig>) }
-      : DEFAULT_INSTRUCTIONS_CONFIG;
+    if (!row) return DEFAULT_INSTRUCTIONS_CONFIG;
+    const parsed = { ...DEFAULT_INSTRUCTIONS_CONFIG, ...(JSON.parse(row.json) as Partial<AgentInstructionsConfig>) };
+    return { ...parsed, customSets: (parsed.customSets ?? []).map(migrateSet) };
   }
 
   private persist(next: AgentInstructionsConfig): void {
@@ -70,11 +88,11 @@ export class AgentInstructionsStore {
   }
 
   /** Create (no `id`) or update (matching `id`) a custom set. Rejects `id === "default"`. */
-  saveSet(input: { id?: string; name: string; core: string; mssqlPersona: string; lancePersona: string }) {
+  saveSet(input: { id?: string; name: string; core: string; personas: Partial<Record<DbEngine, string>> }) {
     if (input.id === "default") throw new Error("Default instructions are not editable");
     const cfg = this.get();
     const id = input.id ?? crypto.randomUUID();
-    const set: InstructionSet = { id, name: input.name, core: input.core, mssqlPersona: input.mssqlPersona, lancePersona: input.lancePersona };
+    const set: InstructionSet = { id, name: input.name, core: input.core, personas: input.personas ?? {} };
     const idx = cfg.customSets.findIndex((s) => s.id === id);
     const customSets = idx >= 0 ? cfg.customSets.map((s, i) => (i === idx ? set : s)) : [...cfg.customSets, set];
     const next = { ...cfg, customSets };
@@ -120,6 +138,8 @@ export class AgentInstructionsStore {
   resolveById(id: string, engine: DbEngine): { core: string; persona: string } {
     const cfg = this.get();
     const set = id === "default" ? DEFAULT_SET : cfg.customSets.find((s) => s.id === id) ?? DEFAULT_SET;
-    return { core: set.core, persona: engine === "mssql" ? set.mssqlPersona : set.lancePersona };
+    // A set that predates this engine simply has no entry for it; fall back to the engine's own
+    // persona rather than to another engine's, which is what an `=== "mssql" ? … : …` would do.
+    return { core: set.core, persona: set.personas[engine] ?? descriptorFor(engine).persona };
   }
 }

@@ -3,14 +3,17 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { openDb, ConnectionStore, TabStore, WindowStateStore, HistoryStore } from "@based/core";
+import { openDb, ConnectionStore, TabStore, WindowStateStore, HistoryStore, settingStr } from "@based/core";
 import type { ConnectionInput } from "@based/core";
 
 function tempDbPath(): string {
   return join(mkdtempSync(join(tmpdir(), "based-spec-")), "app.db");
 }
 
-const input: ConnectionInput = {
+// Traces: BASED-CONN-SETTINGS-BAG — written in the LEGACY flat shape on purpose: engine-specific
+// fields used to be top-level, and every connection saved before the bag existed still looks like
+// this on disk. The store must lift them on read without the caller doing anything.
+const input = {
   name: "dev",
   server: "example.database.windows.net",
   database: "mydb",
@@ -18,7 +21,7 @@ const input: ConnectionInput = {
   encrypt: true,
   trustServerCertificate: false,
   secret: "super-secret-should-not-persist",
-};
+} as unknown as ConnectionInput;
 
 describe("BASED-CONN-STORE: connection metadata persistence", () => {
   test("create → list → survives reopen; update in place; delete removes; no secret material", () => {
@@ -35,7 +38,16 @@ describe("BASED-CONN-STORE: connection metadata persistence", () => {
     db = openDb(path);
     store = new ConnectionStore(db);
     const listed = store.get(saved.id)!;
-    expect(listed.server).toBe(input.server);
+    // The legacy top-level field is now addressed through the bag…
+    expect(listed.settings.server).toBe("example.database.windows.net");
+    expect(settingStr(listed, "server")).toBe("example.database.windows.net");
+    expect(settingStr(listed, "encrypt")).toBeUndefined(); // booleans aren't strings
+    expect(listed.settings.encrypt).toBe(true);
+    // …and no longer duplicated at the top level, so there is one place to read it from.
+    expect((listed as unknown as Record<string, unknown>).server).toBeUndefined();
+    // Cross-engine fields stay where they were.
+    expect(listed.database).toBe("mydb");
+    expect(listed.authType).toBe("azure-cli");
 
     // no secret anywhere in the stored json
     const raw = db.query<{ json: string }, []>("SELECT json FROM connections").all();

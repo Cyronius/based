@@ -373,3 +373,71 @@ describe("BASED-AGENT-INSTRUCTIONS: briefing owns the facts, persona owns the vo
     expect(withNone).toContain("P");
   });
 });
+
+// Traces: BASED-SNOWFLAKE-ENGINE, BASED-ENGINE-REGISTRY
+//
+// Snowflake is the first engine added after the registry, so it is also the regression test for the
+// defect the registry exists to remove: under the old `if (engine === "mssql") … else <LanceDB>`
+// surface, a Snowflake connection would silently have been handed LanceDB's search tools, LanceDB's
+// persona, and prose telling it to write DuckDB SQL.
+const SNOWFLAKE: EngineCapabilities = {
+  sql: true,
+  search: false,
+  write: true,
+  orderedBrowse: true,
+  script: true,
+  relations: true,
+  engine: "snowflake",
+  variant: "snowflake",
+  containers: null,
+  wherePredicate: false,
+  structuredFilters: true,
+  countRows: true,
+  takeByKey: false,
+  indexIntrospect: false,
+};
+
+describe("BASED-SNOWFLAKE-ENGINE: the Snowflake surface", () => {
+  test("it gets the stable core, and none of LanceDB's engine-only tools", () => {
+    const names = surfaceNames(SNOWFLAKE);
+    for (const stable of ["get_connection_info", "list_objects", "describe_table", "read_table", "count_rows", "run_query", "export_data"]) {
+      expect(names).toContain(stable);
+    }
+    for (const lanceOnly of ["vector_search", "text_search", "hybrid_search", "list_search_profiles", "take_rows"]) {
+      expect(names).not.toContain(lanceOnly);
+    }
+  });
+
+  test("get_indexes is ABSENT, because Snowflake has no user-defined indexes", () => {
+    // Not an omission: present-and-empty would invite the agent to recommend adding an index, which
+    // is never the right advice on Snowflake (clustering keys and warehouse size are).
+    expect(surfaceNames(SNOWFLAKE)).not.toContain("get_indexes");
+    expect(surfaceNames(MSSQL)).toContain("get_indexes");
+  });
+
+  test("its persona and briefing are its own, not SQL Server's or LanceDB's", () => {
+    const surface = agentSurfaceFor(SNOWFLAKE, deps());
+    expect(surface.briefing).toContain("Snowflake");
+    expect(surface.briefing).not.toContain("Microsoft SQL Server");
+    expect(surface.persona).toMatch(/LIMIT instead of TOP/);
+    expect(surface.persona).not.toMatch(/TOP instead of LIMIT/);
+    // It opts into no engine skill tags, so it never picks up LanceDB's.
+    expect(surface.skillTags).toBeUndefined();
+  });
+
+  test("its SQL prose names the Snowflake dialect, and the namespace defaults to PUBLIC", () => {
+    const tools = agentSurfaceFor(SNOWFLAKE, deps()).tools as Record<string, { description?: string }>;
+    expect(tools.run_query!.description).toMatch(/Snowflake SQL/);
+    expect(tools.run_query!.description).not.toMatch(/T-SQL|DuckDB/);
+    expect(paramsOf(tools.describe_table)).toContain("schema");
+    expect(tools.describe_table!.description).not.toMatch(/T-SQL/);
+  });
+
+  test("describe_table offers no \"alter\" template, because GET_DDL has no equivalent", () => {
+    const shape = (agentSurfaceFor(SNOWFLAKE, deps()).tools as Record<string, { inputSchema?: { shape?: Record<string, { options?: string[] }> } }>)
+      .describe_table!.inputSchema!.shape!;
+    const formats = (shape.format as unknown as { unwrap?: () => { options?: string[] } }).unwrap?.()?.options ?? [];
+    expect(formats).toContain("ddl");
+    expect(formats).not.toContain("alter");
+  });
+});

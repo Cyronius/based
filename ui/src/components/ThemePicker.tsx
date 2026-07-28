@@ -8,7 +8,7 @@
 // ConnectionDialog), with a titled header + close button; the panel has a fixed viewport-relative size
 // (min(80vw, 960px) × 85vh) so switching tabs never resizes it, and the tab body scrolls. Selecting a theme applies + persists it via the store; the font-size slider
 // applies live on every drag and persists on release.
-import { useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
 import { THEMES, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
@@ -52,6 +52,8 @@ function GeneralTab() {
   const explorerTableAction = useStore((s) => s.explorerTableAction);
   const explorerRoutineAction = useStore((s) => s.explorerRoutineAction);
   const setExplorerActions = useStore((s) => s.setExplorerActions);
+  const editorKeymap = useStore((s) => s.editorKeymap);
+  const setEditorKeymap = useStore((s) => s.setEditorKeymap);
 
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
@@ -73,6 +75,19 @@ function GeneralTab() {
         <span className="text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
         <span>Large</span>
       </div>
+
+      {/* Traces: BASED-EDITOR-VIM — modal editing in the query editor; the mode indicator and the
+          `:` command line share the app's bottom status bar. */}
+      <div className="ledger-label pt-2">Editor keymap</div>
+      <select className={selectCls} value={editorKeymap} onChange={(e) => setEditorKeymap(e.target.value as typeof editorKeymap)}>
+        <option value="default">Default</option>
+        <option value="vim">Vim</option>
+      </select>
+      <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
+        Vim adds modal editing to the query editor. The current mode and the <span className="font-mono">:</span> command
+        line appear in the status bar at the bottom; <span className="font-mono">:w</span> saves the tab and{" "}
+        <span className="font-mono">:q</span> closes it. F5, Ctrl+Enter, and Ctrl+S keep working in every mode.
+      </p>
 
       {/* Traces: BASED-EXPLORER-ACTION — default double-click behavior in the object explorer. */}
       <div className="ledger-label pt-2">Double-click opens</div>
@@ -766,7 +781,8 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
   const [draft, setDraft] = useState<InstructionSet | null>(null);
   const [isNew, setIsNew] = useState(!!duplicate);
   const [busy, setBusy] = useState(false);
-  const [briefings, setBriefings] = useState<{ mssql: string; lancedb: string } | null>(null);
+  const [briefings, setBriefings] = useState<Record<string, string> | null>(null);
+  const engines = useStore((s) => s.engines);
   const [liveEngine, setLiveEngine] = useState<string | null>(null);
 
   useEffect(() => {
@@ -790,8 +806,7 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
         ...(isNew ? {} : { id: draft.id }),
         name: draft.name,
         core: draft.core,
-        mssqlPersona: draft.mssqlPersona,
-        lancePersona: draft.lancePersona,
+        personas: draft.personas,
       });
       onClose();
     } catch {
@@ -838,10 +853,22 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
         write here, so don't restate it (and don't worry about it going stale).
       </p>
       <InstructionsField label="Core (shared)" value={draft.core} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, core: v })} />
-      <InstructionsField label="SQL Server persona" value={draft.mssqlPersona} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, mssqlPersona: v })} />
-      {briefings && <BriefingField label="SQL Server capability briefing" value={briefings.mssql} live={liveEngine === "mssql"} />}
-      <InstructionsField label="LanceDB persona" value={draft.lancePersona} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, lancePersona: v })} />
-      {briefings && <BriefingField label="LanceDB capability briefing" value={briefings.lancedb} live={liveEngine === "lancedb"} />}
+      {/* One persona + briefing pane per registered engine, in registry order. A new engine gets
+          its editor here the moment core registers it — no pane to remember to add. */}
+      {engines.map((e) => (
+        <Fragment key={e.id}>
+          <InstructionsField
+            label={`${e.label} persona`}
+            value={draft.personas[e.id] ?? ""}
+            disabled={readOnly || busy}
+            defaultOpen
+            onChange={(v) => setDraft({ ...draft, personas: { ...draft.personas, [e.id]: v } })}
+          />
+          {briefings?.[e.id] && (
+            <BriefingField label={`${e.label} capability briefing`} value={briefings[e.id]!} live={liveEngine === e.id} />
+          )}
+        </Fragment>
+      ))}
       <div className="flex items-center gap-2 pt-1">
         {!readOnly && !isNew && (
           <button className={btnDanger} onClick={() => void remove()} disabled={busy}>

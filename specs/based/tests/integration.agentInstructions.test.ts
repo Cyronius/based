@@ -3,7 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, openDb, AgentInstructionsStore, GENERIC_CORE, MSSQL_PERSONA, LANCE_PERSONA } from "@based/core";
+import { startServer, openDb, AgentInstructionsStore, GENERIC_CORE, MSSQL_PERSONA, LANCE_PERSONA, SNOWFLAKE_PERSONA } from "@based/core";
 
 const TOKEN = "spec-instructions-token";
 const dbPath = join(mkdtempSync(join(tmpdir(), "based-spec-instructions-")), "app.db");
@@ -25,15 +25,14 @@ interface WireSet {
   id: string;
   name: string;
   core: string;
-  mssqlPersona: string;
-  lancePersona: string;
+  personas: Record<string, string>;
   editable: boolean;
 }
 interface WireConfig {
   activeId: string;
   sets: WireSet[];
   /** Generated, read-only, GET-only (BASED-AGENT-INSTRUCTIONS). */
-  briefings?: { mssql: string; lancedb: string };
+  briefings?: Record<string, string>;
   briefingIsLive?: string | null;
 }
 
@@ -46,8 +45,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
       id: "default",
       name: "Default",
       core: GENERIC_CORE,
-      mssqlPersona: MSSQL_PERSONA,
-      lancePersona: LANCE_PERSONA,
+      personas: { mssql: MSSQL_PERSONA, lancedb: LANCE_PERSONA, snowflake: SNOWFLAKE_PERSONA },
       editable: false,
     });
   });
@@ -56,7 +54,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
     const created = (await (
       await api("/api/agent/instructions", {
         method: "POST",
-        body: JSON.stringify({ name: "Terse", core: "Be terse.", mssqlPersona: "SQL terse.", lancePersona: "Lance terse." }),
+        body: JSON.stringify({ name: "Terse", core: "Be terse.", personas: { mssql: "SQL terse.", lancedb: "Lance terse." } }),
       })
     ).json()) as WireConfig;
     const custom = created.sets.find((s) => s.name === "Terse")!;
@@ -77,7 +75,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
     const created = (await (
       await api("/api/agent/instructions", {
         method: "POST",
-        body: JSON.stringify({ name: "V1", core: "v1 core", mssqlPersona: "v1 mssql", lancePersona: "v1 lance" }),
+        body: JSON.stringify({ name: "V1", core: "v1 core", personas: { mssql: "v1 mssql", lancedb: "v1 lance" } }),
       })
     ).json()) as WireConfig;
     const id = created.sets.find((s) => s.name === "V1")!.id;
@@ -85,7 +83,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
     const updated = (await (
       await api("/api/agent/instructions", {
         method: "POST",
-        body: JSON.stringify({ id, name: "V2", core: "v2 core", mssqlPersona: "v2 mssql", lancePersona: "v2 lance" }),
+        body: JSON.stringify({ id, name: "V2", core: "v2 core", personas: { mssql: "v2 mssql", lancedb: "v2 lance" } }),
       })
     ).json()) as WireConfig;
     const matches = updated.sets.filter((s) => s.id === id);
@@ -97,7 +95,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
   test("POST/DELETE targeting id \"default\" are rejected", async () => {
     const post = await api("/api/agent/instructions", {
       method: "POST",
-      body: JSON.stringify({ id: "default", name: "x", core: "x", mssqlPersona: "x", lancePersona: "x" }),
+      body: JSON.stringify({ id: "default", name: "x", core: "x", personas: { mssql: "x", lancedb: "x" } }),
     });
     expect(post.status).toBe(400);
 
@@ -109,7 +107,7 @@ describe("BASED-AGENT-INSTRUCTIONS: store + endpoints", () => {
     const created = (await (
       await api("/api/agent/instructions", {
         method: "POST",
-        body: JSON.stringify({ name: "Switchable", core: "c", mssqlPersona: "m", lancePersona: "l" }),
+        body: JSON.stringify({ name: "Switchable", core: "c", personas: { mssql: "m", lancedb: "l" } }),
       })
     ).json()) as WireConfig;
     const id = created.sets.find((s) => s.name === "Switchable")!.id;
@@ -155,9 +153,9 @@ describe("BASED-AGENT-INSTRUCTIONS: the capability briefing is generated, not st
     expect(cfg.briefings!.lancedb).toMatch(/read-only/i);
     // …and are absent from the half a user can fork, which is the whole point: a forked persona
     // cannot contradict the connection because it never claims anything about it.
-    expect(def.mssqlPersona).not.toMatch(/\brun_mutation\b/);
-    expect(def.lancePersona).not.toMatch(/read-only/i);
-    expect(def.lancePersona).not.toMatch(/\brun_query\b/);
+    expect(def.personas.mssql).not.toMatch(/\brun_mutation\b/);
+    expect(def.personas.lancedb).not.toMatch(/read-only/i);
+    expect(def.personas.lancedb).not.toMatch(/\brun_query\b/);
   });
 
   test("a custom set round-trips its persona and never persists a briefing", async () => {
@@ -167,15 +165,14 @@ describe("BASED-AGENT-INSTRUCTIONS: the capability briefing is generated, not st
         body: JSON.stringify({
           name: "Voice only",
           core: "CORE",
-          mssqlPersona: "Be terse.",
-          lancePersona: "Be terse.",
+          personas: { mssql: "Be terse.", lancedb: "Be terse." },
           // A caller that tries to pin a briefing must not be able to: it isn't part of a set.
           briefings: { mssql: "FAKE", lancedb: "FAKE" },
         }),
       })
     ).json()) as WireConfig;
     const set = created.sets.find((s) => s.name === "Voice only")!;
-    expect(set.mssqlPersona).toBe("Be terse.");
+    expect(set.personas.mssql).toBe("Be terse.");
     expect(JSON.stringify(set)).not.toContain("FAKE");
     // The generated briefing is still reported, unchanged by the save.
     expect(created.briefings!.mssql).toContain("Microsoft SQL Server");

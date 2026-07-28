@@ -676,3 +676,54 @@ describe("BASED-UI-SESSION-RESUME: session-lost signal", () => {
     expect((await res.json()).error).toBe("session-lost");
   });
 });
+
+// Traces: BASED-ENGINE-PROFILE-WIRE — the endpoint the connection dialog renders from. The UI holds
+// no engine list of its own, so if this payload is wrong or incomplete the dialog silently offers
+// the wrong form (or none) rather than failing loudly.
+describe("BASED-ENGINE-PROFILE-WIRE: GET /api/engines", () => {
+  test("requires auth like every other endpoint", async () => {
+    expect((await fetch(`${base}/api/engines`)).status).toBe(401);
+  });
+
+  test("serves one renderable profile per registered engine", async () => {
+    const res = await api("/api/engines");
+    expect(res.status).toBe(200);
+    const { engines } = (await res.json()) as { engines: Array<Record<string, unknown>> };
+    expect(engines.length).toBeGreaterThan(1);
+
+    const byId = new Map(engines.map((e) => [e.id as string, e]));
+    expect([...byId.keys()].sort()).toEqual(["lancedb", "mssql", "snowflake"]);
+
+    for (const engine of engines) {
+      const fields = engine.fields as Array<{ key: string; label: string; kind: string }>;
+      const authModes = engine.authModes as Array<{ id: string; label: string; secretLabel: string | null }>;
+      const namespace = engine.namespace as { key: string | null; default: string; grouping: string };
+      const quote = engine.quote as { open: string; close: string; escape: string };
+
+      expect(String(engine.label).trim()).not.toBe("");
+      expect(fields.length).toBeGreaterThan(0);
+      expect(authModes.length).toBeGreaterThan(0);
+      expect(["typed", "flat"]).toContain(namespace.grouping);
+      expect(quote.open.length).toBeGreaterThan(0);
+      // The dialog renders by `kind` alone, so an unknown kind would render nothing at all.
+      for (const f of fields) {
+        expect(["text", "password", "select", "checkbox", "directory", "file", "embedding-profile", "reranker-profile"]).toContain(f.kind);
+        expect(String(f.label).trim()).not.toBe("");
+      }
+      // Every profile names a subtitle field it actually declares (the left rail reads it).
+      expect(fields.map((f) => f.key)).toContain(engine.subtitleField as string);
+    }
+  });
+
+  test("Snowflake advertises its three auth modes, and SSO stores no secret", async () => {
+    const { engines } = (await (await api("/api/engines")).json()) as {
+      engines: Array<{ id: string; authModes: Array<{ id: string; secretLabel: string | null }> }>;
+    };
+    const snowflake = engines.find((e) => e.id === "snowflake")!;
+    const modes = new Map(snowflake.authModes.map((m) => [m.id, m.secretLabel]));
+    expect([...modes.keys()].sort()).toEqual(["snowflake-keypair", "snowflake-oauth", "snowflake-password"]);
+    expect(modes.get("snowflake-password")).toBe("Password");
+    // External-browser SSO must not render a secret input — there is nothing to store.
+    expect(modes.get("snowflake-oauth")).toBeNull();
+  });
+});

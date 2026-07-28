@@ -1,36 +1,22 @@
-// Traces: BASED-LANCE-ENGINE, BASED-CONN-TEST, BASED-LAZY-ENGINES
-// The single place that maps a ConnectionConfig to a concrete DatabaseAdapter. Every consumer holds
-// the DatabaseAdapter interface, never a concrete class — so adding an engine is adding a case here,
-// not editing call sites. engineOf is the back-compat seam: legacy configs have no `engine` field and
-// must keep behaving as MSSQL. Adapter modules are dynamic-imported per branch so an engine's native
-// stack (tedious, @lancedb napi, DuckDB) only loads when a connection of that engine is opened.
+// Traces: BASED-LANCE-ENGINE, BASED-CONN-TEST, BASED-LAZY-ENGINES, BASED-ENGINE-REGISTRY
+// Adapter construction now resolves through the engine registry (../engines/registry), so this file
+// no longer holds a switch: every consumer holds the DatabaseAdapter interface, never a concrete
+// class, and adding an engine is adding a descriptor rather than editing here. engineOf remains the
+// back-compat seam — legacy configs have no `engine` field and must keep behaving as MSSQL.
+import { createAdapterFor, engineOf } from "../engines/registry";
 import type { SecretProvider } from "./entra";
-import type { ConnectionConfig, DatabaseAdapter, DbEngine, TestResult } from "./types";
+import type { ConnectionConfig, DatabaseAdapter, TestResult } from "./types";
 
-/** The engine a config targets. Absent `engine` (every pre-LanceDB connection) means "mssql". */
-export function engineOf(cfg: ConnectionConfig): DbEngine {
-  return cfg.engine ?? "mssql";
-}
+export { engineOf };
 
 /** Build the adapter for a connection. `transientSecret` (used by the test path) overrides the stored
  *  secret for this instance only — never persisted. */
-export async function createAdapter(
+export function createAdapter(
   cfg: ConnectionConfig,
   getSecret: SecretProvider,
   opts?: { database?: string; transientSecret?: string },
 ): Promise<DatabaseAdapter> {
-  const secretProvider: SecretProvider =
-    opts?.transientSecret != null ? () => opts.transientSecret ?? null : getSecret;
-  switch (engineOf(cfg)) {
-    case "mssql": {
-      const { MssqlAdapter } = await import("./mssqlAdapter");
-      return new MssqlAdapter(cfg, secretProvider, { database: opts?.database });
-    }
-    case "lancedb": {
-      const { LanceDbAdapter } = await import("./lanceAdapter");
-      return new LanceDbAdapter(cfg, secretProvider, { database: opts?.database });
-    }
-  }
+  return createAdapterFor(cfg, getSecret, opts);
 }
 
 // Traces: BASED-CONN-TEST — engine-agnostic: build the adapter, run its own probe, tear down.

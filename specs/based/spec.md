@@ -27,10 +27,15 @@ Connections (name, server, initial database, auth type, options) shall persist i
 
 SQL-login passwords and service-principal client secrets shall be stored in Windows Credential Manager keyed by connection id, retrievable by the core process, and deleted when the connection is deleted.
 
+Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error. Blobs written by the earlier password path shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk.
+
 **Acceptance criteria:**
 - `setSecret(id, s)` → `getSecret(id)` returns `s`
 - `deleteSecret(id)` → `getSecret(id)` returns null
 - Deleting a connection through the connections API removes its secret
+- A 1704-character (2048-bit PEM sized) secret round-trips; multi-byte characters survive and are charged by byte
+- A secret over the cap throws a message naming the limit, and stores nothing
+- A credential written by the legacy password path still reads back, and reads back correctly after being rewritten
 
 **Implementation note (packaging, no spec impact):** `@napi-rs/keyring`'s loader reassigns `require = createRequire(__filename)` so it resolves its native `.node` binding relative to its own package when run unbundled (validated directly under Bun). electrobun's Bun bundler inlines `__filename` as the store path and lets that reassignment clobber the bundle-global `require` (`import.meta.require`), so the platform binary — which the bundler copies next to the output `index.js` — is resolved against the wrong directory and fails to load as a misleading "Cannot find native binding". Fixed in [shell/electrobun.config.ts](../../shell/electrobun.config.ts) with a `Bun.build` `onLoad` plugin that strips the reassignment for the shell bundle only (core's direct-Bun path and these tests are unaffected). Upstream this is an electrobun 1.18.1 bundler bug with napi-rs loaders that reassign `require`; the config plugin is a rebuild-surviving workaround. If keyring loading breaks again after an electrobun upgrade, re-check that plugin.
 
@@ -80,6 +85,50 @@ Auth type `service-principal` shall acquire a token via ClientSecretCredential (
 ---
 
 ## Engine / adapter
+
+### BASED-ENGINE-REGISTRY: One descriptor per engine; no call site branches on engine identity
+**Applies to:** based (core)
+**Test category:** unit
+
+Every engine-varying behaviour shall resolve through a registry of engine descriptors (`core/src/engines/`), keyed by `DbEngine` and typed `Record<DbEngine, EngineDescriptor>` so that registering a new engine id without a descriptor is a compile error. A descriptor supplies: the wire-serialisable `profile` (BASED-ENGINE-PROFILE-WIRE), a `SqlDialect`, a lazy `loadAdapter` (BASED-LAZY-ENGINES), an optional lazy `loadLsp`, a `persona`, a `briefing(caps)`, an `agentProse` bundle, optional engine-only `tools`, optional `skillTags`, and optional `lspKeywords`.
+
+No consumer shall select behaviour by comparing an engine id. In particular the agent surface, the LSP backend, the adapter factory, the persona resolver, and the generated tool prose all read the descriptor. The prohibited shape is a two-armed conditional whose `else` names a specific engine (`engine === "mssql" ? … : <LanceDB>`), because it is not a compile error for a third engine and silently mis-routes it.
+
+**Acceptance criteria:**
+- Every id in `ENGINE_IDS` has a descriptor whose `profile.id` and `defaultCapabilities.engine` equal that id
+- Every descriptor supplies a non-empty persona, briefing, and dialect name, and `agentProse.namespaceDefault === profile.namespace.default`
+- Every `FieldSpec.visibleWhen` targets a field the engine declares (or `authType`), and every auth value it gates on exists in `profile.authModes`
+- An engine whose `defaultCapabilities.indexIntrospect` is true also supplies `agentProse.indexes`
+- For every engine, the assembled surface omits exactly the tools whose capability is absent (`run_query`↔`sql`, `count_rows`↔`countRows`, `take_rows`↔`takeByKey`, `get_indexes`↔`indexIntrospect`, `vector_search`↔`search`)
+- A stored instruction set with no persona for an engine resolves to that engine's own built-in persona, never another engine's
+
+### BASED-ENGINE-PROFILE-WIRE: The UI renders engines from served profiles, not a mirrored list
+**Applies to:** based (core, ui)
+**Test category:** integration
+
+`GET /api/engines` shall return each engine's `EngineProfile`: id, label, `fields` (a `FieldSpec[]` describing the connection form), `authModes`, `namespace` (key, default, object nouns, tree grouping), `subtitleField`, identifier `quote` characters, and `defaultCapabilities`. The webview shall enumerate no engines of its own: the connection dialog renders from `fields` by `kind` alone, and `DbEngine`/`AuthType`/`ConnectionVariant` are opaque strings in `ui/src/api/types.ts`.
+
+Field kinds are a closed set: `text`, `password`, `select`, `checkbox`, `directory`, `file`, `embedding-profile`, `reranker-profile`. Required-field validation, conditional visibility (`visibleWhen`), defaults, help text and per-auth-mode notes all come from the profile.
+
+**Acceptance criteria:**
+- `engineProfiles()` round-trips through `JSON.stringify`/`parse` unchanged (no functions or class instances leak into the wire half)
+- Every profile's `subtitleField` names a field the engine declares
+- Every profile's `quote.open`/`close`/`escape` are non-empty, and `dialect.escapeIdent("x")` equals `open + "x" + close`
+- Adding an engine requires no change under `ui/src`
+
+### BASED-CONN-SETTINGS-BAG: Engine-specific connection fields live in one bag, migrated lazily
+**Applies to:** based (core)
+**Test category:** unit
+
+`ConnectionConfig` shall keep only cross-engine fields at the top level (`id`, `name`, `database`, `authType`, `engine`, `defaultEmbeddingProfileId`, `defaultRerankerProfileId`, `createdAt`, `updatedAt`) and carry every engine-specific field in `settings: Record<string, unknown>`, addressed by the key its `FieldSpec` declares.
+
+Migration shall be lazy: `ConnectionStore.list()`/`get()` lift a legacy row's top-level fields into `settings` on read, and `save()` writes the new shape. No bulk rewrite is performed. `settingStr`/`settingBool` shall additionally fall back to a legacy top-level field of the same name, so a config that never passed through the store still resolves.
+
+**Acceptance criteria:**
+- A row written in the legacy flat shape reads back with `server`/`encrypt`/… under `settings` and absent from the top level, and with `database`/`authType`/`engine` unchanged
+- `migrateConnection` is idempotent, and an explicit `settings` value wins over a stale top-level sibling
+- A row with no engine-specific fields migrates to `settings: {}`, never `undefined`
+- `settingStr` returns `undefined` for a blank string and for a non-string value; `settingBool` returns the caller's declared default when the key is absent
 
 ### BASED-MSSQL-OBJECTS: Schema object enumeration
 **Applies to:** based (core)
@@ -283,6 +332,24 @@ The UI shall offer a theme picker (LeftRail header) listing all themes grouped d
 - Picking a light theme (e.g. Cozy Reading Room) recolors the rails, editor, grids, and native controls with no reload; the wordmark/body/editor fonts change to that theme's fonts
 - The choice survives an app restart (loaded from `/api/settings`)
 - Result grid header/cells, NULL cells, and the editable grid's dirty/new row tints all match the active palette
+
+### BASED-EDITOR-VIM: Vim keymap for the query editor
+**Applies to:** based (ui, core)
+**Test category:** manual (the `editorKeymap` persistence half rides the BASED-SETTINGS integration test)
+
+Settings → General shall offer an **Editor keymap** choice of `default` or `vim`, persisted through `POST /api/settings` like any other app setting and defaulting to `default`. With `vim`, the query editor gains modal editing (motions, operators, registers, search, `.` repeat) and a block caret in normal mode; the implementation loads on demand, so the keymap costs nothing when it is off.
+
+The mode indicator and the `:` / `/` command line shall render in the app's existing bottom status bar — not in a second bar of the editor's own — and inherit the active theme. The mode reads as a word ("Normal", "Insert", "Visual line") rather than vim's shouted `--INSERT--`, per the project's no-uppercase-labels rule.
+
+`:w` writes the tab through the app's own save path, `:q` closes the tab, and `:wq` does both. The app's existing shortcuts (F5, Ctrl+Enter, Ctrl+S, Ctrl+Shift+S, Ctrl+O) keep working in every vim mode. `Ctrl+W` stays bound to the app's close-tab, shadowing vim's window prefix — harmless with a single editor.
+
+**Acceptance criteria:**
+- Editor keymap = Vim → the editor starts in normal mode with a block caret; `hjkl`, `dd`, `ciw`, `/pattern` + `n`, `V`+`y`+`p`, `u`, and `.` all behave as in vim
+- The mode word appears in the bottom status bar (not a second bar); typing `:` opens a command input inline in that bar that is legible on both a dark and a light theme
+- `:w` clears the tab's dirty marker; `:q` closes the tab; `:q!` closes it without saving
+- F5 / Ctrl+Enter run the query and Ctrl+S saves, from both normal and insert mode
+- Switching query tabs keeps vim attached with no doubled keystrokes; switching back to Default leaves no stale mode text in the status bar and preserves the buffer and undo history
+- The choice survives an app restart (loaded from `/api/settings`)
 
 ---
 
@@ -657,7 +724,9 @@ ledger-styled sections, each omitted when empty: **Indexes** (name, type/unique,
 desc flags, INCLUDE list, filter), **Foreign keys** (columns → referenced table(columns), delete/
 update actions, disabled), **Constraints** (checks + defaults with definitions), **Triggers**
 (events, after/instead-of, disabled) — and, for tables, a **DDL** block showing the
-server-computed CREATE script (exactly how views already show their definition). A **Script ▾**
+server-computed CREATE script (exactly how views already show their definition), with a copy icon
+button beside its label that writes the full CREATE statement to the clipboard and flashes a ✓
+confirmation. A **Script ▾**
 dropdown sits next to the Details/Data/SQL sub-tab buttons (tables/views) and in the routine tab
 header (procedures/functions), offering the SSMS-parity action set per object type (no ALTER for
 tables; SELECT for tables/views; INSERT for tables only); each action opens the generated script
@@ -667,11 +736,13 @@ in a new query tab (not run) via `POST /api/session/script`.
 1. Open a table with an FK, an index, a default and a check constraint → Details shows all four
    sections with correct metadata, plus its CREATE DDL block
 2. A plain table shows only its columns table + DDL (no empty sections)
-3. Script ▾ → "Script as create" opens `Script: schema.table` as a new query tab containing
+3. Click the copy icon next to the DDL label → it flashes ✓ for ~1.5s and pasting elsewhere yields
+   the full CREATE statement verbatim
+4. Script ▾ → "Script as create" opens `Script: schema.table` as a new query tab containing
    runnable CREATE DDL; "drop and create" contains DROP + GO + CREATE
-4. A view's Script menu offers alter (rewritten from its definition); a procedure tab's header
+5. A view's Script menu offers alter (rewritten from its definition); a procedure tab's header
    Script menu works the same
-5. On a LanceDB connection no Script dropdown appears and Details renders exactly as before
+6. On a LanceDB connection no Script dropdown appears and Details renders exactly as before
 
 ### BASED-TABLE-SQL-VIEW: Prepopulated, autorun, cached SQL tab
 **Applies to:** based (ui)
@@ -1800,11 +1871,14 @@ A second database engine behind the `DatabaseAdapter` interface: LanceDB, both *
 **Applies to:** based (core)
 **Test category:** integration
 
-`ConnectionConfig` carries an optional `engine` discriminator; `engineOf(cfg)` defaults an absent value to `"mssql"` so every legacy config stays valid with no migration. `createAdapter(cfg, getSecret, opts)` is **async** (BASED-LAZY-ENGINES: each branch dynamic-imports its adapter module) and resolves to a `DatabaseAdapter` chosen by engine; `testConnection` is engine-agnostic (builds the adapter, runs its `probe()`). Session/tool code holds the interface, not a concrete class.
+`ConnectionConfig` carries an optional `engine` discriminator; `engineOf(cfg)` defaults an absent value to `"mssql"` so every legacy config stays valid with no migration. `createAdapter(cfg, getSecret, opts)` is **async** (BASED-LAZY-ENGINES: each descriptor's `loadAdapter` dynamic-imports its adapter module) and resolves to a `DatabaseAdapter` chosen by engine; `testConnection` is engine-agnostic (builds the adapter, runs its `probe()`). Session/tool code holds the interface, not a concrete class.
+
+Adapter selection resolves through the engine registry (BASED-ENGINE-REGISTRY) rather than a switch in the factory, so adding an engine adds a descriptor rather than editing this seam.
 
 **Acceptance criteria:**
 - A config with no `engine` resolves to the MSSQL adapter; the full existing suite stays green (behaviour-preserving)
 - A config with `engine: "lancedb"` resolves to the LanceDB adapter
+- A config with `engine: "snowflake"` resolves to the Snowflake adapter
 
 ### BASED-LANCE-CONNECT: Cloud + local connect and probe
 **Applies to:** based (core)
@@ -1916,9 +1990,15 @@ Every tool description and **capability-briefing** line is generated from that o
 no naming a tool the surface lacks (naming it is itself a suggestion). The briefing is the half of
 the prompt that adapts; the persona beside it is fixed and variant-neutral, which is what keeps a
 user's custom persona from going stale (BASED-AGENT-INSTRUCTIONS). The `schema` parameter, which
-meant either a SQL schema or a base-folder name depending on engine, splits: mssql tools take
-`schema`, base-folder connections take `folder` (whose description lists the real folder names), and
-the other two LanceDB variants take neither.
+meant either a SQL schema or a base-folder name depending on engine, splits: schema-namespaced
+engines (mssql, snowflake) take `schema`, base-folder connections take `folder` (whose description
+lists the real folder names), and the other two LanceDB variants take neither.
+
+The engine-varying half of that prose is **data on the engine descriptor**, not a conditional at the
+tool site (BASED-ENGINE-REGISTRY): `agentProse` supplies the namespace parameter, the object summary,
+the `describe_table` formats and description, the `table` parameter text, the `run_query` prose, and
+the index prose. Assembly reads the descriptor rather than comparing an engine id, so an engine
+without a descriptor is a compile error instead of silently inheriting LanceDB's tools and persona.
 
 The **frontend** tool map is filtered the same way (`capiToolsFor`): `run_mutation` and `import_csv`
 are dropped when `!capabilities.write`. This half was previously unfiltered, and the backend surface
@@ -2344,6 +2424,80 @@ On a local connect, if the target directory has no LanceDB tables directly but c
 - `vector`/`hybrid` mode with `query` + a resolved embedding profile computes a vector and returns results ranked by it
 - `vector`/`hybrid` mode with `query`, no embedding profile, no connection default, and no raw `vector` throws a descriptive error rather than silently misusing the text as a vector
 
+## Snowflake engine
+
+### BASED-SNOWFLAKE-ENGINE: Snowflake as a registered engine
+**Applies to:** based (core)
+**Test category:** integration
+**External tests:** requires a live Snowflake account; the suite self-skips when unreachable
+
+`engine: "snowflake"` shall resolve to `SnowflakeAdapter` through the engine registry, with capabilities `{ sql, write, orderedBrowse, script, relations }` true and `{ search, wherePredicate, takeByKey, indexIntrospect }` false.
+
+`indexIntrospect: false` is normative, not an omission: Snowflake has no user-defined indexes, so `get_indexes` shall be **absent** from the agent surface rather than present and answering a question the engine cannot answer. The agent's briefing shall say so and shall not suggest adding an index.
+
+Catalog introspection reads `INFORMATION_SCHEMA` (`SCHEMATA`, `TABLES`, `VIEWS`, `FUNCTIONS`, `PROCEDURES`, `COLUMNS`) plus `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS` for constraint-to-column membership. Snowflake's `INFORMATION_SCHEMA` has no `ROUTINES` view (functions and procedures are separate views) and no `KEY_COLUMN_USAGE` (`TABLE_CONSTRAINTS` names constraints but never their columns), so key membership must come from `SHOW`, whose result columns are lower-case and which accepts no binds. Because Snowflake stores unquoted identifiers upper-cased, a caller-supplied name shall be resolved to the stored form before being quoted into any subsequent statement; names shall not be blanket-normalised, which would break genuinely lower-case quoted objects. Paging is `LIMIT … OFFSET …`; counting is `COUNT(*)`. There is no `GO` separator, so `execute()` sends the editor text as one statement (`splitBatches` is not used).
+
+**Acceptance criteria:**
+- `probe()` returns `ok` with a `serverVersion` matching `/Snowflake/` and the current user as `identity`
+- `listObjects()` returns tables, views, procedures and functions with their schema names; `INFORMATION_SCHEMA` is excluded
+- `getTableColumns` reports PK and FK membership; `getRelations` returns FK edges for the ER diagram
+- `readTablePage` honours `orderBy` and structured `filters`; `countRows` honours the same filters
+- `execute()` streams `resultset`/`rows`/`resultsetEnd`/`done`, and `cancel()` yields `status: "cancelled"`
+- `runCommands` commits all-or-nothing and rolls back on error
+- A table name in the wrong case still resolves; a genuinely lower-case quoted name is not folded
+
+### BASED-SNOWFLAKE-AUTH: Password, key-pair, and external-browser SSO
+**Applies to:** based (core)
+**Test category:** integration (password); manual (key-pair, SSO)
+
+The adapter shall authenticate itself rather than through `entra.ts`, which is Azure-only and returns `null` for all three Snowflake auth types. `snowflake-password` → `authenticator: "SNOWFLAKE"` with the password from the connection's secret slot; `snowflake-keypair` → `"SNOWFLAKE_JWT"` with a private-key PEM and optional passphrase; `snowflake-oauth` → `"EXTERNALBROWSER"`, storing no secret.
+
+Because the connection secret channel holds one string per connection id, key-pair auth shall store a JSON blob (`{"key":…,"pass":…}`) in that slot. A plain-string secret in a key-pair connection shall be read as the key with no passphrase rather than failing the connection.
+
+An auth mode may declare `secretMultiline`, and the connection dialog shall then render its secret as a textarea rather than a masked `<input>`. This is a correctness requirement, not cosmetics: a PEM spans lines, and a single-line input drops newlines on paste — silently mangling the key instead of rejecting it. Key-pair is the only such mode today. Key-pair auth is also the supported answer to Snowflake's account-level MFA policy, which rejects password sign-in for service users.
+
+`*.snowflakecomputing.com` is a wildcard onto Snowflake's shared load balancer, so a wrong account identifier resolves in DNS and completes a TLS handshake before the balancer 404s — the driver reports that as a bare `Request to Snowflake failed.` (`401002`), which reads like a network fault. That case shall be reported as an unrecognised account identifier instead, naming the region/cloud form a legacy locator needs; a bare locator only works in AWS us-west-2.
+
+Opening a connection shall settle within a bounded time: on expiry the attempt is torn down and reported as an error rather than left pending. The driver cannot provide this — its `timeout` option bounds one HTTP request, and `retryTimeout` is clamped to `Math.max(300, yours)` and so cannot be lowered — so the bound is the adapter's. `snowflake-oauth` gets a longer bound than the other two because external-browser SSO legitimately blocks on a human.
+
+**Acceptance criteria:**
+- Password: `probe()` succeeds against a live account with env-supplied credentials
+- `decodeKeyPairSecret` parses the blob, and falls back to `{ key: raw }` for a bare PEM
+- `probe()` against an unreachable account returns `{ ok: false }` with a non-empty error well inside the driver's own 300 s retry budget — it never hangs
+- A 404 from the login endpoint (`401002` + HTTP 404) is reported as an unrecognised account identifier naming the required region/cloud form, not as the driver's bare "Request to Snowflake failed."; a `390100` credential rejection keeps its own message
+- **Manual (key-pair):** configure a key-pair connection; the secret input is a multi-line textarea, a pasted PEM keeps its line breaks, Test connection → succeeds; the keyring holds one entry for the connection
+- **Manual (SSO):** choose "SSO (external browser)", Test connection → the system browser opens, and after login the test reports the Snowflake identity; no secret input is shown for this mode
+
+**Implementation note (runtime workaround, no spec impact):** `snowflake-sdk` 3.1.0 runs cloud-platform detection at module load (`telemetry/platform_detection.js` — a `Promise.all` over 11 detectors) and `services/sf.js` awaits it before building the login payload. One detector, `hasAwsIdentity`, calls `@aws-sdk/client-sts` `STSClient.send()`, which under Bun never settles and ignores its abort signal; the `Promise.all` therefore never resolves, the login POST is never sent, and `connectAsync` hangs forever with no error and no log after `authentication successful using: SNOWFLAKE` — a line the driver emits *before* any network call, which makes the failure read as a success. Measured on Bun 1.3.14: `getDetectedPlatforms()` never resolves; under Node 24 the same import resolves in ~1 s, and a full `connectAsync` errors in 1.6 s. The SDK already has an `isBun` branch in that file, but it covers only the `fetch` detectors, not the AWS one. Fixed by setting `SNOWFLAKE_DISABLE_PLATFORM_DETECTION` (the detected value is telemetry only, `CLIENT_ENVIRONMENT.PLATFORM`). The driver reads it at module-load time, and **Bun does not guarantee that a side-effect `import` ordered above `import snowflake from "snowflake-sdk"` is evaluated first** — verified: it is not — so the adapter imports the driver for its *types* only and loads its value through a single lazy `loadSdk()` that sets the variable first. That laziness is load-bearing, not a style choice. Retire the workaround once Bun settles or aborts that STS call, or once the SDK's `isBun` branch covers the AWS path.
+
+### BASED-SNOWFLAKE-SCRIPT: Object DDL comes from GET_DDL
+**Applies to:** based (core)
+**Test category:** integration
+
+An adapter may implement `scriptObject(input, action)`. When present, both scripting call sites (the `describe_table` tool and `POST /api/session/script`) shall prefer it over the pure T-SQL scripter, which stays pure and unmodified.
+
+Snowflake's implementation shall use `GET_DDL` for `create` (and, with `CREATE` rewritten to `CREATE OR REPLACE`, for a module's `alter`), and generate `drop`, `select` and `insert` templates itself. `describe_table` shall not offer an `alter` format on Snowflake.
+
+**Acceptance criteria:**
+- `describe_table(format: "ddl")` on a Snowflake table returns Snowflake `GET_DDL` output, not bracket-quoted T-SQL
+- The `format` enum on a Snowflake connection contains `ddl` and does not contain `alter`
+- An engine with no `scriptObject` still routes through the T-SQL scripter unchanged
+
+### BASED-SNOWFLAKE-DML: Dialect-aware edit commands
+**Applies to:** based (core)
+**Test category:** unit
+
+`buildEditCommands(change, dialect)` shall emit the connection dialect's identifier quoting and bind placeholders; the server passes the live adapter's dialect. The identifier guard (a strict safe-charset regex that throws before emitting anything) is dialect-independent and shall remain in force.
+
+On a dialect with positional binds, the order of `params` **is** the bind order, so within one command params shall be pushed in the order their placeholders appear — UPDATE therefore emits SET params before WHERE params. On a dialect without `INSERT … DEFAULT VALUES`, an all-defaults insert shall be refused with a clear error rather than emitted as invalid SQL.
+
+**Acceptance criteria:**
+- T-SQL output is byte-for-byte unchanged: `UPDATE [S].[T] SET [C]=@p0 WHERE [K]=@k0`
+- Snowflake output is `UPDATE "S"."T" SET "C"=? WHERE "K"=?` with params ordered `[setValue, keyValue]`
+- A table or column name carrying `;`, a bracket, or a quote throws `Invalid identifier` on every dialect
+- An empty insert throws on Snowflake and emits `DEFAULT VALUES` on T-SQL
+- Update/delete without a primary key throw before emitting any command
+
 ## Lance SQL + LSP (Phase 4)
 
 Local LanceDB connections get a real SQL query tab — an embedded DuckDB (`@duckdb/node-api`) with the `lance` **core extension** scanning the connection's `.lance` storage directly via `ATTACH … (TYPE lance)` (pushdown, no materialization through JS; also exposes `lance_vector_search(path, column, vector, k, …)`/`lance_fts()` as SQL functions). Both editors gain real Language-Server-Protocol intelligence over a WebSocket transport: an in-house DuckDB language server (no LSP exists anywhere for the DuckDB/DataFusion dialect) and, for SQL Server, the external `sqls` server. Engine-specific native deps (`mssql`, `@lancedb/lancedb`, `@duckdb/node-api`) load lazily at connection time.
@@ -2352,11 +2506,11 @@ Local LanceDB connections get a real SQL query tab — an embedded DuckDB (`@duc
 **Applies to:** based (core)
 **Test category:** integration
 
-Importing `@based/core` shall evaluate no engine module: `mssql`/tedious, `@lancedb/lancedb`, and `@duckdb/node-api` load only when a connection of that engine is used. `createAdapter` is async and dynamic-imports the adapter per engine branch; the barrel re-exports no concrete adapter class (tests import them via the `@based/core/mssql` / `@based/core/lancedb` / `@based/core/lancedb-sql` subpath exports).
+Importing `@based/core` shall evaluate no engine module: `mssql`/tedious, `@lancedb/lancedb`, `@duckdb/node-api`, and `snowflake-sdk` load only when a connection of that engine is used. `createAdapter` is async and resolves through the registry, whose descriptors hold `loadAdapter`/`loadLsp` **loaders** — importing `core/src/engines/registry` must therefore stay free of native stacks. The barrel re-exports no concrete adapter class (tests import them via the `@based/core/mssql` / `@based/core/lancedb` / `@based/core/lancedb-sql` / `@based/core/snowflake` subpath exports).
 
 **Acceptance criteria:**
-- A fresh process that imports `@based/core` has no mssql/tedious, `@lancedb`, or `@duckdb` module in `require.cache`
-- `createAdapter` resolves the MSSQL class for `engine: "mssql"` and for an engine-less legacy config, and the LanceDB class for `engine: "lancedb"`
+- A fresh process that imports `@based/core` has no mssql/tedious, `@lancedb`, `@duckdb`, or `snowflake-sdk` module in `require.cache`
+- `createAdapter` resolves the MSSQL class for `engine: "mssql"` and for an engine-less legacy config, the LanceDB class for `engine: "lancedb"`, and the Snowflake class for `engine: "snowflake"`
 - The full suite stays green
 
 ### BASED-LANCE-SQL: DuckDB-backed SQL for local LanceDB

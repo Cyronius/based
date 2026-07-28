@@ -4,8 +4,7 @@ import { ObjectExplorer } from "./ObjectExplorer";
 import { HistoryPanel } from "./HistoryPanel";
 import { ThemePicker } from "./ThemePicker";
 import { IconButton } from "./IconButton";
-import type { AuthType, ConnectionConfig } from "../api/types";
-import { engineOf } from "../api/types";
+import { authLabel, connSubtitle, profileFor } from "../lib/engineProfile";
 
 const WIDTH_KEY = "based:leftRailWidth";
 // Traces: BASED-HISTORY-UI — which lower-pane view the rail shows, persisted across restarts.
@@ -19,23 +18,9 @@ function loadWidth(): number {
   return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
 }
 
-/** The dim subtitle under a connection name: server for SQL, the URI/path for LanceDB. */
-function connSubtitle(c: ConnectionConfig): string {
-  const target = engineOf(c) === "lancedb" ? c.uri || "local" : c.server;
-  return `${target} · ${AUTH_LABEL[c.authType]}`;
-}
-
-const AUTH_LABEL: Record<AuthType, string> = {
-  "entra-interactive": "Entra ID",
-  "azure-cli": "Azure CLI",
-  "sql-login": "SQL login",
-  "service-principal": "Service principal",
-  "lancedb-cloud": "LanceDB Cloud",
-  "lancedb-local": "LanceDB (local)",
-};
-
 function ConnectionSelector() {
   const connections = useStore((s) => s.connections);
+  const engines = useStore((s) => s.engines);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const status = useStore((s) => s.status);
   const connect = useStore((s) => s.connect);
@@ -77,7 +62,7 @@ function ConnectionSelector() {
                 }`}
               />
             </div>
-            <div className="text-[length:var(--fs-sm)] text-muted truncate">{AUTH_LABEL[active.authType]}</div>
+            <div className="text-[length:var(--fs-sm)] text-muted truncate">{authLabel(active, engines)}</div>
           </>
         ) : (
           <div className="text-muted py-0.5">Select a connection…</div>
@@ -96,7 +81,7 @@ function ConnectionSelector() {
                 }}
               >
                 <div className="truncate">{c.name}</div>
-                <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c)}</div>
+                <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c, engines)}</div>
               </button>
               <IconButton
                 title="Edit connection"
@@ -136,13 +121,17 @@ export function LeftRail() {
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const status = useStore((s) => s.status);
   const connections = useStore((s) => s.connections);
+  const engines = useStore((s) => s.engines);
   const capabilities = useStore((s) => s.capabilities);
   const openDiagramTab = useStore((s) => s.openDiagramTab);
   const activeConn = connections.find((c) => c.id === activeConnectionId);
-  // The database selector is genuinely MSSQL-shaped (Lance has one "database"); the schema filter
-  // also serves base-folder LanceDB, whose subfolders populate `schemas` (BASED-LANCE-SQL-GATING).
-  const sqlEngine = !activeConn || engineOf(activeConn) === "mssql";
-  const showSchemaFilter = sqlEngine || schemas.length > 0;
+  // Both affordances are engine-shaped, so both come from the engine profile rather than from an
+  // id comparison. The database selector exists when the engine declares a `database` field at all
+  // (LanceDB has a single implicit one); the schema filter also serves base-folder LanceDB, whose
+  // subfolders populate `schemas` (BASED-LANCE-SQL-GATING).
+  const activeProfile = activeConn ? profileFor(activeConn, engines) : undefined;
+  const sqlEngine = !activeConn || (activeProfile?.fields.some((f) => f.key === "database") ?? true);
+  const showSchemaFilter = !activeProfile || activeProfile.namespace.key != null || schemas.length > 0;
 
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft disabled:opacity-40";

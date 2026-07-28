@@ -198,8 +198,9 @@ describe.skip("BASED-TABLE-FILTER-UI: manual verification", () => {
 
 // Traces: BASED-TABLE-DETAILS-UI (canonical spec: specs/based/spec.md)
 // Verification: manual — Details sub-view sections (Indexes / Foreign keys / Constraints /
-// Triggers, omitted when empty) + table DDL block; Script ▾ dropdown on table/view and routine
-// tabs opens generated DDL in a new query tab; absent on LanceDB.
+// Triggers, omitted when empty) + table DDL block with a copy-to-clipboard icon button (flashes ✓,
+// pastes the full CREATE statement); Script ▾ dropdown on table/view and routine tabs opens
+// generated DDL in a new query tab; absent on LanceDB.
 describe.skip("BASED-TABLE-DETAILS-UI: manual verification", () => {
   it.todo("see spec.md procedure");
 });
@@ -315,5 +316,15 @@ describe.skip("BASED-TAB-AUTONAME-APPLY: manual verification", () => {
 // embedding profile exists); the Data tab's search dropdowns seed from the connection but honor an
 // explicit "none"; editing the connection applies without reconnecting.
 describe.skip("BASED-LANCE-CONN-DEFAULT-PROFILES: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-EDITOR-VIM (canonical spec: specs/based/spec.md)
+// Verification: manual (the persistence half rides integration.settings) — Settings → General →
+// Editor keymap = Vim gives the query editor modal editing with a block caret; the mode and the `:`
+// command line render in the app's bottom status bar; `:w` saves the tab and `:q` closes it; F5 /
+// Ctrl+Enter / Ctrl+S keep working in every mode; toggling back to Default restores plain typing
+// with the buffer and undo history intact.
+describe.skip("BASED-EDITOR-VIM: manual verification", () => {
   it.todo("see spec.md procedure");
 });

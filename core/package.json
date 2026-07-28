@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./mssql": "./src/db/mssqlAdapter.ts",
     "./lancedb": "./src/db/lanceAdapter.ts",
-    "./lancedb-sql": "./src/db/lanceSql.ts"
+    "./lancedb-sql": "./src/db/lanceSql.ts",
+    "./snowflake": "./src/db/snowflakeAdapter.ts"
   },
   "scripts": {
     "dev": "bun run --watch src/dev.ts",
@@ -31,6 +32,7 @@
     "ai": "^7.0.34",
     "exceljs": "^4.4.0",
     "mssql": "^11.0.1",
+    "snowflake-sdk": "^3.1.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

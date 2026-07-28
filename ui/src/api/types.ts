@@ -1,41 +1,79 @@
-// Wire types mirroring core/src/db/types.ts (kept separate so the webview never imports Bun-flavored modules).
-export type AuthType =
-  | "entra-interactive"
-  | "azure-cli"
-  | "sql-login"
-  | "service-principal"
-  | "lancedb-cloud"
-  | "lancedb-local";
-
-export type DbEngine = "mssql" | "lancedb";
-
-/** Traces: BASED-AGENT-SURFACE-VARIANT — mirrors core/src/db/types.ts. */
-export type ConnectionVariant = "mssql" | "lancedb-local" | "lancedb-basefolder" | "lancedb-cloud";
+// Wire types mirroring core/src/db/types.ts (kept separate so the webview never imports Bun-flavored
+// modules). Traces: BASED-ENGINE-PROFILE-WIRE — engine ids, auth types and connection variants are
+// deliberately NOT enumerated here any more. They arrive from GET /api/engines as data, so adding an
+// engine is a core-only change and this file cannot drift out of step with the registry. Anything
+// the UI needs to *do* per engine comes from an EngineProfile field, never from comparing an id.
+export type AuthType = string;
+export type DbEngine = string;
+export type ConnectionVariant = string;
 
 export interface ConnectionConfig {
   id: string;
-  name: string;
-  server: string;
+  /** The browse scope: a SQL database, a Lance directory name, a warehouse database. */
   database: string;
+  name: string;
   authType: AuthType;
-  /** Engine discriminator. Undefined = "mssql" (legacy configs). */
   engine?: DbEngine;
-  /** LanceDB: `db://slug` for cloud, or a filesystem directory for local. */
-  uri?: string;
-  /** LanceDB cloud only. */
-  region?: string;
-  /** LanceDB only (BASED-LANCE-CONN-DEFAULT-PROFILES): the embedding profile this connection's
-   *  searches use when none is named, and the reranker profile offered for it. Per-connection
-   *  because the right embedding model is a property of how this dataset's vectors were built. */
+  /** Traces: BASED-CONN-SETTINGS-BAG — engine-specific fields, keyed by their FieldSpec.key. */
+  settings: Record<string, unknown>;
+  /** BASED-LANCE-CONN-DEFAULT-PROFILES: top-level rather than in `settings` because the profile
+   *  deletion sweep scans them. Rendered via the embedding-profile/reranker-profile field kinds. */
   defaultEmbeddingProfileId?: string | null;
   defaultRerankerProfileId?: string | null;
-  username?: string;
-  tenantId?: string;
-  clientId?: string;
-  encrypt: boolean;
-  trustServerCertificate: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One control in the connection dialog. The dialog knows these kinds and no engine names. */
+export interface FieldSpec {
+  key: string;
+  label: string;
+  kind:
+    | "text"
+    | "password"
+    | "select"
+    | "checkbox"
+    | "directory"
+    | "file"
+    | "embedding-profile"
+    | "reranker-profile";
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  default?: string | boolean;
+  options?: Array<{ value: string; label: string }>;
+  visibleWhen?: { field: string; equals: string[] };
+}
+
+export interface AuthModeSpec {
+  id: string;
+  label: string;
+  secretLabel: string | null;
+  secretHelp?: string;
+  /** A multi-line secret (PEM/blob) — rendered as a textarea, since an <input> drops newlines. */
+  secretMultiline?: boolean;
+  note?: string;
+}
+
+export interface NamespaceProfile {
+  key: string | null;
+  label: string;
+  default: string;
+  objectNoun: string;
+  objectNounPlural: string;
+  grouping: "typed" | "flat";
+}
+
+/** Served by GET /api/engines. Everything the UI needs to render an engine it has never heard of. */
+export interface EngineProfile {
+  id: DbEngine;
+  label: string;
+  fields: FieldSpec[];
+  authModes: AuthModeSpec[];
+  namespace: NamespaceProfile;
+  subtitleField: string;
+  quote: { open: string; close: string; escape: string };
+  defaultCapabilities: EngineCapabilities;
 }
 
 /** The engine of a connection, defaulting legacy (engine-less) configs to mssql. */
@@ -398,6 +436,8 @@ export interface AppSettings {
   /** Explorer double-click actions (BASED-EXPLORER-ACTION). */
   explorerTableAction: "details" | "data" | "sql" | "script-create";
   explorerRoutineAction: "details" | "script-create";
+  /** Query-editor keymap (BASED-EDITOR-VIM). */
+  editorKeymap: "default" | "vim";
 }
 
 // Traces: BASED-HISTORY-UI — mirrors core/src/storage/history.ts
@@ -431,8 +471,10 @@ export interface InstructionSet {
   name: string;
   /** Shared, engine-neutral core. */
   core: string;
-  mssqlPersona: string;
-  lancePersona: string;
+  /** Persona per engine id. Keyed rather than one named field per engine so a newly registered
+   *  engine appears in the editor without a wire-type change; a missing entry falls back to that
+   *  engine's built-in persona server-side. */
+  personas: Record<string, string>;
   /** false only for the built-in "default" set. */
   editable: boolean;
 }
@@ -443,8 +485,8 @@ export interface AgentInstructionsConfig {
   sets: InstructionSet[];
   /** Traces: BASED-AGENT-INSTRUCTIONS — the generated, non-editable half of the prompt, per engine.
    *  Present on GET only (never posted back); shown read-only in the editor so the user can see what
-   *  is injected alongside their persona. */
-  briefings?: { mssql: string; lancedb: string };
+   *  is injected alongside their persona. Keyed by engine id for the same reason `personas` is. */
+  briefings?: Record<string, string>;
   /** Which engine's briefing above came from the LIVE connection rather than a representative
    *  rendering, or null when nothing is connected. */
   briefingIsLive?: DbEngine | null;

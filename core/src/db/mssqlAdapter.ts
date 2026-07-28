@@ -1,6 +1,8 @@
 import sql from "mssql";
 import type { TokenCredential } from "@azure/identity";
 import { splitBatches } from "./batch";
+import { settingBool, settingStr } from "./connectionSettings";
+import { TSQL_DIALECT, type SqlDialect } from "./dialect";
 import { createCredential, mintSqlToken, type SecretProvider } from "./entra";
 import { skipsWrap, wrapBatch } from "./planWrap";
 import { isRetryableError, withReconnect } from "./retry";
@@ -123,6 +125,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     takeByKey: false,
     indexIntrospect: true,
   };
+  readonly dialect: SqlDialect = TSQL_DIALECT;
   readonly database: string;
   private pool: sql.ConnectionPool | null = null;
   private credential: TokenCredential | null = null;
@@ -150,7 +153,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   private async buildPool(): Promise<sql.ConnectionPool> {
-    const { host, port } = parseServer(this.cfg.server);
+    const { host, port } = parseServer(settingStr(this.cfg, "server") ?? "");
     const config: sql.config = {
       server: host,
       port,
@@ -159,16 +162,17 @@ export class MssqlAdapter implements DatabaseAdapter {
       requestTimeout: 600_000,
       pool: { max: 4, min: 0, idleTimeoutMillis: 60_000 },
       options: {
-        encrypt: this.cfg.encrypt,
-        trustServerCertificate: this.cfg.trustServerCertificate,
+        encrypt: settingBool(this.cfg, "encrypt", true),
+        trustServerCertificate: settingBool(this.cfg, "trustServerCertificate", false),
         enableArithAbort: true,
         useUTC: false,
       },
     };
     if (this.cfg.authType === "sql-login") {
       const password = this.getSecret(this.cfg.id);
-      if (!this.cfg.username || password == null) throw new Error("SQL login requires a username and stored password");
-      config.user = this.cfg.username;
+      const username = settingStr(this.cfg, "username");
+      if (!username || password == null) throw new Error("SQL login requires a username and stored password");
+      config.user = username;
       config.password = password;
     } else {
       this.credential ??= createCredential(this.cfg, this.getSecret);

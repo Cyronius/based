@@ -29,15 +29,14 @@ import {
   deleteRerankerKey,
 } from "./secrets";
 import { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
-import { defaultCapabilitiesFor } from "./agent/surface";
-import { mssqlBriefing } from "./agent/tools/mssql";
-import { lanceBriefing } from "./agent/tools/lancedb";
+import { ENGINE_IDS, defaultCapabilitiesFor, descriptorFor, engineProfiles } from "./engines/registry";
 import { encodeVectorSample } from "./db/vectorWire";
 import { labelClusters, type LabelCluster } from "./agent/labelClusters";
 import { createLspSubsystem } from "./lsp";
 import { resolveEmbeddingProfile, resolveRerankerProfile } from "./db/searchProfileResolve";
 import { buildEditCommands, type TableChangeSet } from "./db/tableEdit";
-import { joinScripts, scriptCreateTable, scriptObject, type ScriptAction } from "./db/scripter";
+import { joinScripts, type ScriptAction } from "./db/scripter";
+import { scriptWithAdapter } from "./db/scriptDispatch";
 import { filterFor, openFileDialog, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
 import { parseCsv } from "./import/csvParse";
 import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
@@ -205,7 +204,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const forEngine = (engine: DbEngine) => (live && live.engine === engine ? live : defaultCapabilitiesFor(engine));
     return {
       ...config,
-      briefings: { mssql: mssqlBriefing(forEngine("mssql")), lancedb: lanceBriefing(forEngine("lancedb")) },
+      briefings: Object.fromEntries(
+        ENGINE_IDS.map((id) => [id, descriptorFor(id).briefing(forEngine(id))]),
+      ) as Record<DbEngine, string>,
       briefingIsLive: live ? live.engine : null,
     };
   }
@@ -300,6 +301,10 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/health") return json({ ok: true, version: APP_VERSION });
 
     // --- connections ---
+    // Traces: BASED-ENGINE-PROFILE-WIRE — the engine catalog the webview renders connection forms
+    // from. Serving it (rather than the UI holding a hand-mirrored copy) is what makes adding an
+    // engine a core-only change: the dialog knows field *kinds*, never engine names.
+    if (path === "/api/engines" && method === "GET") return json({ engines: engineProfiles() });
     if (path === "/api/connections" && method === "GET") return json(connections.list());
     if (path === "/api/connections" && method === "POST") {
       const input = (await req.json()) as ConnectionInput;
@@ -475,12 +480,15 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (!adapter.capabilities.script || !adapter.getTableDetails) {
         return json({ error: "This engine does not support object scripting" }, 400);
       }
-      const schema = url.searchParams.get("schema") ?? "dbo";
+      const schema = url.searchParams.get("schema") || adapter.dialect.defaultSchema;
       const table = url.searchParams.get("table") ?? "";
       const details = await adapter.getTableDetails(schema, table);
       // Views have no table DDL to synthesize — their definition text comes from BASED-VIEW-DEFINITION.
       const isTable = (await adapter.listObjects()).some((o) => o.schema === schema && o.name === table && o.type === "table");
-      return json({ details, createScript: isTable ? scriptCreateTable(details) : null });
+      return json({
+        details,
+        createScript: isTable ? await scriptWithAdapter(adapter, { kind: "table", details }, "create") : null,
+      });
     }
     // Traces: BASED-RELATIONS — bulk tables + FK edges for the ER diagram.
     if (path === "/api/session/relations") {
@@ -506,12 +514,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         try {
           if (obj.type === "table") {
             const details = await adapter.getTableDetails!(obj.schema, obj.name);
-            scripts.push(scriptObject({ kind: "table", details }, body.action));
+            scripts.push(await scriptWithAdapter(adapter, { kind: "table", details }, body.action));
           } else {
             const definition = await adapter.getObjectDefinition?.(obj.schema, obj.name);
             if (definition == null) throw new Error(`No definition found for ${obj.schema}.${obj.name}`);
             const type = obj.type === "view" ? "view" : obj.type === "procedure" ? "procedure" : "function";
-            scripts.push(scriptObject({ kind: "module", type, schema: obj.schema, name: obj.name, definition }, body.action));
+            scripts.push(
+              await scriptWithAdapter(adapter, { kind: "module", type, schema: obj.schema, name: obj.name, definition }, body.action),
+            );
           }
         } catch (err) {
           errors.push({ schema: obj.schema, name: obj.name, message: err instanceof Error ? err.message : String(err) });
@@ -737,7 +747,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json(withBriefings(sid, agentInstructions.list()));
     }
     if (path === "/api/agent/instructions" && method === "POST") {
-      const body = (await req.json()) as { id?: string; name: string; core: string; mssqlPersona: string; lancePersona: string };
+      const body = (await req.json()) as {
+        id?: string;
+        name: string;
+        core: string;
+        personas: Partial<Record<DbEngine, string>>;
+      };
       try {
         return json(withBriefings(sid, agentInstructions.saveSet(body)));
       } catch (err) {
@@ -1029,7 +1044,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
     let commands;
     try {
-      commands = buildEditCommands(body);
+      commands = buildEditCommands(body, adapter.dialect);
     } catch (err) {
       // A build failure (no PK for update/delete, invalid identifier) is a client error, not a 500.
       return json({ error: err instanceof Error ? err.message : String(err) }, 400);

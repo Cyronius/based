@@ -1,19 +1,14 @@
 // Traces: BASED-LSP-TRANSPORT
 // One WebSocket per window session carries LSP JSON-RPC (one message per text frame). The backend
-// is picked by the session's engine at upgrade time: the in-house DuckDB server for local LanceDB,
-// the in-house MSSQL server for SQL Server (BASED-LSP-MSSQL-NATIVE — every auth type, no external
-// binary). Backends are dynamic-imported per engine so the LSP layer adds nothing to cold start
-// (BASED-LAZY-ENGINES posture). Everything degrades: refusing the upgrade or a dead backend leaves
-// the editor fully functional with Monaco's built-ins.
+// comes from the session engine's descriptor at upgrade time (BASED-ENGINE-REGISTRY), which is also
+// where the dynamic import lives, so the LSP layer adds nothing to cold start (BASED-LAZY-ENGINES
+// posture). Everything degrades: refusing the upgrade, an engine with no language server, or a dead
+// backend all leave the editor fully functional with Monaco's built-ins.
 import type { ServerWebSocket } from "bun";
 import type { ConnectionConfig, DatabaseAdapter } from "../db/types";
-import { engineOf } from "../db/adapterFactory";
+import { descriptorForConfig } from "../engines/registry";
+import type { LspBackend } from "../engines/descriptor";
 import type { JsonRpcMessage } from "./protocol";
-
-interface LspBackend {
-  onClientMessage(text: string): void;
-  dispose(): void;
-}
 
 interface WsData {
   sid: string;
@@ -100,32 +95,12 @@ export function createLspSubsystem(deps: LspSubsystemDeps): LspSubsystem {
       }
     };
 
-    if (engineOf(cfg) === "lancedb") {
-      return async () => {
-        const { DuckDbLspServer } = await import("./duckdbLsp");
-        // The adapter is a LanceDbAdapter here (engine gated above); requireSqlBridge is its seam.
-        const withBridge = adapter as DatabaseAdapter & { requireSqlBridge(): import("../db/lanceSql").LanceSqlBridge };
-        return new DuckDbLspServer(async () => {
-          const bridge = withBridge.requireSqlBridge();
-          await bridge.ensureReady();
-          return bridge;
-        }, send);
-      };
-    }
-    return async () => {
-      // Traces: BASED-LSP-MSSQL-NATIVE — the in-house server rides the session's live
-      // authenticated adapter, so every auth type works (Entra included). Structural seam like
-      // the Lance requireSqlBridge cast: listAllColumns is an MssqlAdapter method, not part of
-      // the engine-agnostic DatabaseAdapter.
-      const { MssqlLspServer } = await import("./mssqlLsp");
-      const source = adapter as DatabaseAdapter & {
-        listAllColumns(): Promise<Array<{ schema: string; table: string; column: string; type: string; isPrimaryKey: boolean }>>;
-      };
-      return new MssqlLspServer(
-        { listObjects: () => adapter.listObjects(), listAllColumns: () => source.listAllColumns() },
-        send,
-      );
-    };
+    // The engine descriptor owns which server to build and the structural cast it needs to reach
+    // its adapter's catalog methods. The previous shape here was `lancedb ? DuckDB : MSSQL`, so a
+    // third SQL engine would silently have been handed T-SQL completion.
+    const loadLsp = descriptorForConfig(cfg).loadLsp;
+    if (!loadLsp) return { error: "This engine has no language server" };
+    return () => loadLsp(adapter, send as (message: unknown) => void) as Promise<LspBackend>;
   }
 
   return {

@@ -1,20 +1,25 @@
-// Traces: BASED-LANCE-AGENT-SURFACE, BASED-AGENT-SURFACE-VARIANT, BASED-AGENT-DELEGATE
+// Traces: BASED-LANCE-AGENT-SURFACE, BASED-AGENT-SURFACE-VARIANT, BASED-AGENT-DELEGATE,
+//         BASED-ENGINE-REGISTRY
 // The agent surface is a property of the CONNECTION, not just the engine: which tools the AI can
 // call, the persona describing how to use them, and which skills apply. Tool *names* are stable
 // across engines and variants — a chat thread stays coherent when the user switches connections,
 // and the model never learns three names for one concept. What varies is each tool's parameter list
-// and description, both generated from EngineCapabilities so every sentence is unconditionally true
-// for the connection it was generated for.
+// and description, both generated from EngineCapabilities plus the engine's own prose, so every
+// sentence is unconditionally true for the connection it was generated for.
 //
 // A capability the connection lacks means the tool (or the parameter) is ABSENT, not present-and-
 // refusing. A tool the model can see is a tool it will eventually offer the user.
+//
+// Assembly reads the engine descriptor from the registry rather than branching. That is not a
+// stylistic preference: the previous shape was `if (engine === "mssql") … else <LanceDB>`, so any
+// engine added after LanceDB silently inherited LanceDB's search tools and persona with no compile
+// error. Registry lookup makes an unregistered engine impossible instead of merely wrong.
 import type { DbEngine, EngineCapabilities } from "../db/types";
+import { descriptorFor } from "../engines/registry";
 import { sharedTools, type ToolDeps } from "./tools/shared";
-import { mssqlBriefing, MSSQL_PERSONA } from "./tools/mssql";
-import { lanceTools, lanceBriefing, LANCE_PERSONA } from "./tools/lancedb";
+import type { ToolSet } from "../engines/descriptor";
 
-/** Mastra ToolSet shape kept loose here so this module (and db/types) need not depend on mastra. */
-export type ToolSet = Record<string, unknown>;
+export type { ToolSet };
 
 export interface EngineAgentSurface {
   tools: ToolSet;
@@ -38,55 +43,15 @@ const DELEGATION_BRIEFING = `Delegation: you can hand self-contained investigati
 
 /** Assemble the agent surface for a live connection, binding tools to the session via `deps`. */
 export function agentSurfaceFor(caps: EngineCapabilities, deps: ToolDeps): EngineAgentSurface {
-  const core = sharedTools(deps, caps);
-  const withDelegation = (briefing: string) =>
-    deps.runSubagent ? `${briefing}\n\n${DELEGATION_BRIEFING}` : briefing;
-  if (caps.engine === "mssql") {
-    return { tools: core, briefing: withDelegation(mssqlBriefing(caps)), persona: MSSQL_PERSONA };
-  }
+  const engine = descriptorFor(caps.engine);
+  const core = sharedTools(deps, caps, engine.agentProse);
+  const briefing = engine.briefing(caps);
   return {
-    tools: { ...core, ...lanceTools(deps, caps) },
-    briefing: withDelegation(lanceBriefing(caps)),
-    persona: LANCE_PERSONA,
-    skillTags: ["lancedb"],
+    tools: { ...core, ...(engine.tools?.(deps, caps) ?? {}) },
+    briefing: deps.runSubagent ? `${briefing}\n\n${DELEGATION_BRIEFING}` : briefing,
+    persona: engine.persona,
+    skillTags: engine.skillTags,
   };
 }
 
-/** The capability object a bare engine name implies, for callers that have no live adapter (tests,
- *  the back-compat shim). Real sessions always pass the adapter's own `capabilities`, which is the
- *  only thing that knows cloud from local from base-folder. */
-export function defaultCapabilitiesFor(engine: DbEngine): EngineCapabilities {
-  return engine === "mssql"
-    ? {
-        sql: true,
-        search: false,
-        write: true,
-        orderedBrowse: true,
-        script: true,
-        relations: true,
-        engine: "mssql",
-        variant: "mssql",
-        containers: null,
-        wherePredicate: false,
-        structuredFilters: true,
-        countRows: true,
-        takeByKey: false,
-        indexIntrospect: true,
-      }
-    : {
-        sql: true,
-        search: true,
-        write: false,
-        orderedBrowse: false,
-        script: false,
-        relations: false,
-        engine: "lancedb",
-        variant: "lancedb-local",
-        containers: null,
-        wherePredicate: true,
-        structuredFilters: false,
-        countRows: true,
-        takeByKey: true,
-        indexIntrospect: true,
-      };
-}
+export { defaultCapabilitiesFor } from "../engines/registry";

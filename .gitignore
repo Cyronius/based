@@ -13,3 +13,11 @@ build/
 .codegraph
 *.tsbuildinfo
 shell/artifacts/
+.claude/plans/
+
+# Private keys must never be committed. Generate them outside the repo (~/.snowflake/); this is a
+# backstop for when they land here anyway.
+*.p8
+*.pem
+*.key
+*_rsa_key*

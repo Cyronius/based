@@ -4,6 +4,7 @@ import {
   InteractiveBrowserCredential,
   type TokenCredential,
 } from "@azure/identity";
+import { settingStr } from "./connectionSettings";
 import type { ConnectionConfig } from "./types";
 
 const SQL_SCOPE = "https://database.windows.net/.default";
@@ -18,26 +19,33 @@ export type SecretProvider = (connectionId: string) => string | null;
  * re-minting after expiry is silent (no second browser prompt for interactive).
  */
 export function createCredential(cfg: ConnectionConfig, getSecret: SecretProvider): TokenCredential | null {
+  const tenantId = settingStr(cfg, "tenantId");
+  const clientId = settingStr(cfg, "clientId");
   switch (cfg.authType) {
     case "azure-cli":
-      return new AzureCliCredential(cfg.tenantId ? { tenantId: cfg.tenantId } : {});
+      return new AzureCliCredential(tenantId ? { tenantId } : {});
     case "entra-interactive":
       return new InteractiveBrowserCredential({
         clientId: AZ_CLI_CLIENT_ID,
-        tenantId: cfg.tenantId || "organizations",
+        tenantId: tenantId || "organizations",
         redirectUri: LOOPBACK_REDIRECT,
       });
     case "service-principal": {
       const secret = getSecret(cfg.id);
-      if (!cfg.tenantId || !cfg.clientId || !secret) {
+      if (!tenantId || !clientId || !secret) {
         throw new Error("Service principal auth requires tenant id, client id, and a stored client secret");
       }
-      return new ClientSecretCredential(cfg.tenantId, cfg.clientId, secret);
+      return new ClientSecretCredential(tenantId, clientId, secret);
     }
     case "sql-login":
     // LanceDB auth types never reach the MSSQL credential path.
     case "lancedb-cloud":
     case "lancedb-local":
+    // Snowflake authenticates itself in its own adapter (password / JWT key-pair / external
+    // browser). No Azure credential is involved, so this returns null the same way sql-login does.
+    case "snowflake-password":
+    case "snowflake-keypair":
+    case "snowflake-oauth":
       return null;
   }
 }

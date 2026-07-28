@@ -14,6 +14,7 @@ import {
   fetchWindowState,
   saveWindowState,
   listEmbeddingProfiles,
+  listEngines,
   saveEmbeddingProfile as apiSaveEmbeddingProfile,
   deleteEmbeddingProfile as apiDeleteEmbeddingProfile,
   listRerankerProfiles,
@@ -31,6 +32,7 @@ import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
 import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
+import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
   AiProfile,
   AiProfileInput,
@@ -41,6 +43,7 @@ import type {
   ConnectionStatus,
   DbObject,
   EmbeddingProfile,
+  EngineProfile,
   EmbeddingProfileInput,
   EngineCapabilities,
   RelationsGraph,
@@ -169,6 +172,9 @@ export type DialogState = { mode: "closed" } | { mode: "new" } | { mode: "edit";
 
 export interface AppState {
   connections: ConnectionConfig[];
+  /** Traces: BASED-ENGINE-PROFILE-WIRE — the engine catalog served by core. The UI enumerates no
+   *  engines of its own; the connection dialog renders entirely from these profiles. */
+  engines: EngineProfile[];
   activeConnectionId: string | null;
   status: ConnectionStatus;
   statusDetail: string | null;
@@ -193,6 +199,8 @@ export interface AppState {
   /** Explorer double-click actions (BASED-EXPLORER-ACTION). */
   explorerTableAction: "details" | "data" | "sql" | "script-create";
   explorerRoutineAction: "details" | "script-create";
+  /** Query-editor keymap (BASED-EDITOR-VIM). */
+  editorKeymap: "default" | "vim";
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -202,12 +210,14 @@ export interface AppState {
   setFontScale(n: number): void;
   setRowPageSize(n: number): void;
   setExplorerActions(table: AppState["explorerTableAction"], routine: AppState["explorerRoutineAction"]): void;
+  setEditorKeymap(k: AppState["editorKeymap"]): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
   loadConnections(): Promise<void>;
   saveConnection(input: ConnectionInput): Promise<ConnectionConfig>;
   deleteConnection(id: string): Promise<void>;
   testConnection(input: ConnectionInput): Promise<TestResult>;
+  loadEngines(): Promise<void>;
   loadEmbeddingProfiles(): Promise<void>;
   saveEmbeddingProfile(input: EmbeddingProfileInput): Promise<EmbeddingProfile>;
   deleteEmbeddingProfile(id: string): Promise<void>;
@@ -423,16 +433,19 @@ export const useStore = create<AppState>((set, get) => {
   function ensureSqlView(tableTab: TableTabState): void {
     const linkedId = `sql:${tableTab.id}`;
     if (get().tabs.some((t) => t.id === linkedId)) return;
-    const { connections, activeConnectionId } = get();
+    const { connections, activeConnectionId, engines } = get();
     const conn = connections.find((c) => c.id === activeConnectionId);
-    // Engine-appropriate quoting: T-SQL brackets for mssql; DuckDB double-quotes for lancedb,
-    // where `schema` is the base-folder namespace (or empty for a single-db dir) (BASED-LANCE-SQL-GATING).
+    // Engine-appropriate quoting comes from the served engine profile, not from an id comparison.
+    // LanceDB is the one shape that also needs a middle `main` qualifier, and its `schema` is the
+    // base-folder namespace (empty for a single-db dir) (BASED-LANCE-SQL-GATING).
+    const profile = conn ? profileFor(conn, engines) : undefined;
+    const q = (name: string) => quoteIdent(name, profile);
     const content =
       conn && engineOf(conn) === "lancedb"
         ? tableTab.schema
-          ? `SELECT * FROM "${tableTab.schema}".main."${tableTab.table}"`
-          : `SELECT * FROM "${tableTab.table}"`
-        : `SELECT * FROM [${tableTab.schema}].[${tableTab.table}]`;
+          ? `SELECT * FROM ${q(tableTab.schema)}.main.${q(tableTab.table)}`
+          : `SELECT * FROM ${q(tableTab.table)}`
+        : `SELECT * FROM ${q(tableTab.schema)}.${q(tableTab.table)}`;
     const linked: QueryTabState = {
       ...freshQueryTab(`SQL: ${tableTab.title}`),
       id: linkedId,
@@ -579,6 +592,7 @@ export const useStore = create<AppState>((set, get) => {
 
   return {
     connections: [],
+    engines: [],
     activeConnectionId: null,
     status: "disconnected",
     statusDetail: null,
@@ -602,6 +616,7 @@ export const useStore = create<AppState>((set, get) => {
     fontScale: fontScaleHint(),
     explorerTableAction: "details",
     explorerRoutineAction: "details",
+    editorKeymap: "default",
     capturePlan: false,
     captureStats: false,
 
@@ -619,6 +634,7 @@ export const useStore = create<AppState>((set, get) => {
           activeAiProfileId: s.activeAiProfileId,
           explorerTableAction: s.explorerTableAction ?? "details",
           explorerRoutineAction: s.explorerRoutineAction ?? "details",
+          editorKeymap: s.editorKeymap ?? "default",
         });
       } catch {
         // keep the hinted theme if the server is unreachable
@@ -645,6 +661,11 @@ export const useStore = create<AppState>((set, get) => {
     setExplorerActions(table, routine) {
       set({ explorerTableAction: table, explorerRoutineAction: routine });
       void saveSettings({ explorerTableAction: table, explorerRoutineAction: routine }).catch(() => {});
+    },
+
+    setEditorKeymap(k) {
+      set({ editorKeymap: k });
+      void saveSettings({ editorKeymap: k }).catch(() => {});
     },
 
     toggleCapturePlan() {
@@ -674,6 +695,10 @@ export const useStore = create<AppState>((set, get) => {
 
     async testConnection(input) {
       return api<TestResult>("/api/connections/test", { method: "POST", body: JSON.stringify(input) });
+    },
+
+    async loadEngines() {
+      set({ engines: await listEngines() });
     },
 
     async loadEmbeddingProfiles() {

@@ -16,6 +16,8 @@ export interface AppSettings {
   explorerTableAction: "details" | "data" | "sql" | "script-create";
   /** Explorer double-click action for procedures/functions (no Data view). */
   explorerRoutineAction: "details" | "script-create";
+  /** Query-editor keymap (BASED-EDITOR-VIM): stock Monaco bindings, or modal vim. */
+  editorKeymap: "default" | "vim";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeAiProfileId: null,
   explorerTableAction: "details",
   explorerRoutineAction: "details",
+  editorKeymap: "default",
 };
 
 export class SettingsStore {

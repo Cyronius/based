@@ -20,6 +20,7 @@ import {
   GENERIC_CORE,
   MSSQL_PERSONA,
   LANCE_PERSONA,
+  SNOWFLAKE_PERSONA,
   mssqlBriefing,
   lanceBriefing,
   defaultCapabilitiesFor,
@@ -211,10 +212,25 @@ describe("BASED-AGENT-INSTRUCTIONS: instructions resolve from the profile's link
   const store = new AgentInstructionsStore(openDb(join(mkdtempSync(join(tmpdir(), "based-instr-")), "app.db")));
 
   test("resolveById returns the linked set's core + engine-appropriate persona", () => {
-    const { sets } = store.saveSet({ name: "Analyst", core: "CORE-A", mssqlPersona: "SQL-A", lancePersona: "LANCE-A" });
+    const { sets } = store.saveSet({
+      name: "Analyst",
+      core: "CORE-A",
+      personas: { mssql: "SQL-A", lancedb: "LANCE-A" },
+    });
     const custom = sets.find((s) => s.name === "Analyst")!;
     expect(store.resolveById(custom.id, "mssql")).toEqual({ core: "CORE-A", persona: "SQL-A" });
-    expect(store.resolveById(custom.id, "lance")).toEqual({ core: "CORE-A", persona: "LANCE-A" });
+    expect(store.resolveById(custom.id, "lancedb")).toEqual({ core: "CORE-A", persona: "LANCE-A" });
+  });
+
+  // Traces: BASED-ENGINE-REGISTRY — this set predates snowflake and has no persona for it. It must
+  // fall back to SNOWFLAKE_PERSONA, never to another engine's: the old shape was
+  // `engine === "mssql" ? mssqlPersona : lancePersona`, which silently handed every engine added
+  // after LanceDB the LanceDB persona.
+  test("a set with no persona for an engine falls back to that engine's own, not another's", () => {
+    const { sets } = store.saveSet({ name: "Partial", core: "CORE-P", personas: { mssql: "SQL-P" } });
+    const custom = sets.find((s) => s.name === "Partial")!;
+    expect(store.resolveById(custom.id, "snowflake")).toEqual({ core: "CORE-P", persona: SNOWFLAKE_PERSONA });
+    expect(store.resolveById(custom.id, "lancedb")).toEqual({ core: "CORE-P", persona: LANCE_PERSONA });
   });
 
   test("resolveById falls back to the default set when the id no longer resolves", () => {

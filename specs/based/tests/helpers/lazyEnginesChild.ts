@@ -9,5 +9,6 @@ console.log(
     mssql: hit(/mssqlAdapter|[\\/]node_modules[\\/].*(mssql|tedious)/i).length,
     lance: hit(/lanceAdapter|@lancedb/i).length,
     duckdb: hit(/lanceSql|@duckdb/i).length,
+    snowflake: hit(/snowflakeAdapter|[\/]node_modules[\/].*snowflake-sdk/i).length,
   }),
 );

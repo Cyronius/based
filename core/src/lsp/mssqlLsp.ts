@@ -17,20 +17,14 @@ import {
   type Position,
 } from "./protocol";
 import { offsetAt } from "./duckdbLsp";
+import { TSQL_KEYWORDS } from "./keywords";
 import type { DbObject } from "../db/types";
 
 const CATALOG_CACHE_MS = 5_000;
 
-const TSQL_KEYWORDS = [
-  "SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "HAVING", "TOP", "JOIN", "LEFT JOIN",
-  "RIGHT JOIN", "FULL JOIN", "INNER JOIN", "CROSS JOIN", "CROSS APPLY", "OUTER APPLY", "ON",
-  "AS", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS NULL", "IS NOT NULL", "CASE",
-  "WHEN", "THEN", "ELSE", "END", "DISTINCT", "UNION", "UNION ALL", "EXCEPT", "INTERSECT", "WITH",
-  "OVER", "PARTITION BY", "CAST", "CONVERT", "COALESCE", "ISNULL", "DESC", "ASC", "INSERT INTO",
-  "VALUES", "UPDATE", "SET", "DELETE FROM", "MERGE", "OUTPUT", "DECLARE", "EXEC", "BEGIN",
-  "COMMIT", "ROLLBACK", "TRANSACTION", "OFFSET", "FETCH NEXT", "ROWS ONLY", "PIVOT", "UNPIVOT",
-  "COUNT", "SUM", "AVG", "MIN", "MAX", "ROW_NUMBER", "GETDATE", "SYSUTCDATETIME", "NEWID",
-];
+// The keyword lists live in ./keywords, one per dialect, and an engine descriptor names the one it
+// wants. Object and column completion — the part that actually needs the live catalog — is
+// dialect-neutral, which is why every SQL engine shares this server instead of getting its own.
 
 /** Catalog sources the server needs from the adapter — a structural seam (like the Lance
  *  requireSqlBridge cast) so DatabaseAdapter stays clean of LSP plumbing. */
@@ -112,6 +106,9 @@ export class MssqlLspServer {
   constructor(
     private readonly source: MssqlCatalogSource,
     private readonly send: (message: JsonRpcMessage) => void,
+    /** The dialect's completion keywords. Defaults to T-SQL so existing callers are unchanged;
+     *  the engine registry passes Snowflake's or DuckDB's list for those connections. */
+    private readonly keywords: readonly string[] = TSQL_KEYWORDS,
   ) {}
 
   onClientMessage(text: string): void {
@@ -209,7 +206,7 @@ export class MssqlLspServer {
     // A dead catalog (connection blip) degrades to keywords — never an error to the client.
     const catalog = await this.getCatalog().catch(() => null);
     if (!catalog) {
-      for (const k of TSQL_KEYWORDS) put({ label: k, kind: CompletionItemKind.Keyword });
+      for (const k of this.keywords) put({ label: k, kind: CompletionItemKind.Keyword });
       return { isIncomplete: false, items: [...items.values()] };
     }
 
@@ -247,7 +244,7 @@ export class MssqlLspServer {
         break;
       }
       case "general": {
-        for (const k of TSQL_KEYWORDS) put({ label: k, kind: CompletionItemKind.Keyword, sortText: `2${k}` });
+        for (const k of this.keywords) put({ label: k, kind: CompletionItemKind.Keyword, sortText: `2${k}` });
         for (const o of catalog.objects.filter((o) => o.type === "table" || o.type === "view")) putObject(o, "1");
         // Columns of every object the document references — the useful narrow set, not the DB.
         const referenced = resolveAliases(doc);

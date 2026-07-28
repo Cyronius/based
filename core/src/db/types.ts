@@ -1,3 +1,7 @@
+// Type-only imports, so the scripter/dialect ↔ types cycle is erased at build time.
+import type { SqlDialect } from "./dialect";
+import type { ScriptAction, ScriptInput } from "./scripter";
+
 export type AuthType =
   | "entra-interactive"
   | "azure-cli"
@@ -6,30 +10,44 @@ export type AuthType =
   // LanceDB: cloud connects with uri (db://slug) + apiKey (via the secret channel) + region;
   // local connects with uri = a filesystem directory and needs no secret.
   | "lancedb-cloud"
-  | "lancedb-local";
+  | "lancedb-local"
+  // Snowflake authenticates itself (no Azure credential): password and key-pair both ride the
+  // secret channel — keypair stores a JSON blob (see secrets.ts) because it needs two values —
+  // and external-browser SSO needs no stored secret at all.
+  | "snowflake-password"
+  | "snowflake-keypair"
+  | "snowflake-oauth";
 
 /** Which database engine a connection targets. Absent on legacy configs → treated as "mssql"
  *  (see engineOf in adapterFactory). Never read cfg.engine directly; always go through engineOf. */
-export type DbEngine = "mssql" | "lancedb";
+export type DbEngine = "mssql" | "lancedb" | "snowflake";
 
 // Traces: BASED-AGENT-SURFACE-VARIANT — the engine alone doesn't determine what a connection can
 // do: the three LanceDB shapes differ on SQL, on folder qualification, and on what a table name
 // even means. Every capability-driven consumer (agent surface, personas, UI gating) branches on
 // this, never on `engine` plus a private isCloud() the caller can't see.
-export type ConnectionVariant = "mssql" | "lancedb-local" | "lancedb-basefolder" | "lancedb-cloud";
+export type ConnectionVariant =
+  | "mssql"
+  | "lancedb-local"
+  | "lancedb-basefolder"
+  | "lancedb-cloud"
+  | "snowflake";
 
 export interface ConnectionConfig {
   id: string;
   name: string;
-  server: string;
+  /** The browse scope: a SQL database, a Lance directory name, a warehouse database. Cross-engine
+   *  enough to stay top-level — the database switcher, history rows and createAdapter all key on
+   *  it — and simply blank on engines that have no such level. */
   database: string;
   authType: AuthType;
   /** Engine discriminator. Optional for back-compat: undefined means "mssql". */
   engine?: DbEngine;
-  /** LanceDB only: `db://slug` for cloud, or a filesystem directory for local. */
-  uri?: string;
-  /** LanceDB cloud only: e.g. "us-east-1". */
-  region?: string;
+  // Traces: BASED-CONN-SETTINGS-BAG — every engine-specific field (server, uri, region, account,
+  // warehouse, encrypt, …) lives here, addressed by the key its FieldSpec declares. Read it through
+  // settingStr/settingBool in ./connectionSettings, never directly, so a legacy row that hasn't
+  // been re-saved yet still resolves.
+  settings: Record<string, unknown>;
   // Traces: BASED-LANCE-CONN-DEFAULT-PROFILES — which embedding model to use is a property of how
   // THIS dataset's vectors were built, so the default lives on the connection rather than app-wide:
   // two directories built by different pipelines can never borrow each other's model (a same-dim
@@ -39,11 +57,6 @@ export interface ConnectionConfig {
   /** LanceDB only: reranker profile offered for this connection. Never auto-applied to an agent
    *  search (one chat completion per candidate on the openai api) — the id must be passed. */
   defaultRerankerProfileId?: string | null;
-  username?: string;
-  tenantId?: string;
-  clientId?: string;
-  encrypt: boolean;
-  trustServerCertificate: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -452,6 +465,10 @@ export interface DatabaseAdapter {
   probe(): Promise<TestResult>;
   /** Static description of what this engine supports; drives server/UI/agent gating. */
   readonly capabilities: EngineCapabilities;
+  /** How this engine spells SQL: quoting, bind placeholders, paging, identifier case. Callers that
+   *  build SQL for the connection (the grid's write path) read it from here rather than branching
+   *  on engine. Engines without `write` still expose one; it is simply never exercised. */
+  readonly dialect: SqlDialect;
   readonly database: string;
   listDatabases(): Promise<string[]>;
   listSchemas(): Promise<string[]>;
@@ -483,6 +500,11 @@ export interface DatabaseAdapter {
   /** Full table introspection for scripting + the enriched Details view (BASED-TABLE-DETAILS).
    *  Present when capabilities.script is true. */
   getTableDetails?(schema: string, name: string): Promise<TableDetails>;
+  /** Engine-native object scripting. When present, callers prefer it over the pure T-SQL scripter —
+   *  an engine that can generate its own DDL (Snowflake's GET_DDL) always does it better than we can
+   *  rebuild it from catalog rows, and this keeps scripter.ts from growing a dialect per engine.
+   *  Traces: BASED-SNOWFLAKE-SCRIPT. */
+  scriptObject?(input: ScriptInput, action: ScriptAction): Promise<string>;
   /** Bulk tables + FK edges for the ER diagram (BASED-RELATIONS). Present when
    *  capabilities.relations is true. */
   getRelations?(schemaFilter?: string): Promise<RelationsGraph>;

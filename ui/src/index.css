@@ -106,6 +106,41 @@ body {
   color: var(--color-faint);
 }
 
+/* Vim mode slot in the status bar (BASED-EDITOR-VIM). monaco-vim owns the contents: spans for the
+   mode and key buffer, plus an <input> it injects for `:` and `/` commands. The spans inherit the
+   footer's font and theme colors; the input would otherwise render as a native box, so it is made to
+   inherit too. The mode word carries weight instead of capitals (same rule as .ledger-label). */
+/* No display rule here: monaco-vim sets display block/none inline on this node as it attaches and
+   detaches, and an inline style would win anyway. Spacing therefore rides on the children — and only
+   on the ones that actually have content, since three of the four spans are empty most of the time. */
+.vim-status {
+  white-space: nowrap;
+}
+
+.vim-status > span:not(:empty) {
+  margin-right: 0.6em;
+}
+
+.vim-status > span:first-child {
+  font-weight: 700;
+  color: var(--color-brass);
+}
+
+.vim-status input {
+  min-width: 16ch;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: var(--color-paper);
+  caret-color: var(--color-brass);
+}
+
+/* Errors and confirmations vim pushes through its notification channel. */
+.vim-status .vim-notification {
+  color: var(--color-err);
+}
+
 /* Resizable pane handles */
 .pane-handle {
   position: relative;

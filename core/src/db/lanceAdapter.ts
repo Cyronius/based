@@ -9,6 +9,8 @@
 import { readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import * as lancedb from "@lancedb/lancedb";
+import { settingStr } from "./connectionSettings";
+import { DUCKDB_DIALECT, type SqlDialect } from "./dialect";
 import type { SecretProvider } from "./entra";
 import { DEFAULT_ROW_CAP } from "./rowcap";
 import { serializeLanceValue } from "./lanceSerialize";
@@ -91,6 +93,9 @@ export class LanceDbAdapter implements DatabaseAdapter {
     if (this.isCloud()) return "lancedb-cloud";
     return this.baseFolderDbs ? "lancedb-basefolder" : "lancedb-local";
   }
+  /** The SQL surface here is DuckDB's (via the lance extension). `write` is false, so the
+   *  write-path members of this dialect are never exercised. */
+  readonly dialect: SqlDialect = DUCKDB_DIALECT;
   readonly database: string;
   private conn: lancedb.Connection | null = null;
   /** Populated instead of `conn` when the local directory has no tables of its own but contains
@@ -108,7 +113,7 @@ export class LanceDbAdapter implements DatabaseAdapter {
     private readonly getSecret: SecretProvider,
     opts?: { database?: string; rowCap?: number },
   ) {
-    this.database = opts?.database ?? cfg.database ?? cfg.uri ?? "lancedb";
+    this.database = opts?.database || cfg.database || settingStr(cfg, "uri") || "lancedb";
     this.rowCap = opts?.rowCap ?? DEFAULT_ROW_CAP;
   }
 
@@ -121,21 +126,21 @@ export class LanceDbAdapter implements DatabaseAdapter {
   }
 
   private isCloud(): boolean {
-    return this.cfg.authType === "lancedb-cloud" || (this.cfg.uri?.startsWith("db://") ?? false);
+    return this.cfg.authType === "lancedb-cloud" || (settingStr(this.cfg, "uri")?.startsWith("db://") ?? false);
   }
 
   async connect(): Promise<void> {
     this.emitStatus("connecting");
     try {
       if (this.isCloud()) {
-        const uri = this.cfg.uri;
+        const uri = settingStr(this.cfg, "uri");
         if (!uri) throw new Error("LanceDB cloud connection requires a db:// URI");
         const apiKey = this.getSecret(this.cfg.id) ?? undefined;
-        this.conn = await lancedb.connect({ uri, apiKey, region: this.cfg.region });
+        this.conn = await lancedb.connect({ uri, apiKey, region: settingStr(this.cfg, "region") });
         this.baseFolderDbs = null;
       } else {
         // Local: uri is a directory path (fall back to server/database for hand-written configs).
-        const dir = this.cfg.uri ?? this.cfg.server ?? this.cfg.database;
+        const dir = settingStr(this.cfg, "uri") ?? settingStr(this.cfg, "server") ?? this.cfg.database;
         if (!dir) throw new Error("LanceDB local connection requires a directory path");
         this.localDir = dir;
         const dirBase = basename(dir);

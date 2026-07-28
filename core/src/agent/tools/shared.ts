@@ -18,13 +18,16 @@ import { join } from "node:path";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import type { DatabaseAdapter, EngineCapabilities, TableFilter, TableSort } from "../../db/types";
+import type { EngineAgentProse } from "../../engines/descriptor";
+import { WHERE_GRAMMAR } from "./whereGrammar";
 import type { AuditSink } from "../audit";
 import type { EmbeddingProfileStore } from "../../storage/embeddingProfiles";
 import type { RerankerProfileStore } from "../../storage/rerankerProfiles";
 import { catalog as skillCatalog, get as getSkill } from "../skills";
 import { isReadOnly } from "../../db/classify";
 import { describeLanceSchema } from "../../db/lanceDescribe";
-import { scriptObject, type ScriptAction } from "../../db/scripter";
+import type { ScriptAction } from "../../db/scripter";
+import { scriptWithAdapter } from "../../db/scriptDispatch";
 import { collectQuery, AGENT_ROW_CAP } from "../runSql";
 import { exportData, sanitizeExportFileName, EXPORT_ROW_CAP } from "../../export/exportData";
 import {
@@ -88,10 +91,7 @@ export const AGENT_PAGE_CAP = 200;
 export const SEARCH_PIPELINE_ORDER =
   "Pipeline order: probe (nprobes/ef) → prefilter (where, unless postfilter) → candidatePool → rerank (rerankTopN) → threshold (minScore/maxScoreGapFromTop) → k. k is clamped to candidatePool, and rerankTopN never scores more than candidatePool candidates.";
 
-/** The `where` grammar, stated once. LanceDB predicates are NOT DuckDB SQL, and a connection can
- *  expose both at the same time — which is exactly how the two get confused. */
-export const WHERE_GRAMMAR =
-  "Uses LanceDB predicate syntax, not DuckDB SQL: comparisons, AND/OR/NOT, IN, LIKE, IS [NOT] NULL over scalar columns, single-quoted string literals, dotted access into struct fields. No subqueries, JOINs, aggregates, or CTEs.";
+export { WHERE_GRAMMAR };
 
 /** Record the read in the audit log. `op` is the SQL text for SQL engines, or a structured
  *  description (e.g. `vector_search(docs, k=10)`) for engines with no SQL surface. */
@@ -129,29 +129,26 @@ function blankToUndefined(v: string | undefined): string | undefined {
   return v?.trim() || undefined;
 }
 
-/** The namespace parameter, which is two different concepts wearing one name in every engine-
- *  agnostic API: a SQL schema, or a LanceDB base folder. Only one is ever exposed, and on the two
- *  LanceDB variants that have no folder namespace, neither is. */
-function namespaceFields(caps: EngineCapabilities): z.ZodRawShape {
-  if (caps.engine === "mssql") {
-    return { schema: z.string().optional().describe("Schema (defaults to dbo)") };
-  }
-  if (caps.variant === "lancedb-basefolder") {
-    const names = (caps.containers ?? []).join(", ");
-    return {
-      folder: z
-        .string()
-        .optional()
-        .describe(`Base folder holding the table${names ? ` — one of: ${names}` : ""}. Required only when the same table name exists in more than one folder.`),
-    };
-  }
-  return {};
+/** The namespace parameter, which is several concepts wearing one slot across engines: a SQL
+ *  schema, a LanceDB base folder, a warehouse dataset. The engine descriptor names it (or returns
+ *  null, on the variants that have no namespace at all), so this stays one code path. */
+function namespaceFields(caps: EngineCapabilities, prose: EngineAgentProse): z.ZodRawShape {
+  const param = prose.namespaceParam(caps);
+  if (!param) return {};
+  return { [param.key]: z.string().optional().describe(param.description) };
 }
 
-/** Resolve the namespace argument to the adapter's `schema` positional. */
-function namespaceOf(caps: EngineCapabilities, args: { schema?: string; folder?: string }): string {
-  if (caps.engine === "mssql") return args.schema ?? "dbo";
-  return args.folder ?? "";
+/** Resolve the namespace argument to the adapter's `schema` positional. Falls back to the engine's
+ *  default namespace ("dbo", "PUBLIC", or "" where there is none). */
+function namespaceOf(
+  caps: EngineCapabilities,
+  prose: EngineAgentProse,
+  args: Record<string, unknown>,
+): string {
+  const param = prose.namespaceParam(caps);
+  if (!param) return "";
+  const value = args[param.key];
+  return typeof value === "string" && value.trim() ? value : prose.namespaceDefault;
 }
 
 /** How a tool names the table's namespace in an audit line / error message. */
@@ -164,13 +161,8 @@ function qualify(ns: string, table: string): string {
 // describe only what THIS connection can do.
 // ---------------------------------------------------------------------------------------------
 
-function listObjectsTool(deps: ToolDeps, caps: EngineCapabilities) {
-  const what =
-    caps.engine === "mssql"
-      ? "tables, views, stored procedures, and functions, with their schema names"
-      : caps.variant === "lancedb-basefolder"
-        ? "tables, with the base folder each one lives in"
-        : "tables";
+function listObjectsTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
+  const what = prose.objectsSummary(caps);
   return createTool({
     id: "list_objects",
     description: `List everything in this database: ${what}. Returns names only — call describe_table for a table's columns, and never invent a name that isn't in this list.`,
@@ -179,25 +171,26 @@ function listObjectsTool(deps: ToolDeps, caps: EngineCapabilities) {
   });
 }
 
-function describeTableTool(deps: ToolDeps, caps: EngineCapabilities) {
-  const isSql = caps.engine === "mssql";
-  const formats = isSql
-    ? (["columns", "ddl", "drop", "drop-create", "alter", "select", "insert"] as const)
-    : (["columns", "pyarrow"] as const);
-  const description = isSql
-    ? 'Describe one table, view, procedure, or function. format: "columns" (default) returns each column with its type, nullability, and key/FK metadata. "ddl" returns a CREATE script (columns, PK, defaults, checks, FKs, indexes) for a table, or the CREATE body for a view/procedure/function; "drop", "drop-create", "alter", "select", and "insert" return the corresponding T-SQL templates. Returns text and schema only — it never executes anything; to run DDL, propose it through run_mutation.'
-    : 'Describe one table\'s schema. format: "columns" (default) returns each column with its type and nullability, and each vector column with its dimension, element type, and index metric. "pyarrow" additionally returns a pyarrow schema snippet for creating a compatible table. Schema only — never row data.';
+function describeTableTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
+  // `script` is the capability that decides whether DDL formats exist at all; the engine's own
+  // format list says which ones it can actually produce (Snowflake has no "alter" template).
+  const isSql = caps.script;
+  const formats = prose.describeFormats;
+  const description = prose.describeDescription;
   return createTool({
     id: "describe_table",
     description,
     inputSchema: z.object({
-      table: z.string().describe(isSql ? "Table, view, procedure, or function name" : "Table name"),
-      ...namespaceFields(caps),
-      format: z.enum(formats as unknown as [string, ...string[]]).optional().describe(`What to return (default "columns")`),
+      table: z.string().describe(prose.tableParam),
+      ...namespaceFields(caps, prose),
+      format: z
+        .enum(formats as unknown as [string, ...string[]])
+        .optional()
+        .describe(`What to return (default "columns")`),
     }),
     execute: async (args: { table: string; schema?: string; folder?: string; format?: string }) => {
       const adapter = deps.getAdapter();
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const format = (args.format as string) ?? "columns";
       const op = `describe_table(${qualify(ns, args.table)}, ${format})`;
       const t0 = performance.now();
@@ -226,12 +219,16 @@ function describeTableTool(deps: ToolDeps, caps: EngineCapabilities) {
         let sql: string;
         if (obj.type === "table") {
           if (!adapter.getTableDetails) return { error: "This engine does not support table scripting." };
-          sql = scriptObject({ kind: "table", details: await adapter.getTableDetails(ns, args.table) }, action);
+          sql = await scriptWithAdapter(
+            adapter,
+            { kind: "table", details: await adapter.getTableDetails(ns, args.table) },
+            action,
+          );
         } else {
           const definition = await adapter.getObjectDefinition?.(ns, args.table);
           if (definition == null) return { error: `No definition found for ${qualify(ns, args.table)}` };
           const type = obj.type === "view" ? "view" : obj.type === "procedure" ? "procedure" : "function";
-          sql = scriptObject({ kind: "module", type, schema: ns, name: args.table, definition }, action);
+          sql = await scriptWithAdapter(adapter, { kind: "module", type, schema: ns, name: args.table, definition }, action);
         }
         auditRead(deps, op, "ok", Math.round(performance.now() - t0), null);
         return { schema: ns, name: args.table, type: obj.type, format, sql };
@@ -260,19 +257,18 @@ type ReadTableArgs = {
   where?: string;
 };
 
-function readTableTool(deps: ToolDeps, caps: EngineCapabilities) {
+function readTableTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   const description = caps.structuredFilters
     ? "Read a page of rows from a table or view. Pass `orderBy` for a stable page order and `filters` to narrow rows server-side (both validated server-side); page by increasing `offset`, and `hasMore` tells you whether another page may exist. Omit `orderBy` and `filters` for a quick unordered peek at example values."
-    : caps.sql
-      ? `Read a page of rows from a Lance table, optionally narrowed by a \`where\` predicate. Page by increasing \`offset\`; \`hasMore\` tells you whether another page may exist. Vector cells are summarized rather than dumped in full — use \`columns\` to project further. ${WHERE_GRAMMAR} Use run_query for anything this grammar can't express.`
-      : `Read a page of rows from a Lance table, optionally narrowed by a \`where\` predicate. This connection has no SQL, so \`where\` is the only way to filter rows. Page by increasing \`offset\`; \`hasMore\` tells you whether another page may exist. Vector cells are summarized rather than dumped in full — use \`columns\` to project further. ${WHERE_GRAMMAR}`;
+    : (prose.readTable?.(caps) ??
+      "Read a page of rows from a table. Page by increasing `offset`; `hasMore` tells you whether another page may exist.");
 
   return createTool({
     id: "read_table",
     description,
     inputSchema: z.object({
-      table: z.string().describe(caps.engine === "mssql" ? "Table or view name" : "Table name"),
-      ...namespaceFields(caps),
+      table: z.string().describe(prose.tableParam),
+      ...namespaceFields(caps, prose),
       offset: z.number().int().optional().describe("Row offset to start from (default 0)"),
       limit: z.number().int().optional().describe(`Rows per page (1-${AGENT_PAGE_CAP}, default 100)`),
       columns: z.array(z.string()).optional().describe("Restrict to these columns"),
@@ -298,7 +294,7 @@ function readTableTool(deps: ToolDeps, caps: EngineCapabilities) {
     }),
     execute: async (args: ReadTableArgs) => {
       const adapter = deps.getAdapter();
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const n = Math.max(1, Math.min(AGENT_PAGE_CAP, Math.floor(args.limit ?? 100)));
       const off = Math.max(0, Math.floor(args.offset ?? 0));
       const where = blankToUndefined(args.where);
@@ -335,7 +331,7 @@ function readTableTool(deps: ToolDeps, caps: EngineCapabilities) {
 
 // Traces: BASED-LANCE-SCAN — hasMore says nothing about scale, so without this the agent can't
 // choose between paging and aggregating, or tell the user how big the answer actually is.
-function countRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
+function countRowsTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   const description = caps.structuredFilters
     ? "Count rows in a table or view, optionally narrowed by `filters`. Call before paging with read_table to know how much there is, and before proposing a DELETE or UPDATE to know the blast radius."
     : "Count rows in a Lance table, optionally narrowed by a `where` predicate (same syntax as read_table). Cheap — call it before paging so you know the total, and before telling the user how large a result is.";
@@ -344,7 +340,7 @@ function countRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
     description,
     inputSchema: z.object({
       table: z.string(),
-      ...namespaceFields(caps),
+      ...namespaceFields(caps, prose),
       ...when(caps.structuredFilters, {
         filters: z
           .array(
@@ -361,7 +357,7 @@ function countRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
     }),
     execute: async (args: { table: string; schema?: string; folder?: string; where?: string; filters?: TableFilter[] }) => {
       const adapter = deps.getAdapter();
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const where = blankToUndefined(args.where);
       const op = `count_rows(${qualify(ns, args.table)}${where ? `, where=${where}` : ""})`;
       const t0 = performance.now();
@@ -383,14 +379,14 @@ function countRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
 
 // Traces: BASED-LANCE-SCAN — the standard follow-up to a search that returned ids. Escaping the key
 // literals here rather than making the agent write them into a `where` is the entire point.
-function takeRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
+function takeRowsTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   return createTool({
     id: "take_rows",
     description:
       "Fetch specific rows by primary/id value — the follow-up to a search that returned ids, or to a user naming documents directly. Faster and more precise than a `where ... IN (...)` scan, and the key values are escaped for you.",
     inputSchema: z.object({
       table: z.string(),
-      ...namespaceFields(caps),
+      ...namespaceFields(caps, prose),
       keyColumn: z.string().describe("Column holding the ids"),
       keys: z.array(z.union([z.string(), z.number()])).describe("The id values to fetch"),
       columns: z.array(z.string()).optional().describe("Restrict to these columns"),
@@ -404,7 +400,7 @@ function takeRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
       columns?: string[];
     }) => {
       const adapter = deps.getAdapter();
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const op = `take_rows(${qualify(ns, args.table)}, ${args.keyColumn} in ${args.keys.length} keys)`;
       const t0 = performance.now();
       try {
@@ -432,18 +428,16 @@ function takeRowsTool(deps: ToolDeps, caps: EngineCapabilities) {
 
 // Traces: BASED-INDEX-INTROSPECT — nprobes is an IVF knob and ef is an HNSW knob; without this the
 // agent cannot know which one is even live, so it sets both and concludes the knob does nothing.
-function getIndexesTool(deps: ToolDeps, caps: EngineCapabilities) {
-  const description =
-    caps.engine === "mssql"
-      ? "List a table's indexes: name, type, uniqueness, key and included columns, and any filter. Use it to judge whether a query has a usable index before proposing one."
-      : "List a table's indexes: name, index type (IVF_*, HNSW_*, FTS, BTREE, …), the column indexed, the ANN distance metric, and how many rows are indexed vs still unindexed. Call this BEFORE tuning a search: nprobes only applies to IVF indexes and ef only to HNSW ones, and text_search/hybrid_search require an FTS index to exist at all. A large numUnindexedRows is the usual reason a search got slow or missed a recently added row.";
+function getIndexesTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
+  // Only built when caps.indexIntrospect, which is exactly when the engine defines this prose.
+  const indexProse = prose.indexes!;
   return createTool({
     id: "get_indexes",
-    description,
-    inputSchema: z.object({ table: z.string(), ...namespaceFields(caps) }),
+    description: indexProse.description,
+    inputSchema: z.object({ table: z.string(), ...namespaceFields(caps, prose) }),
     execute: async (args: { table: string; schema?: string; folder?: string }) => {
       const adapter = deps.getAdapter();
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const op = `get_indexes(${qualify(ns, args.table)})`;
       const t0 = performance.now();
       try {
@@ -453,14 +447,7 @@ function getIndexesTool(deps: ToolDeps, caps: EngineCapabilities) {
         return {
           table: args.table,
           indexes,
-          ...(indexes.length === 0
-            ? {
-                note:
-                  caps.engine === "mssql"
-                    ? "This table has no indexes."
-                    : "This table has no indexes: vector search will run exact (slow but precise, and the tuning knobs are no-ops), and text_search/hybrid_search cannot run at all without a full-text index.",
-              }
-            : {}),
+          ...(indexes.length === 0 ? { note: indexProse.emptyNote } : {}),
           ...(unindexed > 0 ? { warning: `${unindexed} row(s) are not yet covered by an index.` } : {}),
         };
       } catch (err) {
@@ -475,7 +462,7 @@ function getIndexesTool(deps: ToolDeps, caps: EngineCapabilities) {
 // Traces: BASED-AGENT-CAPABILITY-DISCOVERY — the tool that tells the agent which column of the
 // capability matrix it is standing in. Everything here was previously either unknowable or encoded
 // as prose conditionals the agent had to guess the antecedent of.
-function connectionInfoTool(deps: ToolDeps, caps: EngineCapabilities) {
+function connectionInfoTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   return createTool({
     id: "get_connection_info",
     description:
@@ -528,21 +515,12 @@ function connectionInfoTool(deps: ToolDeps, caps: EngineCapabilities) {
   });
 }
 
-function runQueryTool(deps: ToolDeps, caps: EngineCapabilities) {
-  const description =
-    caps.engine === "mssql"
-      ? "Execute a read-only T-SQL query against this connection: aggregates, JOINs, GROUP BY, window functions, CTEs. Mutating statements are rejected — propose those through run_mutation."
-      : caps.variant === "lancedb-basefolder"
-        ? "Execute a read-only SQL query (DuckDB dialect) over this base folder's Lance tables. Qualify every table as `folder.main.table` — an unqualified name will not resolve. Aggregates, JOINs, GROUP BY, and CTEs are available. This is a different grammar from the `where` predicates used by read_table and the search tools, so don't carry phrasing between them. Mutating statements are rejected; Lance connections are read-only."
-        : "Execute a read-only SQL query (DuckDB dialect) over this connection's Lance tables: aggregates, JOINs, GROUP BY, CTEs. Reads Lance files directly — this is a different grammar from the `where` predicates used by read_table and the search tools, so don't carry phrasing between them. Mutating statements are rejected; Lance connections are read-only.";
+function runQueryTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
+  const { description, sqlParam } = prose.runQuery(caps);
   return createTool({
     id: "run_query",
     description,
-    inputSchema: z.object({
-      sql: z
-        .string()
-        .describe(caps.engine === "mssql" ? "A single read-only SELECT / CTE statement (T-SQL)" : "A single read-only SELECT / CTE statement (DuckDB dialect)"),
-    }),
+    inputSchema: z.object({ sql: z.string().describe(sqlParam) }),
     execute: async ({ sql }) => {
       const adapter = deps.getAdapter();
       if (!isReadOnly(sql)) {
@@ -589,7 +567,7 @@ function loadSkillTool() {
 
 // Traces: BASED-AGENT-EXPORT — write a query result or whole table to a CSV/XLSX file. Writes
 // server-side to Downloads (no dialog can pop mid-run) and returns the path.
-function exportDataTool(deps: ToolDeps, caps: EngineCapabilities) {
+function exportDataTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   const sources = caps.sql ? "`sql` (a read-only SELECT) or `table` (exports the whole table" : "`table` (exports the whole table";
   return createTool({
     id: "export_data",
@@ -598,7 +576,7 @@ function exportDataTool(deps: ToolDeps, caps: EngineCapabilities) {
       format: z.enum(["csv", "xlsx"]).describe("Output file format"),
       ...when(caps.sql, { sql: z.string().optional().describe("A read-only SELECT to export (exactly one of sql/table)") }),
       table: z.string().optional().describe(caps.sql ? "Table to export in full (exactly one of sql/table)" : "Table to export in full"),
-      ...namespaceFields(caps),
+      ...namespaceFields(caps, prose),
       fileName: z.string().optional().describe("File name only — no directories; extension added if missing"),
       openAfter: z.boolean().optional().describe("Open the file with the OS default app after writing"),
     }),
@@ -622,7 +600,7 @@ function exportDataTool(deps: ToolDeps, caps: EngineCapabilities) {
       if (sql != null && !isReadOnly(sql)) {
         return { refused: true, reason: "export_data only exports read-only SELECT results; nothing was run." };
       }
-      const ns = namespaceOf(caps, args);
+      const ns = namespaceOf(caps, prose, args);
       const source = sql != null ? ({ kind: "sql", sql } as const) : ({ kind: "table", schema: ns, table: table! } as const);
       let name: string;
       try {
@@ -743,19 +721,19 @@ function saveTranscriptTool(deps: ToolDeps) {
 /** The capability-driven core toolset: present on every engine, shaped by what this connection can
  *  actually do. Tools whose capability is absent are OMITTED, never offered-then-refused — a tool
  *  the model can see is a tool it will eventually propose to the user. */
-export function sharedTools(deps: ToolDeps, caps: EngineCapabilities) {
+export function sharedTools(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAgentProse) {
   return {
-    get_connection_info: connectionInfoTool(deps, caps),
-    list_objects: listObjectsTool(deps, caps),
-    describe_table: describeTableTool(deps, caps),
-    read_table: readTableTool(deps, caps),
+    get_connection_info: connectionInfoTool(deps, caps, prose),
+    list_objects: listObjectsTool(deps, caps, prose),
+    describe_table: describeTableTool(deps, caps, prose),
+    read_table: readTableTool(deps, caps, prose),
     load_skill: loadSkillTool(),
-    export_data: exportDataTool(deps, caps),
+    export_data: exportDataTool(deps, caps, prose),
     save_file: saveFileTool(deps),
-    ...(caps.sql ? { run_query: runQueryTool(deps, caps) } : {}),
-    ...(caps.countRows ? { count_rows: countRowsTool(deps, caps) } : {}),
-    ...(caps.takeByKey ? { take_rows: takeRowsTool(deps, caps) } : {}),
-    ...(caps.indexIntrospect ? { get_indexes: getIndexesTool(deps, caps) } : {}),
+    ...(caps.sql ? { run_query: runQueryTool(deps, caps, prose) } : {}),
+    ...(caps.countRows ? { count_rows: countRowsTool(deps, caps, prose) } : {}),
+    ...(caps.takeByKey ? { take_rows: takeRowsTool(deps, caps, prose) } : {}),
+    ...(caps.indexIntrospect ? { get_indexes: getIndexesTool(deps, caps, prose) } : {}),
     // Gated on a dep rather than a capability: delegation is a property of the RUN, not the
     // connection. A child run gets deps without it and so has no `delegate` tool to call.
     ...(deps.runSubagent ? { delegate: delegateTool(deps) } : {}),

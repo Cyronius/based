@@ -20,6 +20,7 @@ export { WindowStateStore, type WindowStateRecord } from "./storage/windowState"
 export { HistoryStore, type HistoryEntry } from "./storage/history";
 export { SettingsStore, DEFAULT_SETTINGS, type AppSettings } from "./storage/settings";
 export {
+  MAX_SECRET_BYTES,
   setSecret,
   getSecret,
   deleteSecret,
@@ -89,6 +90,31 @@ export {
 export { createSubagentRunner, taggedAudit, SUBAGENT_CORE, type SubagentRunnerOptions } from "./agent/subagent";
 export { mssqlBriefing, MSSQL_PERSONA } from "./agent/tools/mssql";
 export { lanceBriefing, LANCE_PERSONA } from "./agent/tools/lancedb";
+export { snowflakeBriefing, SNOWFLAKE_PERSONA } from "./agent/tools/snowflake";
+// Traces: BASED-ENGINE-REGISTRY — the registry itself, so tests can assert every engine is complete
+// rather than enumerating engines a second time and drifting from it.
+export {
+  ENGINES,
+  ENGINE_IDS,
+  descriptorFor,
+  descriptorForConfig,
+  engineProfiles,
+} from "./engines/registry";
+export type {
+  AuthModeSpec,
+  EngineAgentProse,
+  EngineDescriptor,
+  EngineProfile,
+  FieldSpec,
+  NamespaceProfile,
+} from "./engines/descriptor";
+export { migrateConnection, settingBool, settingStr } from "./db/connectionSettings";
+export {
+  DUCKDB_DIALECT,
+  SNOWFLAKE_DIALECT,
+  TSQL_DIALECT,
+  type SqlDialect,
+} from "./db/dialect";
 export {
   AgentInstructionsStore,
   DEFAULT_INSTRUCTIONS_CONFIG,

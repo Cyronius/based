@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
-import { engineOf } from "../api/types";
+import { profileFor } from "../lib/engineProfile";
 import { ExplorerContextMenu } from "./ExplorerContextMenu";
 
 const GROUPS: Array<{ type: DbObjectType; label: string; glyph: string }> = [
@@ -27,6 +27,7 @@ export function ObjectExplorer() {
   const status = useStore((s) => s.status);
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const connections = useStore((s) => s.connections);
+  const engines = useStore((s) => s.engines);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   // Traces: BASED-UI-SCRIPT-AS — selection is type-homogeneous: plain click selects one, ctrl
@@ -36,19 +37,24 @@ export function ObjectExplorer() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   const activeConn = connections.find((c) => c.id === activeConnectionId);
-  const engine = activeConn ? engineOf(activeConn) : "mssql";
-  const groups = engine === "mssql" ? GROUPS : GROUPS.filter((g) => g.type === "table");
+  // Traces: BASED-ENGINE-PROFILE-WIRE — tree shape comes from the engine's namespace profile:
+  // "typed" groups tables/views/procedures/functions, "flat" is one list of the engine's leaf
+  // objects. A schema-namespaced engine also gets schema qualification and the schema filter.
+  const profile = activeConn ? profileFor(activeConn, engines) : undefined;
+  const typed = profile ? profile.namespace.grouping === "typed" : true;
+  const namespaced = profile ? profile.namespace.key === "schema" : true;
+  const groups = typed ? GROUPS : GROUPS.filter((g) => g.type === "table");
 
   const grouped = useMemo(() => {
-    const filtered = engine === "mssql" && schemaFilter ? objects.filter((o) => o.schema === schemaFilter) : objects;
+    const filtered = namespaced && schemaFilter ? objects.filter((o) => o.schema === schemaFilter) : objects;
     const map = new Map<DbObjectType, DbObject[]>();
     for (const g of groups) map.set(g.type, []);
     for (const o of filtered) map.get(o.type)?.push(o);
     return map;
-  }, [objects, schemaFilter, engine, groups]);
+  }, [objects, schemaFilter, namespaced, groups]);
 
   const displayName = (o: DbObject) =>
-    engine === "mssql" ? (schemaFilter ? o.name : `${o.schema}.${o.name}`) : o.schema ? `${o.schema}/${o.name}` : o.name;
+    namespaced ? (schemaFilter ? o.name : `${o.schema}.${o.name}`) : o.schema ? `${o.schema}/${o.name}` : o.name;
 
   const selectedObjects = useMemo(() => {
     const out: DbObject[] = [];

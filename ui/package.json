@@ -23,6 +23,7 @@
     "lodash": "^4.17.21",
     "marked": "^4.3.0",
     "monaco-editor": "^0.52.0",
+    "monaco-vim": "^0.4.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-resizable-panels": "^2.1.7",
