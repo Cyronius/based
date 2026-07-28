@@ -7,6 +7,15 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.2] - 2026-07-28
+
+### Changed
+- snowflake
+- bump version
+- snowflake docs
+- fix release script
+- snowflake support
+
 ## [0.1.1] - 2026-07-28
 
 - **Snowflake engine.** Connect with an account identifier and database (schema, warehouse, and
