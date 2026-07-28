@@ -57,7 +57,13 @@ try {
     throw "Working tree is dirty. Commit or stash first, or pass -AllowDirty."
   }
   if (-not $DryRun) {
-    Run "gh auth status" { gh auth status 2>&1 | Out-Null }
+    # gh writes its status output to stderr; under EAP Stop, PS 5.1 turns redirected native
+    # stderr into a terminating NativeCommandError, so relax EAP inside this block only.
+    # --active: a stale secondary account in the keyring exits 1 without it.
+    Run "gh auth status" {
+      $ErrorActionPreference = "Continue"
+      gh auth status --active 2>&1 | Out-Null
+    }
   }
   Write-Host "  branch main, tree " -NoNewline; Write-Host $(if ($dirty) { "dirty (allowed)" } else { "clean" }) -ForegroundColor DarkGray
 
