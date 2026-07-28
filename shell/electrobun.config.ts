@@ -131,7 +131,7 @@ export default {
   app: {
     name: "based",
     identifier: "dev.based.app",
-    version: "0.1.0",
+    version: "0.1.1",
   },
   build: {
     bun: {
