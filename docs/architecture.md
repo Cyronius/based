@@ -61,8 +61,11 @@ cache with no server round-trip.
 
 ## Engines
 
-Both engines sit behind one `DatabaseAdapter` interface (`core/src/db/types.ts`), selected per
-connection by `createAdapter`.
+All three engines sit behind one `DatabaseAdapter` interface (`core/src/db/types.ts`). Each is
+described by a declarative `EngineDescriptor` — connection-form fields, auth modes, SQL dialect,
+default capabilities, LSP wiring, agent prose — registered in the one map that knows every engine
+exists (`core/src/engines/registry.ts`); everything else asks the registry instead of branching on
+engine ids, and `createAdapterFor` resolves a connection to its adapter through it.
 
 - **SQL Server / Azure SQL** — in-process `tedious`, no sidecar. Four auth modes (Entra interactive,
   Azure CLI, SQL login, service principal). Client-side `GO` splitting, multiple result sets,
@@ -72,14 +75,22 @@ connection by `createAdapter`.
   DuckDB with the `lance` extension (`ATTACH ... TYPE lance`), so predicates push down instead of
   materializing in JS. Cloud connections don't, because the extension reads storage rather than the
   cloud API.
+- **Snowflake** — the official `snowflake-sdk`. Password, key-pair (JWT), and external-browser SSO
+  auth; catalog introspection over `INFORMATION_SCHEMA` plus `SHOW PRIMARY KEYS` / `SHOW IMPORTED
+  KEYS`; scripting via `GET_DDL`. No plan capture (Snowflake exposes no equivalent artifact) and no
+  index introspection (no user-defined indexes exist). The SDK's cloud-platform detection hangs
+  forever under Bun, so the adapter disables it before the driver loads
+  (`core/src/db/snowflakeEnv.ts`).
 
 Engine differences are expressed as **capabilities**, not as per-screen conditionals.
 `EngineCapabilities` carries flags (`sql`, `search`, `write`, `orderedBrowse`, `script`,
-`relations`) that are wired end to end — the UI, the server routes, and the agent's toolset all
-light up or gray out from the same source of truth.
+`relations`, plus finer-grained ones like `wherePredicate`, `structuredFilters`, `takeByKey`, and
+`indexIntrospect`) that are wired end to end — the UI, the server routes, and the agent's toolset
+all light up or gray out from the same source of truth.
 
 Engine dependencies **load on demand**. Importing `@based/core` must not evaluate a native stack, so
-concrete adapter classes are reachable only through `createAdapter` or an explicit subpath import.
+concrete adapter classes are reachable only through `createAdapterFor` or an explicit subpath
+import.
 
 ## The agent
 
@@ -119,6 +130,9 @@ Both are in-house, for concrete reasons.
 - **DuckDB/DataFusion** — no language server exists for the dialect. This one sources completions
   from `sql_auto_complete()` and `duckdb_tables/columns/functions` against the live attached Lance
   catalog, and calls out vector columns with their dimension on hover.
+
+Snowflake reuses the T-SQL server's catalog-backed completion — object and column completion is
+dialect-neutral — with Snowflake's keyword list swapped in.
 
 Graceful degradation is a hard requirement: server down, upgrade refused, or timeout, and the
 providers return empty so the editor behaves exactly as it did before LSP existed.

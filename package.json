@@ -1,7 +1,7 @@
 {
   "name": "based",
   "private": true,
-  "description": "AI-first database client for SQL Server and LanceDB — the agent is a participant in your workspace, not a chat box.",
+  "description": "AI-first database client for SQL Server, Snowflake, and LanceDB — the agent is a participant in your workspace, not a chat box.",
   "license": "MIT",
   "author": "Cyrus Attoun",
   "homepage": "https://github.com/Cyronius/based",

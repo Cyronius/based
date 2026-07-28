@@ -4,8 +4,8 @@
 
 **A database client where the AI is a participant in your workspace — not a chat box bolted to the side.**
 
-SQL Server and LanceDB — vector, hybrid, and keyword search included — one workbench, running
-entirely on your machine.
+SQL Server, Snowflake, and LanceDB — vector, hybrid, and keyword search included — one workbench,
+running entirely on your machine.
 
 [![Latest release](https://img.shields.io/github/v/release/Cyronius/based?style=flat-square)](https://github.com/Cyronius/based/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
@@ -94,9 +94,10 @@ Tool *names* are stable across every engine — `read_table`, `count_rows`, `des
 `get_indexes`, `run_query` — so a conversation stays coherent when you switch connections. What
 varies is each tool's parameters and description, generated from the connection's capabilities. A
 capability the connection lacks means the tool is **absent**, not present-and-refusing: a LanceDB
-Cloud session simply has no `run_query`, and a base-folder session gets a `folder` parameter listing
-the real folders. `get_connection_info` hands the model the whole picture up front, so it never has
-to discover a limit by hitting it.
+Cloud session simply has no `run_query`, a base-folder session gets a `folder` parameter listing
+the real folders, and a Snowflake session has no `get_indexes` because Snowflake has no
+user-defined indexes to introspect. `get_connection_info` hands the model the whole picture up
+front, so it never has to discover a limit by hitting it.
 
 <img src="docs/screenshots/agent-activity.png" width="800" alt="The agent's live activity feed showing tool-call steps with one expanded to show its JSON">
 
@@ -142,8 +143,9 @@ Uninstalling leaves your data (`%APPDATA%\based`) and your saved credentials alo
 
 1. **Add a connection.** Connection selector → *+ New connection*. For Azure SQL, `Azure CLI
    credential` is the least friction if you're already `az login`'d; `Entra ID interactive` opens
-   your browser. For LanceDB, point it at a local folder or a `db://` cloud URI. **Test connection**,
-   then Save.
+   your browser. For Snowflake, it's your account identifier plus a database, with password,
+   key-pair, or browser-SSO auth. For LanceDB, point it at a local folder or a `db://` cloud URI.
+   **Test connection**, then Save.
 2. **Point it at a model.** Gear → **Agent** → add a profile. If LM Studio is running with a model
    loaded, `http://localhost:1234/v1` as the base URL works with no API key — or use any other
    OpenAI-compatible local server (llama.cpp, Ollama, vLLM, Unsloth) at its own address. See
@@ -163,7 +165,7 @@ Everything below is real, shipped behavior — each item traces to a numbered re
 procedure. That file is the authoritative feature list; this section is the readable version of it.
 
 <details>
-<summary><b>Connecting — SQL Server and LanceDB</b></summary>
+<summary><b>Connecting — SQL Server, Snowflake, and LanceDB</b></summary>
 
 **SQL Server / Azure SQL**, over an in-process `tedious` driver (no sidecar process), with four
 authentication modes:
@@ -187,6 +189,19 @@ when the connection is.
 - **Cloud** (`db://slug`) — API key stored the same way as a SQL Server secret, never in the
   connection record.
 
+**Snowflake**, over the official `snowflake-sdk`, with three authentication modes:
+
+| Auth mode | How it works |
+|---|---|
+| **Password** | Username + password, stored in Windows Credential Manager |
+| **Key pair (JWT)** | Paste a PEM private key (for an encrypted key, `{"key": "<PEM>", "pass": "<passphrase>"}`). Also how a service account satisfies Snowflake's MFA policy, which blocks password sign-in |
+| **SSO (external browser)** | Opens your system browser to your identity provider — no stored secret at all |
+
+A connection is your account identifier (everything before `.snowflakecomputing.com`) plus a
+database, and optionally a schema (default `PUBLIC`), warehouse, and role. Getting the account
+identifier's region/cloud half wrong normally surfaces as a bare driver 404 — based rewrites it
+into an error that explains the identifier format, since that's the part everyone leaves off.
+
 What a connection can *do* — run arbitrary SQL, accept writes, browse in a defined row order, script
 objects, show relations — is captured as a small set of **capabilities**, computed once per
 connection and threaded everywhere: the object explorer, the server's route table, and the agent's
@@ -208,6 +223,9 @@ built in-house because nothing suitable existed:
 - **DuckDB / DataFusion** — there was no language server anywhere for this dialect, so based sources
   completions from `sql_auto_complete()` plus `duckdb_tables/columns/functions` against the live
   attached LanceDB catalog, and calls out a column's vector dimension on hover.
+- **Snowflake** reuses the T-SQL server's catalog-backed completion — object and column completion
+  is dialect-neutral — with Snowflake's keyword list swapped in, so the editor never suggests `TOP`
+  or `GETDATE()` on a connection that would reject them.
 
 Both degrade gracefully — if the LSP server is down, refused an upgrade, or times out, the editor
 just behaves as if LSP were never wired in. No crash, no stuck spinner.
@@ -283,7 +301,8 @@ subtree cost, and predicate. Multi-statement batches get a "Statement 1/2/…" p
 
 The same viewer renders **both** SQL Server's ShowPlan XML and DuckDB's JSON query profiles through
 one shared operator-tree model — a join plan against Azure SQL and a scan plan against local LanceDB
-look and behave the same way.
+look and behave the same way. Snowflake has no equivalent plan artifact, so the capture toggle
+there tells you to use `EXPLAIN` or `QUERY_HISTORY` instead of pretending.
 
 **Client statistics** (`SET STATISTICS IO, TIME ON`) are available as a separate capture toggle, for
 when you want the numbers without the visual plan.
@@ -307,7 +326,7 @@ what the connection can actually do:
 | `read_table` | Paginated row reads, with `where`/`orderBy` on connections that support it |
 | `count_rows` | Cheap row counts, used before paging or before proposing a delete |
 | `get_indexes` | Index and key metadata for a table |
-| `run_query` | Read-only SQL (T-SQL or DuckDB, depending on engine) — mutations are rejected outright |
+| `run_query` | Read-only SQL (T-SQL, Snowflake SQL, or DuckDB, depending on engine) — mutations are rejected outright |
 | `vector_search` / `text_search` / `hybrid_search` | LanceDB search, with the full tuning surface |
 | `script_object` | Generates CREATE/DROP/ALTER/SELECT/INSERT DDL as text — never executes it |
 | `sample_rows` / `export_data` | Quick previews; write a CSV/XLSX to Downloads |
@@ -505,13 +524,13 @@ set (SQL Server keeps counting the true total past that point; DuckDB/LanceDB si
 weeks old, not years. Specifically:
 
 - **Windows x64 only.** Secrets go through Windows Credential Manager and packaging is Windows-only.
-- **SQL Server / Azure SQL and LanceDB only.** The adapter interface is engine-agnostic; nothing
-  else is implemented yet.
+- **SQL Server / Azure SQL, Snowflake, and LanceDB.** The engine registry is built for more —
+  adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.
 - **No auto-update.** Watch releases, or check the version in the status bar against the latest.
 - Expect rough edges, and please [file them](https://github.com/Cyronius/based/issues).
 
-What isn't rough: there are **141 numbered requirements** in
+What isn't rough: there are **164 numbered requirements** in
 [specs/based/spec.md](specs/based/spec.md), each with either an executable test or a written
 verification procedure. If you want to know exactly what's specified to work, that's the file.
 
@@ -522,6 +541,7 @@ Tailwind 4 · [Monaco](https://microsoft.github.io/monaco-editor/) ·
 [glide-data-grid](https://github.com/glideapps/glide-data-grid) · [deck.gl](https://deck.gl) ·
 [Mastra](https://mastra.ai) · [AG-UI](https://github.com/ag-ui-protocol/ag-ui) ·
 [lm-ag-ui](https://github.com/Cyronius/lm-ag-ui) · [tedious](https://tediousjs.github.io/tedious/) ·
+[snowflake-sdk](https://github.com/snowflakedb/snowflake-connector-nodejs) ·
 [LanceDB](https://lancedb.com) · [DuckDB](https://duckdb.org)
 
 Architecture and the reasoning behind it: [docs/architecture.md](docs/architecture.md).

@@ -673,19 +673,34 @@ describe("BASED-EMBED-LABELS-AI: label-clusters endpoint", () => {
 // wait for beforeAll (module-load-time code runs before any test in the file, which would corrupt
 // the earlier "starts with zero profiles" tests above if it mutated the shared server here).
 const aiBase = "http://localhost:1234/v1";
+// Small instruct models only, smallest first: the catalog's first entry can be a large reasoning
+// model (e.g. a 35B "thinking" MoE) whose reasoning phase alone takes minutes and blows the 90 s
+// test timeout. Override with BASED_TEST_AI_MODEL to pin a specific catalog id.
+const PREFERRED_TEST_MODELS = [/lfm2\.5-350m/i, /qwen3\.5-0\.8b/i, /lfm2\.5-1\.2b/i, /granite-4\.1-3b/i, /llama-3\.1-8b-instruct/i];
 const aiModelId = await (async () => {
   try {
     const res = await fetch(`${aiBase}/models`, { signal: AbortSignal.timeout(1500) });
     if (!res.ok) return null;
     const body = (await res.json()) as { data?: Array<{ id: string }> };
-    return body.data?.[0]?.id ?? null;
+    const ids = (body.data ?? []).map((m) => m.id);
+    const override = process.env.BASED_TEST_AI_MODEL;
+    if (override) {
+      if (ids.includes(override)) return override;
+      console.warn(`[integration.agent] BASED_TEST_AI_MODEL '${override}' not in the AI server's catalog, skipping live cluster-labeling test`);
+      return null;
+    }
+    const preferred = ids.find((id) => PREFERRED_TEST_MODELS.some((re) => re.test(id))) ?? null;
+    if (preferred == null && ids.length > 0) {
+      console.warn("[integration.agent] no small instruct model in the AI server's catalog, skipping live cluster-labeling test (set BASED_TEST_AI_MODEL to pin one)");
+    }
+    return preferred;
   } catch {
     return null;
   }
 })();
 const aiUp = aiModelId != null;
 const dAi = aiUp ? describe : describe.skip;
-if (!aiUp) console.warn("[integration.agent] AI server unreachable, skipping live cluster-labeling test");
+if (!aiUp) console.warn("[integration.agent] no usable AI server/model, skipping live cluster-labeling test");
 
 dAi("BASED-EMBED-LABELS-AI: live naming via the active profile", () => {
   // There is no built-in default profile anymore, so this suite creates and activates its own —

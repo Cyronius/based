@@ -70,6 +70,9 @@ about which database it actually hit. Auth is `AzureCliCredential`, so `az login
 Most suites only need connect + read. The table-edit suites additionally probe for `CREATE TABLE`
 permission and skip themselves if it isn't there.
 
+The Snowflake suites need **no live account** — they assert connect-option construction, the
+bounded connect, and the driver-environment workaround, and run anywhere.
+
 ## Spec-driven changes
 
 `specs/based/spec.md` is authoritative. Every requirement has an ID (`BASED-*`), a test category,

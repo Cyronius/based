@@ -7,6 +7,25 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [Unreleased]
+
+### Added
+
+- **Snowflake engine.** Connect with an account identifier and database (schema, warehouse, and
+  role optional), with three auth modes: password, key pair (JWT) — the route past Snowflake's MFA
+  policy for service accounts, supporting encrypted keys — and external-browser SSO. Full catalog
+  introspection, table browsing and editing, scripting via `GET_DDL`, editor completion with
+  Snowflake keywords, and an agent toolset built from Snowflake's actual capabilities (no
+  `get_indexes` — Snowflake has no user-defined indexes; no plan capture — use `EXPLAIN` or
+  `QUERY_HISTORY`). A wrong account identifier gets a descriptive error explaining the
+  region/cloud identifier form instead of the driver's bare 404.
+
+### Changed
+
+- Engines are now declared in a registry of per-engine descriptors (fields, auth modes, dialect,
+  capabilities, LSP, agent prose); connection dialogs render from the served engine profile, so
+  adding an engine no longer touches the UI.
+
 ## [0.1.0] - 2026-07-26
 
 First public release. Windows x64, unsigned installer.
