@@ -19,10 +19,14 @@ export function TabStrip() {
   const captureStats = useStore((s) => s.captureStats);
   const toggleCapturePlan = useStore((s) => s.toggleCapturePlan);
   const toggleCaptureStats = useStore((s) => s.toggleCaptureStats);
+  const activeConnectionId = useStore((s) => s.activeConnectionId);
+  // Traces: BASED-HELP-DOCS — the strip now also renders with no connection, for a lone help tab.
+  // Everything from here right is about running queries against a session, so it needs one.
+  const connected = activeConnectionId != null;
   // Traces: BASED-LANCE-SQL-GATING — driven by the real EngineCapabilities from the connection
-  // response, not a hardcoded engine check. Default true while disconnected so the affordance
-  // doesn't flicker (the store's newQueryTab guard makes the click a no-op then anyway).
-  const sqlEditor = capabilities?.sql ?? true;
+  // response, not a hardcoded engine check. Default true while connected-but-not-yet-capable so
+  // the affordance doesn't flicker (the store's newQueryTab guard makes the click a no-op then).
+  const sqlEditor = connected && (capabilities?.sql ?? true);
 
   const [fetchSizeText, setFetchSizeText] = useState(String(rowPageSize));
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
@@ -103,6 +107,7 @@ export function TabStrip() {
             {t.kind === "table" && <span className="text-faint text-[length:var(--fs-sm)]">{t.objectType === "view" ? "◫" : "▦"}</span>}
             {t.kind === "routine" && <span className="text-faint text-[length:var(--fs-sm)]">{t.routineType === "function" ? "λ" : "≡"}</span>}
             {t.kind === "diagram" && <span className="text-faint text-[length:var(--fs-sm)]">⧉</span>}
+            {t.kind === "docs" && <span className="text-faint text-[length:var(--fs-sm)]">?</span>}
             {running && <span className="size-1.5 rounded-full bg-brass pulse-soft shrink-0" />}
             <span className="truncate text-[length:var(--fs-base)]">
               {t.title}
@@ -110,7 +115,7 @@ export function TabStrip() {
             </span>
             <IconButton
               size="sm"
-              title="Close tab"
+              title="Close tab (Ctrl+W)"
               aria-label="Close tab"
               className="-mr-1 text-faint hover:text-err opacity-0 group-hover:opacity-100"
               onClick={(e) => {
@@ -125,7 +130,7 @@ export function TabStrip() {
       })}
       {sqlEditor && (
         <IconButton
-          title="New query tab"
+          title="New query tab (Ctrl+T)"
           aria-label="New query tab"
           className="self-center mx-1 text-muted hover:text-brass text-base"
           onClick={() => newQueryTab()}
@@ -136,46 +141,50 @@ export function TabStrip() {
 
       <div className="flex-1" />
 
-      <label className="self-center flex items-baseline gap-1.5 pl-2 pr-2 border-l border-line-soft select-none">
-        <span className="text-[length:var(--fs-sm)] leading-none text-faint">Rows</span>
-        <input
-          type="text"
-          inputMode="numeric"
-          className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[length:var(--fs-sm)] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
-          value={fetchSizeText}
-          title="Max rows to fetch per query run"
-          aria-label="Fetch size"
-          onChange={(e) => setFetchSizeText(e.target.value)}
-          onBlur={commitFetchSize}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-        />
-      </label>
-      <button
-        className={toggleBtn(capturePlan)}
-        title="Capture actual execution plan on next run"
-        aria-pressed={capturePlan}
-        onClick={() => toggleCapturePlan()}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <circle cx="8" cy="3" r="1.6" />
-          <circle cx="4" cy="12" r="1.6" />
-          <circle cx="12" cy="12" r="1.6" />
-          <path d="M8 4.6V8M8 8L4 10.6M8 8l4 2.6" strokeLinecap="round" />
-        </svg>
-      </button>
-      <button
-        className={toggleBtn(captureStats)}
-        title="Capture client statistics (STATISTICS TIME, IO) on next run"
-        aria-pressed={captureStats}
-        onClick={() => toggleCaptureStats()}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <circle cx="8" cy="9" r="5.2" />
-          <path d="M8 9V5.5M6 2h4" strokeLinecap="round" />
-        </svg>
-      </button>
+      {connected && (
+        <>
+          <label className="self-center flex items-baseline gap-1.5 pl-2 pr-2 border-l border-line-soft select-none">
+            <span className="text-[length:var(--fs-sm)] leading-none text-faint">Rows</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[length:var(--fs-sm)] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
+              value={fetchSizeText}
+              title="Max rows to fetch per query run"
+              aria-label="Fetch size"
+              onChange={(e) => setFetchSizeText(e.target.value)}
+              onBlur={commitFetchSize}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+          </label>
+          <button
+            className={toggleBtn(capturePlan)}
+            title="Capture actual execution plan on next run"
+            aria-pressed={capturePlan}
+            onClick={() => toggleCapturePlan()}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <circle cx="8" cy="3" r="1.6" />
+              <circle cx="4" cy="12" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <path d="M8 4.6V8M8 8L4 10.6M8 8l4 2.6" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
+            className={toggleBtn(captureStats)}
+            title="Capture client statistics (STATISTICS TIME, IO) on next run"
+            aria-pressed={captureStats}
+            onClick={() => toggleCaptureStats()}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <circle cx="8" cy="9" r="5.2" />
+              <path d="M8 9V5.5M6 2h4" strokeLinecap="round" />
+            </svg>
+          </button>
+        </>
+      )}
       {menu && <TabContextMenu tabId={menu.tabId} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
     </div>
   );

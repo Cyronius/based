@@ -170,18 +170,28 @@ describe("BASED-TABSTORE: tab persistence", () => {
     db.close();
   });
 
-  test("table and routine tabs round-trip their kind and meta", () => {
+  test("every tab kind round-trips its kind and meta", () => {
     const path = tempDbPath();
     let db = openDb(path);
     let tabs = new TabStore(db);
 
+    tabs.upsert({
+      id: "q1",
+      connectionId: "c1",
+      title: "Query 1",
+      content: "SELECT 1",
+      filePath: null,
+      position: 0,
+      kind: "query",
+      meta: null,
+    });
     tabs.upsert({
       id: "tbl1",
       connectionId: "c1",
       title: "dbo.Orders",
       content: "",
       filePath: null,
-      position: 0,
+      position: 1,
       kind: "table",
       meta: { schema: "dbo", table: "Orders", objectType: "table", view: "data" },
     });
@@ -191,9 +201,30 @@ describe("BASED-TABSTORE: tab persistence", () => {
       title: "dbo.GetOrders",
       content: "",
       filePath: null,
-      position: 1,
+      position: 2,
       kind: "routine",
       meta: { schema: "dbo", name: "GetOrders", routineType: "procedure" },
+    });
+    tabs.upsert({
+      id: "dg1",
+      connectionId: "c1",
+      title: "Diagram: dbo",
+      content: "",
+      filePath: null,
+      position: 3,
+      kind: "diagram",
+      meta: { schemaScope: "dbo" },
+    });
+    // Traces: BASED-HELP-DOCS — the help tab persists like any other kind, with no meta at all.
+    tabs.upsert({
+      id: "dc1",
+      connectionId: "c1",
+      title: "Help",
+      content: "",
+      filePath: null,
+      position: 4,
+      kind: "docs",
+      meta: null,
     });
 
     db.close();
@@ -201,12 +232,16 @@ describe("BASED-TABSTORE: tab persistence", () => {
     tabs = new TabStore(db);
 
     const list = tabs.list("c1");
-    const tbl = list.find((t) => t.id === "tbl1")!;
-    const rt = list.find((t) => t.id === "rt1")!;
-    expect(tbl.kind).toBe("table");
-    expect(tbl.meta).toEqual({ schema: "dbo", table: "Orders", objectType: "table", view: "data" });
-    expect(rt.kind).toBe("routine");
-    expect(rt.meta).toEqual({ schema: "dbo", name: "GetOrders", routineType: "procedure" });
+    expect(list.map((t) => t.id)).toEqual(["q1", "tbl1", "rt1", "dg1", "dc1"]);
+    expect(list.map((t) => t.kind)).toEqual(["query", "table", "routine", "diagram", "docs"]);
+    const byId = (id: string) => list.find((t) => t.id === id)!;
+    expect(byId("q1").content).toBe("SELECT 1");
+    expect(byId("q1").meta).toBeNull();
+    expect(byId("tbl1").meta).toEqual({ schema: "dbo", table: "Orders", objectType: "table", view: "data" });
+    expect(byId("rt1").meta).toEqual({ schema: "dbo", name: "GetOrders", routineType: "procedure" });
+    expect(byId("dg1").meta).toEqual({ schemaScope: "dbo" });
+    expect(byId("dc1").meta).toBeNull();
+    expect(byId("dc1").title).toBe("Help");
     db.close();
   });
 

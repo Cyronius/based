@@ -4,8 +4,10 @@
 // (cache, fetch/delete) live in ./threads.ts.
 import type { QueryTabState, TabState } from "../store";
 
-/** The thread a tab OWNS. The connectionId prefix guarantees global uniqueness — deterministic tab
- *  ids like `table:dbo.Users` repeat across connections and threadId is the memory store's key. */
+/** The thread a tab OWNS. threadId is the memory store's key, and the connectionId prefix scopes it
+ *  to a connection — so a thread stays findable as `tab:{conn}:{tab}` and `conn:` threads can't
+ *  collide with tab-owned ones. (Tab ids are random now, but the prefix predates that and rows
+ *  persisted under it are still live — the format is not safe to change.) */
 export function agentThreadId(connectionId: string, tabId: string | null): string {
   return tabId ? `tab:${connectionId}:${tabId}` : `conn:${connectionId}`;
 }

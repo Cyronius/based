@@ -151,7 +151,7 @@ export interface TestResult {
   identity?: string;
 }
 
-export type TabKind = "query" | "table" | "routine" | "diagram";
+export type TabKind = "query" | "table" | "routine" | "diagram" | "docs";
 
 export interface TabRecord {
   id: string;

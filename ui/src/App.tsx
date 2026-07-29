@@ -9,6 +9,7 @@ import { QueryTabView } from "./components/QueryTabView";
 import { TableDetailsView } from "./components/TableDetailsView";
 import { RoutineDetailsView } from "./components/RoutineDetailsView";
 import { DiagramView } from "./components/DiagramView";
+import { DocsView } from "./components/DocsView";
 import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
@@ -182,13 +183,17 @@ export function App() {
               </IconButton>
             </div>
           )}
-          {activeConnectionId ? (
+          {/* Traces: BASED-HELP-DOCS — the help tab is the one tab that renders without a
+              connection, since help matters most before you've set one up. Everything else here
+              needs a session, so a plain disconnected window still gets the EmptyState. */}
+          {activeConnectionId || activeTab?.kind === "docs" ? (
             <>
               <TabStrip />
               {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
               {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
               {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
               {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
+              {activeTab?.kind === "docs" && <DocsView />}
               {!activeTab && <div className="flex-1" />}
             </>
           ) : (

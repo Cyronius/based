@@ -274,10 +274,10 @@ Every user-initiated execution shall append a history row (connection, database,
 **Applies to:** based (core)
 **Test category:** integration
 
-Tabs of every kind — query (content, optional file path), table/view (schema, table, object type, current sub-view), and routine (schema, name, routine type) — shall persist automatically, scoped by connection id and kind-specific metadata, so a restart restores each connection's full tab set. Persistence is a per-connection **replace**: saving a connection's tabs mirrors the currently-open set, pruning any previously-persisted tab (of any kind) that is no longer open, so restore never accumulates tabs beyond what was open at exit.
+Tabs of every kind — query (content, optional file path), table/view (schema, table, object type, current sub-view), routine (schema, name, routine type), diagram (schema scope), and docs (no metadata) — shall persist automatically, scoped by connection id and kind-specific metadata, so a restart restores each connection's full tab set. Persistence is a per-connection **replace**: saving a connection's tabs mirrors the currently-open set, pruning any previously-persisted tab (of any kind) that is no longer open, so restore never accumulates tabs beyond what was open at exit. The store treats `kind` and `meta` as opaque pass-through values; only the UI interprets them.
 
 **Acceptance criteria:**
-- Upsert one tab of each kind (query, table, routine) for a connection, each with its kind-specific `meta` → list for that connection returns all three in order with `kind` and `meta` intact after store reopen
+- Upsert one tab of each kind (query, table, routine, diagram, docs) for a connection, each with its kind-specific `meta` → list for that connection returns all five in order with `kind` and `meta` intact after store reopen
 - Delete removes a tab; tabs are scoped per connection id
 - `replaceForConnection(connId, subset)` prunes persisted tabs absent from `subset` (of any kind) and keeps those present, in order; an empty array clears the connection; other connections are untouched; result survives store reopen
 
@@ -332,6 +332,29 @@ The UI shall offer a theme picker (LeftRail header) listing all themes grouped d
 - Picking a light theme (e.g. Cozy Reading Room) recolors the rails, editor, grids, and native controls with no reload; the wordmark/body/editor fonts change to that theme's fonts
 - The choice survives an app restart (loaded from `/api/settings`)
 - Result grid header/cells, NULL cells, and the editable grid's dirty/new row tints all match the active palette
+- Switching to a theme whose mono font this window has never rendered (so the webfont downloads only on the swap) leaves the editor caret exactly at the end of typed text, not a fraction of a character to its left — see BASED-EDITOR-CARET-METRICS
+
+### BASED-EDITOR-CARET-METRICS: The caret stays glued to the text when a webfont arrives late
+**Applies to:** based (ui)
+**Test category:** unit
+
+Monaco caches one character width per font and paints the caret at `column × charWidth`. It takes that measurement synchronously — at editor creation, and again whenever `fontFamily` changes — so a mono webfont that is still downloading is measured as its *fallback*, and Monaco never corrects itself once the real font swaps in. The caret then drifts a fraction of a character per column: typed letters appear to land *after* the caret, and `End`/`Home` do not help, because the model position was always right — only the painting is wrong. Themes carry their own mono font (BASED-THEME), so every theme swap to a not-yet-rendered font re-opens this window.
+
+The UI shall force `monaco.editor.remeasureFonts()` at every moment those metrics can go stale, via `ui/src/fontMetrics.ts`:
+
+1. **Explicitly**, wherever an editor is pointed at a font stack — creation, theme swap, font-size change. The exact font is awaited through `FontFaceSet.load()` first, then one remeasure is issued. Idempotent per (family, size), so re-renders cost nothing.
+2. **Defensively**, whenever *any* font finishes loading on the page (`FontFaceSet` `loadingdone`), coalesced to one remeasure per flush. This is the safety net: it holds even if a future call site forgets step 1, and it covers fonts pulled in by something other than the editor.
+
+A stack with no downloadable family (`ui-monospace, monospace`) needs neither — the fallback Monaco measured is the final font.
+
+**Acceptance criteria:**
+- `primaryFamily("'Fragment Mono', ui-monospace, monospace")` → `"Fragment Mono"`; `primaryFamily("ui-monospace, monospace")` → `null`
+- `fontSpec(stack, 13)` → `13px "Fragment Mono"`; a generic-only stack → `null`
+- `ensure(stack, px)` requests exactly that font, then remeasures once; a second `ensure` with the same family+size remeasures no further; a different family, or the same family at a new size, remeasures again
+- A generic-only stack issues no load and no remeasure; a *failed* load still remeasures once rather than throwing
+- A burst of `loadingdone` events coalesces into one remeasure; the next burst measures again
+- `dispose()` unsubscribes, and a remeasure already in flight is dropped
+- Regression check (the shape that keeps recurring): with a `select` typed in the editor, the caret's x-offset from the start of the line stays within ~1px of the rendered text's width, both at boot and after switching to a theme whose mono font was never rendered before. Measured pre-fix at −9.7px of drift over 6 characters (Monaco 10.83px/char vs the real 12.45px/char) on the Cathode theme.
 
 ### BASED-EDITOR-VIM: Vim keymap for the query editor
 **Applies to:** based (ui, core)
@@ -1170,8 +1193,9 @@ A subagent is built without memory, so nothing it does is written to the tab's t
 **Test category:** integration + unit
 
 Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), **one thread per tab**:
-the client derives `threadId` as `tab:{connectionId}:{tabId}` (the connectionId prefix guarantees
-global uniqueness — deterministic tab ids like `table:dbo.Users` repeat across connections), or
+the client derives `threadId` as `tab:{connectionId}:{tabId}` (the connectionId prefix scopes the
+key to a connection and keeps tab-owned threads from colliding with `conn:` ones; threads persisted
+under this format are live, so the format is not safe to change), or
 `conn:{connectionId}` when no tab is active; `resourceId` stays the connection id. Switching tabs
 switches the visible conversation (BASED-AGENT-TAB-TOOLS).
 
@@ -1852,6 +1876,77 @@ The MSSQL persona shall instruct the model to make the first line of every ```sq
 - Multiple fences → one block each, order preserved; empty and non-`sql` fences ignored
 - All-comment fence → `firstLine` falls back to the raw first line
 - `MSSQL_PERSONA` contains the leading-comment instruction
+
+### BASED-UI-SHORTCUTS: Global keyboard shortcuts, discoverable from the UI
+**Applies to:** based (ui)
+**Test category:** manual
+
+The canonical binding table. The global keydown handler (`App.tsx`) and the per-editor Monaco
+registrations (`EditorPane.tsx`) implement it; the help tab (BASED-HELP-DOCS) renders it; adding,
+removing, or changing a binding is a spec change to this table.
+
+| Shortcut | Action |
+|---|---|
+| F5 / Ctrl+Enter | Run the active query tab |
+| Ctrl+Break | Cancel the running query |
+| Ctrl+S | Save tab to `.sql` (overwrites in place when file-backed) |
+| Ctrl+Shift+S | Save to a new `.sql` file |
+| Ctrl+O | Open a `.sql` file |
+| Ctrl+T | New query tab |
+| Ctrl+W | Close the active tab |
+| Ctrl+PageUp / Ctrl+PageDown | Previous / next tab |
+| Ctrl+J | Toggle the Capi rail |
+| Ctrl+N | New window |
+
+**Discoverability rule:** every visible control whose action is also bound to a shortcut
+advertises that shortcut in its hover tooltip — e.g. "New query tab (Ctrl+T)", "Run (F5 /
+Ctrl+Enter)". Shortcuts with no corresponding control (Ctrl+N, Ctrl+PageUp/PageDown) are
+discoverable via the help tab.
+
+The *behavior* behind each binding stays specified by its own requirement (BASED-UI-TABS,
+BASED-CANCEL, BASED-FILE-OPEN-SQL, BASED-CHAT-UI, BASED-WINDOW-RESTORE…) — this requirement owns
+only the key assignments and their discoverability.
+
+**Verification procedure:**
+1. Spot-check bindings against the table: Ctrl+T opens a tab, Ctrl+W closes it, Ctrl+J toggles
+   the Capi rail, F5 runs, Ctrl+Break cancels
+2. Hover the tab-strip `+` and `✕`, the Capi rail collapse/expand toggles, and the query toolbar
+   Run/Cancel/Open/Save/Save As → each tooltip names its shortcut
+3. Confirm the table here, the tooltips, and the help tab's shortcut list agree
+
+### BASED-HELP-DOCS: In-app help documentation tab
+**Applies to:** based (ui + core)
+**Test category:** manual
+
+A `?` icon button next to the theme picker in the left-rail header opens the help documentation as
+a **tab** (`kind: "docs"`), rendered by the app like any other tab kind. There is at most one help
+tab per window: clicking `?` again focuses the existing one rather than opening a second.
+
+The help tab persists with the connection whose tab set it was opened in (BASED-TABSTORE) and
+comes back on relaunch — so it is present under the connection where you opened it and absent
+under one where you didn't. It carries no metadata and fetches nothing.
+
+It is the one tab that renders with **no connection active** — help matters most before a
+connection is set up. In that state the tab strip shows only the help tab and hides its
+connection-scoped controls (new query tab, fetch size, plan/statistics capture), since those act on
+a session that doesn't exist. A help tab opened with no connection carries forward into the first
+connection made from that window (and persists there from then on) rather than being discarded;
+switching between two existing connections does not drag it along.
+
+Content, at minimum: the keyboard-shortcut table from BASED-UI-SHORTCUTS, and a vim-mode section
+(how to enable the keymap, `:w` / `:q` / `:wq`, and the note that app shortcuts keep working in
+every vim mode — see BASED-EDITOR-VIM).
+
+**Verification procedure:**
+1. Click `?` → a help tab opens and activates; click `?` again → it focuses, no second tab. Close
+   it with `✕` or Ctrl+W like any tab
+2. Restart with the help tab open → it comes back on that connection; switch to a connection that
+   never had it open → no help tab there
+3. With no connection (fresh profile, or after disconnect) → click `?` → the help tab renders; the
+   strip shows no `+`, no Rows field, no plan/statistics toggles. Then connect → the help tab is
+   still open and stays active
+4. The shortcut list matches the BASED-UI-SHORTCUTS table; the vim section matches
+   BASED-EDITOR-VIM; no uppercase labels; the page recolors with the app on a theme switch
 
 ---
 
@@ -2629,13 +2724,14 @@ keyword-only completions, never an error to the client.
 **Applies to:** based (ui)
 **Test category:** manual
 
-The UI keeps plain `monaco-editor` (no monaco-languageclient/@codingame migration). `ui/src/lsp/`: `client.ts` (JSON-RPC over the `/api/lsp` WebSocket, initialize handshake, 10s request timeouts), `manager.ts` (opens/replaces/disposes the window's one client as `(status, capabilities.sql, activeConnectionId)` change; mirrors **all** query-tab Monaco models as LSP documents — didOpen on create/ready, 250ms-debounced full-text didChange, didClose on dispose, re-didOpen on reconnect; exponential backoff 1s→16s while the store still wants LSP), `providers.ts` (completion + hover providers registered once for language `"sql"`, LSP↔Monaco kind/range/0-vs-1-based mapping; `publishDiagnostics` → `setModelMarkers`). The Vite dev proxy tunnels the socket (`ws: true`). Graceful degradation is a hard requirement: server down / refused upgrade / dead backend / request timeout → providers return empty and the editor behaves exactly as pre-LSP.
+The UI keeps plain `monaco-editor` (no monaco-languageclient/@codingame migration). `ui/src/lsp/`: `client.ts` (JSON-RPC over the `/api/lsp` WebSocket, initialize handshake, 10s request timeouts), `manager.ts` (opens/replaces/disposes the window's one client as `(status, capabilities.sql, activeConnectionId)` change; mirrors **all** query-tab Monaco models as LSP documents — didOpen on create/ready, 250ms-debounced full-text didChange (flushed immediately before completion/hover requests so the server never classifies against a pre-keystroke document — e.g. typing `schema.` must not complete against `schema` and insert a doubled `schema.schema.` prefix), didClose on dispose, re-didOpen on reconnect; exponential backoff 1s→16s while the store still wants LSP), `providers.ts` (completion + hover providers registered once for language `"sql"`, LSP↔Monaco kind/range/0-vs-1-based mapping; `publishDiagnostics` → `setModelMarkers`). The Vite dev proxy tunnels the socket (`ws: true`). Graceful degradation is a hard requirement: server down / refused upgrade / dead backend / request timeout → providers return empty and the editor behaves exactly as pre-LSP.
 
 **Verification procedure:**
 1. Local Lance connection → query tab → typing `SELECT * FROM ` offers the connection's tables; hover a column shows its type
 2. Switch to a SQL Server connection → the socket reconnects and the sqls backend serves completions (sql-login)
 3. Stop the core server → editor keeps working with Monaco's built-in suggestions; restart → completions come back (backoff reconnect)
 4. LanceDB Cloud connection → no LSP socket is opened; editor unaffected
+5. SQL Server connection → type `select * from <schema>.<partial>` quickly (within the didChange debounce) and accept a table suggestion → the bare table name is inserted after the dot, never a doubled `<schema>.<schema>.` prefix
 
 ### BASED-LANCE-AGENT-SQL: Agent run_query on local Lance
 **Applies to:** based (core)

@@ -124,6 +124,7 @@ export function LeftRail() {
   const engines = useStore((s) => s.engines);
   const capabilities = useStore((s) => s.capabilities);
   const openDiagramTab = useStore((s) => s.openDiagramTab);
+  const openDocsTab = useStore((s) => s.openDocsTab);
   const activeConn = connections.find((c) => c.id === activeConnectionId);
   // Both affordances are engine-shaped, so both come from the engine profile rather than from an
   // id comparison. The database selector exists when the engine declares a `database` field at all
@@ -170,7 +171,18 @@ export function LeftRail() {
       />
       <div className="px-4 pt-3 pb-2 flex items-center justify-between">
         <span className="font-display italic font-semibold text-xl tracking-tight text-paper">based</span>
-        <ThemePicker />
+        <div className="flex items-center gap-1">
+          {/* Traces: BASED-HELP-DOCS — opens the help tab; works with no connection active. */}
+          <IconButton
+            className="text-faint hover:text-brass"
+            title="Help & keyboard shortcuts"
+            aria-label="Help & keyboard shortcuts"
+            onClick={() => openDocsTab()}
+          >
+            ?
+          </IconButton>
+          <ThemePicker />
+        </div>
       </div>
 
       <div className="px-3 space-y-2">

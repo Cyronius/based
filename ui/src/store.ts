@@ -166,7 +166,15 @@ export interface DiagramTabState {
   error: string | null;
 }
 
-export type TabState = QueryTabState | TableTabState | RoutineTabState | DiagramTabState;
+// Traces: BASED-HELP-DOCS — the help tab. No metadata and nothing to fetch: DocsView renders
+// static content, so the tab is its own identity.
+export interface DocsTabState {
+  kind: "docs";
+  id: string;
+  title: string;
+}
+
+export type TabState = QueryTabState | TableTabState | RoutineTabState | DiagramTabState | DocsTabState;
 
 export type DialogState = { mode: "closed" } | { mode: "new" } | { mode: "edit"; connection: ConnectionConfig };
 
@@ -242,10 +250,11 @@ export interface AppState {
 
   newQueryTab(): void;
   /** `view` sets the initial sub-view on creation (BASED-EXPLORER-ACTION); an existing tab is
-   *  activated as-is. */
-  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId): Promise<void>;
+   *  activated as-is. Returns the tab id — ids are random, so callers that need to patch the tab
+   *  afterwards (openTableTabWithQuery) can only get it from here. */
+  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId): Promise<string>;
   setTableView(id: string, view: TableViewId): void;
-  openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<void>;
+  openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<string>;
   closeTab(id: string): void;
   closeTabs(ids: string[]): void;
   activateTab(id: string): void;
@@ -282,8 +291,12 @@ export interface AppState {
   setTabOriginThread(tabId: string, threadId: string | null): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
-  /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database. */
-  openDiagramTab(scope: string): void;
+  /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
+   *  Returns the tab id, or null when the engine has no relations capability. */
+  openDiagramTab(scope: string): string | null;
+  /** Open (or focus) the help tab (BASED-HELP-DOCS). One per window, and the only tab that may be
+   *  opened with no connection active. */
+  openDocsTab(): void;
   /** Change a diagram tab's schema scope and refetch its graph. */
   setDiagramScope(id: string, scope: string): void;
   /** BASED-WINDOW-RESTORE: called once at boot — reconnects this window to whatever connection/tab/
@@ -418,6 +431,12 @@ export const useStore = create<AppState>((set, get) => {
     };
   }
 
+  /** Tab title for a schema-qualified object; schemaless engines (LanceDB) get the bare name
+   *  rather than a dangling ".name". */
+  function objectTabTitle(schema: string, name: string): string {
+    return schema ? `${schema}.${name}` : name;
+  }
+
   function nextQueryTitle(tabs: TabState[]): string {
     const used = new Set(tabs.map((t) => t.title));
     for (let i = 1; ; i++) {
@@ -431,8 +450,8 @@ export const useStore = create<AppState>((set, get) => {
   // Reruns are left to the user (F5/Ctrl+Enter) — revisiting "SQL" after this just re-renders the
   // same tab, so its resultSets (already cached on the object) show up with no extra bookkeeping.
   function ensureSqlView(tableTab: TableTabState): void {
-    const linkedId = `sql:${tableTab.id}`;
-    if (get().tabs.some((t) => t.id === linkedId)) return;
+    // The link is `parentTabId`, not a derived id — same lookup TableDetailsView uses to find it.
+    if (get().tabs.some((t) => t.kind === "query" && t.parentTabId === tableTab.id)) return;
     const { connections, activeConnectionId, engines } = get();
     const conn = connections.find((c) => c.id === activeConnectionId);
     // Engine-appropriate quoting comes from the served engine profile, not from an id comparison.
@@ -448,12 +467,11 @@ export const useStore = create<AppState>((set, get) => {
         : `SELECT * FROM ${q(tableTab.schema)}.${q(tableTab.table)}`;
     const linked: QueryTabState = {
       ...freshQueryTab(`SQL: ${tableTab.title}`),
-      id: linkedId,
       content,
       parentTabId: tableTab.id,
     };
     set({ tabs: [...get().tabs, linked] });
-    void get().runQuery(linkedId);
+    void get().runQuery(linked.id);
   }
 
   // Fetches column metadata (+ view definition) for a table/view tab and patches it in — shared by
@@ -515,7 +533,7 @@ export const useStore = create<AppState>((set, get) => {
         const tab: TableTabState = {
           kind: "table",
           id: r.id,
-          title: r.title,
+          title: objectTabTitle(meta.schema, meta.table),
           schema: meta.schema,
           table: meta.table,
           objectType: meta.objectType,
@@ -536,7 +554,7 @@ export const useStore = create<AppState>((set, get) => {
         const tab: RoutineTabState = {
           kind: "routine",
           id: r.id,
-          title: r.title,
+          title: objectTabTitle(meta.schema, meta.name),
           schema: meta.schema,
           name: meta.name,
           routineType: meta.routineType,
@@ -558,6 +576,8 @@ export const useStore = create<AppState>((set, get) => {
         };
         return tab;
       }
+      // No meta and no detail fetch — the help tab restores whole (BASED-HELP-DOCS).
+      if (r.kind === "docs") return { kind: "docs", id: r.id, title: r.title } satisfies DocsTabState;
       const queryMeta = r.meta as QueryTabMeta | null;
       return {
         ...freshQueryTab(r.title),
@@ -754,6 +774,15 @@ export const useStore = create<AppState>((set, get) => {
 
     async connect(connectionId, database) {
       const outgoingId = get().activeConnectionId;
+      // Traces: BASED-HELP-DOCS — a help tab opened with no connection had nowhere to persist to,
+      // and connecting replaces the whole tab set. Carry it into the incoming connection (where it
+      // then persists) instead of yanking it out from under someone mid-read. Only from the
+      // no-connection state: switching A → B must NOT drag A's help tab along, since A's set is
+      // cached and restored intact when you switch back.
+      const carriedDocs = outgoingId ? null : (get().tabs.find((t) => t.kind === "docs") ?? null);
+      const carriedDocsActive = carriedDocs != null && get().activeTabId === carriedDocs.id;
+      const withCarriedDocs = (incoming: TabState[]) =>
+        carriedDocs && !incoming.some((t) => t.kind === "docs") ? [...incoming, carriedDocs] : incoming;
       flushPendingTabs();
       if (outgoingId) {
         const s = get();
@@ -777,6 +806,7 @@ export const useStore = create<AppState>((set, get) => {
         // restores instantly from the in-memory cache instead of refetching/discarding its tabs.
         const cached = database === undefined ? connectionCache.get(connectionId) : undefined;
         if (cached) {
+          const tabs = withCarriedDocs(cached.tabs);
           set({
             activeConnectionId: connectionId,
             status: "connected",
@@ -785,13 +815,15 @@ export const useStore = create<AppState>((set, get) => {
             schemas: res.schemas,
             schemaFilter: cached.schemaFilter,
             objects: res.objects,
-            tabs: cached.tabs,
-            activeTabId: cached.activeTabId,
+            tabs,
+            activeTabId: carriedDocsActive ? carriedDocs!.id : cached.activeTabId,
             capabilities: res.capabilities,
           });
+          if (tabs !== cached.tabs) persistTabsSoon();
           return;
         }
-        const { tabs, activeTabId } = await hydrateTabsForConnection(connectionId);
+        const hydrated = await hydrateTabsForConnection(connectionId);
+        const tabs = withCarriedDocs(hydrated.tabs);
         set({
           activeConnectionId: connectionId,
           status: "connected",
@@ -801,9 +833,10 @@ export const useStore = create<AppState>((set, get) => {
           schemaFilter: "",
           objects: res.objects,
           tabs,
-          activeTabId,
+          activeTabId: carriedDocsActive ? carriedDocs!.id : hydrated.activeTabId,
           capabilities: res.capabilities,
         });
+        if (tabs !== hydrated.tabs) persistTabsSoon();
         hydrateTabDetails(tabs);
       } catch (err) {
         set({ status: "disconnected", banner: err instanceof Error ? err.message : String(err) });
@@ -905,8 +938,7 @@ export const useStore = create<AppState>((set, get) => {
     // tab rather than stacking duplicates, and re-stamps prefillWhere so a second agent call with a
     // different predicate actually re-filters instead of silently showing the first one's rows.
     async openTableTabWithQuery(schema, table, where) {
-      const id = `table:${schema}.${table}`;
-      await get().openTableTab(schema, table, "table", "data");
+      const id = await get().openTableTab(schema, table, "table", "data");
       set({
         tabs: get().tabs.map((t) =>
           t.id === id && t.kind === "table" ? { ...t, view: "data" as TableViewId, prefillWhere: where ?? null } : t,
@@ -918,16 +950,16 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     async openTableTab(schema, table, objectType, view) {
-      const id = `table:${schema}.${table}`;
-      const existing = get().tabs.find((t) => t.id === id);
+      const existing = get().tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
       if (existing) {
-        set({ activeTabId: id });
-        return;
+        set({ activeTabId: existing.id });
+        return existing.id;
       }
+      const id = crypto.randomUUID();
       const tab: TableTabState = {
         kind: "table",
         id,
-        title: `${schema}.${table}`,
+        title: objectTabTitle(schema, table),
         schema,
         table,
         objectType,
@@ -945,6 +977,7 @@ export const useStore = create<AppState>((set, get) => {
       persistTabsSoon();
       if (tab.view === "sql") get().setTableView(id, "sql");
       await fetchTableTabDetails(id, schema, table, objectType);
+      return id;
     },
 
     setTableView(id, view) {
@@ -957,16 +990,16 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     async openRoutineTab(schema, name, routineType) {
-      const id = `routine:${schema}.${name}`;
-      const existing = get().tabs.find((t) => t.id === id);
+      const existing = get().tabs.find((t) => t.kind === "routine" && t.schema === schema && t.name === name);
       if (existing) {
-        set({ activeTabId: id });
-        return;
+        set({ activeTabId: existing.id });
+        return existing.id;
       }
+      const id = crypto.randomUUID();
       const tab: RoutineTabState = {
         kind: "routine",
         id,
-        title: `${schema}.${name}`,
+        title: objectTabTitle(schema, name),
         schema,
         name,
         routineType,
@@ -977,6 +1010,7 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: [...get().tabs, tab], activeTabId: id });
       persistTabsSoon();
       await fetchRoutineTabDetails(id, schema, name);
+      return id;
     },
 
     closeTab(id) {
@@ -1191,7 +1225,7 @@ export const useStore = create<AppState>((set, get) => {
       persistTabsSoon();
     },
 
-    // Traces: BASED-CTRL-N — asks the shell to open a new window; silently a no-op when core and
+    // Traces: BASED-UI-SHORTCUTS (Ctrl+N) — asks the shell to open a new window; silently a no-op when core and
     // shell aren't running in-process (BASED_DEV_URL dev mode has no window to open).
     async newWindow() {
       await newWindowApi().catch(() => {});
@@ -1261,13 +1295,13 @@ export const useStore = create<AppState>((set, get) => {
 
     // Traces: BASED-DIAGRAM-UI — one diagram tab per scope, deduped like openTableTab.
     openDiagramTab(scope) {
-      if (!get().capabilities?.relations) return;
-      const id = `diagram:${scope || "*"}`;
-      const existing = get().tabs.find((t) => t.id === id);
+      if (!get().capabilities?.relations) return null;
+      const existing = get().tabs.find((t) => t.kind === "diagram" && t.schemaScope === scope);
       if (existing) {
-        set({ activeTabId: id });
-        return;
+        set({ activeTabId: existing.id });
+        return existing.id;
       }
+      const id = crypto.randomUUID();
       const tab: DiagramTabState = {
         kind: "diagram",
         id,
@@ -1279,6 +1313,20 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: [...get().tabs, tab], activeTabId: id });
       persistTabsSoon();
       void fetchDiagramGraph(id, scope);
+      return id;
+    },
+
+    // Traces: BASED-HELP-DOCS — one help tab per window, deduped by kind (there's nothing else to
+    // key it on). Persists with the connection it was opened under, like any other tab.
+    openDocsTab() {
+      const existing = get().tabs.find((t) => t.kind === "docs");
+      if (existing) {
+        set({ activeTabId: existing.id });
+        return;
+      }
+      const tab: DocsTabState = { kind: "docs", id: crypto.randomUUID(), title: "Help" };
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      persistTabsSoon();
     },
 
     setDiagramScope(id, scope) {

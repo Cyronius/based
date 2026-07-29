@@ -87,7 +87,7 @@ export interface ServerOptions {
   dbPath?: string;
   /** LibSQL file for agent memory; defaults to agent.db in the data dir. */
   agentDbPath?: string;
-  /** BASED-CTRL-N: only set when shell and core run in-process (see shell/src/bun/index.ts) — opens a new native window. */
+  /** BASED-UI-SHORTCUTS (Ctrl+N): only set when shell and core run in-process (see shell/src/bun/index.ts) — opens a new native window. */
   onRequestNewWindow?: () => void;
 }
 

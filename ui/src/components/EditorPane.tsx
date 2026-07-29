@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import monaco from "../monacoSetup";
+import monaco, { ensureEditorFont } from "../monacoSetup";
 import { getModel } from "../editorModels";
 import { useStore } from "../store";
 import { monoFont, syncMonacoTheme } from "../theme";
@@ -14,11 +14,12 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
 
   useEffect(() => {
     const model = getModel(tabId, initialContent);
+    const fontSize = 13 * useStore.getState().fontScale;
     const editor = monaco.editor.create(hostRef.current!, {
       model,
       theme: "based",
       fontFamily: monoFont(),
-      fontSize: 13 * useStore.getState().fontScale,
+      fontSize,
       lineHeight: 21,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
@@ -32,13 +33,12 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
     });
     editorRef.current = editor;
 
-    // Monaco measures a fixed character width for fontFamily at creation time; if the mono
-    // webfont (loaded via <link display=swap>) hasn't finished loading yet, that measurement
-    // is taken against the fallback font and never corrected, so the caret drifts from the
-    // text once the real font swaps in. Force a remeasure once fonts are actually ready.
-    document.fonts.ready.then(() => {
-      monaco.editor.remeasureFonts();
-    });
+    // Traces: BASED-EDITOR-CARET-METRICS — Monaco measures a fixed character width for fontFamily
+    // at creation time; if the mono webfont (loaded via <link display=swap>) hasn't finished
+    // downloading yet, that measurement is taken against the fallback and is never corrected once
+    // the real font swaps in, so the caret drifts from the text. ensureEditorFont awaits this exact
+    // font, then forces a remeasure. See monacoSetup.ts.
+    ensureEditorFont(monoFont(), fontSize);
 
     const sub = model.onDidChangeContent(() => {
       useStore.getState().setContent(tabId, model.getValue());
@@ -61,14 +61,20 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
 
   // Re-theme the editor (colors + mono font) when the app theme changes. Monaco themes are global,
   // so one setTheme covers every editor; the font is per-instance and updated here.
+  // Each theme carries its own mono font, and a font the page has never rendered starts
+  // downloading only now — so this is the other half of BASED-EDITOR-CARET-METRICS: without the
+  // ensureEditorFont call, Monaco measures the fallback and the caret drifts for the rest of the
+  // session (End/Home won't fix it — the model position is fine, the painting isn't).
   useEffect(() => {
     syncMonacoTheme(monaco);
     editorRef.current?.updateOptions({ fontFamily: monoFont() });
+    ensureEditorFont(monoFont(), 13 * useStore.getState().fontScale);
   }, [themeId]);
 
   // Font size scales with the app-wide General-tab slider.
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize: 13 * fontScale });
+    ensureEditorFont(monoFont(), 13 * fontScale);
   }, [fontScale]);
 
   // Traces: BASED-EDITOR-VIM — deliberately separate from the creation effect: folding it in would

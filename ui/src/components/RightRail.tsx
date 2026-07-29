@@ -66,7 +66,7 @@ function CapiHeader({
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
       <button
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-faint hover:bg-ink-800 hover:text-brass"
-        title="Collapse Capi"
+        title="Collapse Capi (Ctrl+J)"
         onClick={toggle}
       >
         <span>›</span>
@@ -302,7 +302,7 @@ export function RightRail() {
       {!open && (
         <button
           className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-          title="Expand Capi"
+          title="Expand Capi (Ctrl+J)"
           onClick={toggle}
         >
           <span className="text-[length:var(--fs-sm)]">‹</span>

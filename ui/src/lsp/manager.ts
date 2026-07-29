@@ -56,19 +56,39 @@ function openDocument(tabId: string, model: monaco.editor.ITextModel): void {
   });
 }
 
+function sendDidChange(doc: DocState, model: monaco.editor.ITextModel): void {
+  if (!client || model.isDisposed()) return;
+  doc.version++;
+  client.notify("textDocument/didChange", {
+    textDocument: { uri: doc.uri, version: doc.version },
+    contentChanges: [{ text: model.getValue() }],
+  });
+}
+
 function changeDocument(tabId: string, model: monaco.editor.ITextModel): void {
   const doc = docs.get(tabId);
   if (!doc || !client) return;
   if (doc.debounce != null) clearTimeout(doc.debounce);
   doc.debounce = window.setTimeout(() => {
     doc.debounce = null;
-    if (!client || model.isDisposed()) return;
-    doc.version++;
-    client.notify("textDocument/didChange", {
-      textDocument: { uri: doc.uri, version: doc.version },
-      contentChanges: [{ text: model.getValue() }],
-    });
+    sendDidChange(doc, model);
   }, DEBOUNCE_MS);
+}
+
+/** Flush a pending debounced didChange for this uri. Position-sensitive requests (completion,
+ *  hover) must run against the server's copy of what the user sees *now* — otherwise typing
+ *  `schema.` completes against the pre-dot document and inserts a second `schema.` prefix. */
+export function flushDocument(uri: string): void {
+  for (const doc of docs.values()) {
+    if (doc.uri !== uri) continue;
+    if (doc.debounce != null) {
+      clearTimeout(doc.debounce);
+      doc.debounce = null;
+      const model = modelByUri.get(uri);
+      if (model) sendDidChange(doc, model);
+    }
+    return;
+  }
 }
 
 function closeDocument(tabId: string): void {

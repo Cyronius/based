@@ -25,7 +25,8 @@ $RCEDIT_BAKED_SUBPATH = "a\electrobun\electrobun\package\node_modules\rcedit"
 function Ensure-RceditShim {
   $shimRoot = Join-Path $env:USERPROFILE ".electrobun-rcedit-shim"
   $target = Join-Path $shimRoot $RCEDIT_BAKED_SUBPATH
-  $probe = Join-Path "D:\" "$RCEDIT_BAKED_SUBPATH\package.json"
+  # String concat, not Join-Path: PS 5.1's Join-Path throws DriveNotFound when D: isn't mounted yet.
+  $probe = "D:\$RCEDIT_BAKED_SUBPATH\package.json"
 
   # Populate (or refresh) the shim from the real rcedit in the workspace bun store. electrobun only
   # shells out to the binary, so package.json + the exes are the whole dependency.

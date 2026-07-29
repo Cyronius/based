@@ -4,7 +4,7 @@
 // providers return empty results, leaving Monaco's built-in word-based suggestions — exactly the
 // pre-LSP behavior.
 import * as monaco from "monaco-editor";
-import { getLspClient, uriForTab } from "./manager";
+import { flushDocument, getLspClient, uriForTab } from "./manager";
 import { allModels } from "../editorModels";
 
 interface LspRange {
@@ -74,6 +74,10 @@ export function registerLspProviders(): void {
       if (!client || !uri) return { suggestions: [] };
       try {
         await client.ready;
+        // The manager debounces didChange 250ms; completion fires immediately on trigger chars.
+        // Without a flush the server classifies against the pre-keystroke document (e.g. sees
+        // `FROM alm` when the user typed `FROM alm.`) and returns schema-qualified inserts.
+        flushDocument(uri);
         const result = (await client.request("textDocument/completion", {
           textDocument: { uri },
           position: { line: position.lineNumber - 1, character: position.column - 1 },
@@ -110,6 +114,7 @@ export function registerLspProviders(): void {
       if (!client || !uri) return null;
       try {
         await client.ready;
+        flushDocument(uri);
         const hover = (await client.request("textDocument/hover", {
           textDocument: { uri },
           position: { line: position.lineNumber - 1, character: position.column - 1 },

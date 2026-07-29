@@ -1,8 +1,9 @@
 // Traces: BASED-TABSTORE
 import type { Database } from "bun:sqlite";
 
-// Traces: BASED-TABSTORE — kind set includes "diagram" (BASED-DIAGRAM-UI).
-export type TabKind = "query" | "table" | "routine" | "diagram";
+// Traces: BASED-TABSTORE — kind set includes "diagram" (BASED-DIAGRAM-UI) and "docs"
+// (BASED-HELP-DOCS). The store treats kind as opaque; only the UI renders per-kind.
+export type TabKind = "query" | "table" | "routine" | "diagram" | "docs";
 
 export interface TabRecord {
   id: string;
