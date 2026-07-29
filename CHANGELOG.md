@@ -7,6 +7,11 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.3] - 2026-07-29
+
+### Changed
+- keyboard shortcut documentation
+
 ## [0.1.2] - 2026-07-28
 
 ### Changed
