@@ -16,6 +16,7 @@
     "core",
     "ui",
     "shell",
+    "shell-tauri",
     "specs"
   ],
   "scripts": {

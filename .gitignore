@@ -13,6 +13,11 @@ build/
 .codegraph
 *.tsbuildinfo
 shell/artifacts/
+shell-tauri/target/
+shell-tauri/dist-core/
+shell-tauri/gen/
+shell-tauri/icons/android/
+shell-tauri/icons/ios/
 .claude/plans/
 
 # Private keys must never be committed. Generate them outside the repo (~/.snowflake/); this is a
