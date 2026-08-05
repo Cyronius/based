@@ -877,6 +877,9 @@ one tool rather than the same information under two names.
 **Acceptance criteria:**
 - `list_objects()` returns a non-empty object list, each with schema/name/type
 - `describe_table({ table })` returns that table's columns and no rows
+- `describe_table` on a table/namespace that doesn't resolve returns `{ error, validNames }` — never
+  an empty column list presented as a real answer (SQL catalogs report a wrong schema as zero rows,
+  so the tool confirms existence via `listObjects()` before trusting an empty result)
 
 ### BASED-AGENT-SAMPLE: quick row peek — SUPERSEDED by BASED-AGENT-READ-ROWS
 **Applies to:** based (core)
@@ -1138,7 +1141,7 @@ Every SQL the agent causes to run (reads via `run_query`/`read_table`/`count_row
 **Applies to:** based (core)
 **Test category:** unit
 
-The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) so multi-step tool runs (e.g. schema audits) are not cut off by Mastra's implicit 5-step default, which ends a run immediately after tool results with no final assistant text. (The AG-UI bridge passes no `maxSteps`/`stopWhen` of its own, so the agent-config default is what governs the loop.) A run that genuinely exhausts the budget still ends tool-calls-last without a summary — accepted residual limitation.
+The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) so multi-step tool runs (e.g. schema audits) are not cut off by Mastra's implicit 5-step default, which ends a run immediately after tool results with no final assistant text. (The AG-UI bridge passes no `maxSteps`/`stopWhen` of its own, so the agent-config default is what governs the loop.) The budget is profile-overridable (`BASED-AI-PROFILE-STEPCAP`). A run that genuinely exhausts it still ends tool-calls-last without a summary at the protocol level; the chat UI turns that ending into a "keep going?" prompt (`BASED-AGENT-CONTINUE-PROMPT`).
 
 **Acceptance criteria:**
 - `buildAgent(...)` yields an agent whose resolved default options have `maxSteps` of 30 (assert via `agent.getDefaultOptions(...)`)
@@ -1851,17 +1854,44 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 
 ### BASED-AI-PROFILE-TIMEOUT: Per-profile AI response timeout
 **Applies to:** based (core, ui)
-**Test category:** unit (resolution); integration (persistence); manual (a slow local model is no longer cut off)
+**Test category:** unit (resolution); integration (persistence); manual (a stalled model prompts instead of being cut off)
 
-`AiProfile` gains an optional `timeoutSeconds` — the no-activity window for requests made with that profile, configurable per profile in the settings Agent tab. A pure `resolveAiTimeouts(timeoutSeconds)` resolves it into `{ idleMs, runMs }`: `idleMs` is the window in ms, `runMs` is `idleMs × AI_RUN_TIMEOUT_MULTIPLIER` (4) as an absolute cap on a whole run. Absent, non-finite or non-positive values resolve to `DEFAULT_AI_TIMEOUT_SECONDS` (900 s), so a blank field means "default", never "no timeout". The chat client passes the resolved pair to `useAgent` as `idleTimeoutMs` / `safetyTimeoutMs`, replacing the vendored library's 180 s / 900 s defaults, which killed slow local models mid-answer; the one-shot cluster-labeling call (`BASED-EMBED-LABELS-AI`) aborts on `idleMs` instead of a fixed 60 s. The UI resolves the timeout from the **active** profile, falling back to the first profile the same way the server's `activeAiProfile()` does; because the chat timers rebuild when the values change, editing the active profile takes effect without a chat remount.
+`AiProfile` gains an optional `timeoutSeconds` — the no-activity window for requests made with that profile, configurable per profile in the settings Agent tab. A pure `resolveAiTimeouts(timeoutSeconds)` resolves it into `{ idleMs, runMs }`: `idleMs` is the window in ms, `runMs` is `idleMs × AI_RUN_TIMEOUT_MULTIPLIER` (15) — the wall-clock cap for runs with no user in the loop (each subagent task, `BASED-AGENT-DELEGATE`). Absent, non-finite or non-positive values resolve to `DEFAULT_AI_TIMEOUT_SECONDS` (120 s), so a blank field means "default", never "no timeout". In the chat, `idleMs` drives the ask-to-keep-waiting stall prompt (`BASED-AGENT-CONTINUE-PROMPT`) rather than a kill; the vendored library's own watchdog — whose expiry hard-codes an abort with "The request timed out." — is demoted to a 6 h leak-guard backstop (`WATCHDOG_BACKSTOP_MS` passed as both `idleTimeoutMs` and `safetyTimeoutMs`). The one-shot cluster-labeling call (`BASED-EMBED-LABELS-AI`) still aborts on `idleMs`. The UI resolves the timeout from the **active** profile, falling back to the first profile the same way the server's `activeAiProfile()` does; because the stall timer reads the live value, editing the active profile takes effect without a chat remount.
 
 **Acceptance criteria:**
-- `resolveAiTimeouts(1800)` → `{ idleMs: 1_800_000, runMs: 1_800_000 × 4 }`
+- `resolveAiTimeouts(1800)` → `{ idleMs: 1_800_000, runMs: 1_800_000 × 15 }`
 - `resolveAiTimeouts` of `undefined` / `null` / `0` / a negative / `NaN` / `Infinity` → `idleMs` = `DEFAULT_AI_TIMEOUT_SECONDS × 1000`
 - Fractional seconds floor to whole seconds (`90.7` → `90_000` ms)
+- `DEFAULT_AI_TIMEOUT_SECONDS` = 120, `AI_RUN_TIMEOUT_MULTIPLIER` = 15
 - A profile saved with `timeoutSeconds` round-trips through the ai-profiles API; re-saving without it clears the value (integration)
 
-**UI (manual):** the profile Add/Edit form gains a "Response timeout (seconds)" number field with helper text; blank shows the default in the placeholder. Set a small value (e.g. 5) on the active profile, ask Capi something a slow model can't answer in time → the run aborts with "The request timed out."; raise it to 1800 and the same question completes.
+**UI (manual):** the profile Add/Edit form has a "Response timeout (seconds)" number field with helper text; blank shows the default in the placeholder. Set a small value (e.g. 5) on the active profile, ask Capi something a slow model can't start answering in time → the stall prompt appears (see `BASED-AGENT-CONTINUE-PROMPT`); the run itself is not aborted.
+
+### BASED-AI-PROFILE-STEPCAP: Per-profile tool call limit
+**Applies to:** based (core, ui)
+**Test category:** unit (buildAgent option); integration (persistence); manual (form field)
+
+`AiProfile` gains an optional `maxToolSteps` — the tool-step budget for one agent run with that profile. `buildAgent` accepts a `maxSteps` option: a finite positive value (floored) becomes `defaultOptions.maxSteps`; absent or invalid falls back to `AGENT_MAX_STEPS` (30, `BASED-AGENT-MULTISTEP`). The chat endpoint passes the active profile's `maxToolSteps` through; subagents keep their own `SUBAGENT_MAX_STEPS`. The UI mirrors the default as `DEFAULT_AGENT_MAX_STEPS` and resolves the active profile's value for the continue prompt's message.
+
+**Acceptance criteria:**
+- `buildAgent({ ..., maxSteps: 60 })` → resolved default options have `maxSteps` 60; omitted → 30
+- A profile saved with `maxToolSteps` round-trips through the ai-profiles API; re-saving without it clears the value (integration)
+
+**UI (manual):** the profile Add/Edit form gains a "Tool call limit" number field next to Response timeout; blank shows the default (30) in the placeholder.
+
+### BASED-AGENT-CONTINUE-PROMPT: Caps ask to continue instead of killing the run
+**Applies to:** based (ui)
+**Test category:** manual
+
+Neither agent cap silently ends or aborts a chat run — both surface an in-chat prompt:
+
+- **Stall prompt:** while a run is streaming, a timer of the active profile's `idleMs` resets on any visible progress (streamed text, finalized messages, activity steps). When it lapses, the chat shows "No response from the model for …" with **Keep waiting** (re-arms a fresh window, as if from 0) and **Stop** (`terminateRun()`). Progress arriving while the prompt is up dismisses it automatically.
+- **Continue prompt:** a run that ends tool-calls-last with no final assistant text (the shape of an exhausted step budget) shows "Capi stopped without a final answer — it may have hit the tool call limit (N)." with **Keep going** (sends a "Continue." user turn through the normal send path — the fresh run gets a fresh step budget) and **Dismiss**. A model that deliberately ended on a tool call produces the same shape; offering to continue is correct there too.
+
+**Acceptance criteria (manual, see `specs/based/tests/manual.ui.test.ts`):**
+- Response timeout 5 on the active profile → stall prompt after ~5 s of silence; Keep waiting re-arms; Stop aborts; streaming progress auto-dismisses
+- Tool call limit 2 → tool-heavy question ends after 2 rounds → continue prompt; Keep going sends "Continue." and the new run has a fresh budget; Dismiss hides the prompt for that ending
+- Tool call limit 30 → the same question completes with a final assistant summary and no prompt
 
 ### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
 **Applies to:** based (ui + core)

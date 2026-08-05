@@ -197,6 +197,19 @@ function describeTableTool(deps: ToolDeps, caps: EngineCapabilities, prose: Engi
       try {
         if (format === "columns") {
           const columns = await adapter.getTableColumns(ns, args.table);
+          // SQL catalogs answer a wrong schema/name with zero rows, not an error — an empty column
+          // list here almost always means the name didn't resolve, and reporting it as a real
+          // answer leaves the agent nothing to self-correct from. Confirm existence before trusting it.
+          if (columns.length === 0) {
+            const objects = await adapter.listObjects().catch(() => []);
+            if (!objects.some((o) => o.schema === ns && o.name === args.table)) {
+              auditRead(deps, op, "error", Math.round(performance.now() - t0), "unknown object");
+              return {
+                error: `Unknown object ${qualify(ns, args.table)}`,
+                validNames: objects.map((o) => qualify(o.schema, o.name)).slice(0, 200),
+              };
+            }
+          }
           auditRead(deps, op, "ok", Math.round(performance.now() - t0), null);
           return { table: args.table, namespace: ns, columns };
         }

@@ -13,7 +13,7 @@ import { useStore } from "../store";
 import { useActivity } from "../agent/activityStore";
 import { token, sessionId, AGENT_BASE_URL } from "../api/client";
 import { capiToolsFor } from "../agent/capiTools";
-import { activeProfileTimeoutSeconds, resolveAiTimeouts } from "../agent/aiTimeouts";
+import { WATCHDOG_BACKSTOP_MS } from "../agent/aiTimeouts";
 import { buildTabContext } from "../agent/tabContext";
 import {
   agentThreadId,
@@ -119,11 +119,6 @@ function ChatSession({
   deferredTabTitle: string | null;
 }) {
   const [err, setErr] = useState<string | null>(null);
-  // Traces: BASED-AI-PROFILE-TIMEOUT — the active profile's timeout drives the client-side stall
-  // detector; without it the library's 3 min idle window kills slow local models mid-answer. Live:
-  // the timers rebuild when these change, so editing the profile takes effect without a remount.
-  const timeoutSeconds = useStore((s) => activeProfileTimeoutSeconds(s.aiProfiles, s.activeAiProfileId));
-  const timeouts = resolveAiTimeouts(timeoutSeconds);
   const capabilities = useStore((s) => s.capabilities);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
@@ -132,8 +127,11 @@ function ChatSession({
     // These definitions ride RunAgentInput.tools straight into the model's tool list, so an
     // unfiltered map advertises run_mutation/import_csv on read-only connections.
     tools: capiToolsFor(capabilities),
-    idleTimeoutMs: timeouts.idleMs,
-    safetyTimeoutMs: timeouts.runMs,
+    // Traces: BASED-AI-PROFILE-TIMEOUT, BASED-AGENT-CONTINUE-PROMPT — the library watchdog's expiry
+    // hard-codes an abort + "The request timed out.", so it is demoted to a leak-guard backstop;
+    // the profile's timeout instead drives CapiChat's ask-to-keep-waiting stall prompt.
+    idleTimeoutMs: WATCHDOG_BACKSTOP_MS,
+    safetyTimeoutMs: WATCHDOG_BACKSTOP_MS,
     tokenProvider: async () => token,
     sendFullHistory: false,
     initialThreadId: threadId,

@@ -1169,6 +1169,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       persona: active.persona,
       contextNote: contextNote ?? undefined,
       executionDefaults,
+      // Per-profile tool-step budget (BASED-AI-PROFILE-STEPCAP); exhausting it ends the run
+      // tool-calls-last, which the UI turns into a "keep going?" prompt.
+      maxSteps: profile.maxToolSteps,
       toolDeps: {
         ...childDeps,
         // Traces: BASED-AGENT-TRANSCRIPT — parent-only, exactly like runSubagent below: a subagent
@@ -1182,9 +1185,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           toolDeps: childDeps,
           persona: active.persona,
           executionDefaults,
-          // The profile's idle window is already the user's answer to "how long may one model call
-          // hang?" — reuse it rather than inventing a second number that can disagree with it.
-          timeoutMs: resolveAiTimeouts(profile.timeoutSeconds).idleMs,
+          // The whole-run window, not the idle one: a child task spans many model calls, no user
+          // can be asked to extend it mid-tool, and the short idle window would strangle it.
+          timeoutMs: resolveAiTimeouts(profile.timeoutSeconds).runMs,
           concurrency: SUBAGENT_CONCURRENCY,
         }),
       },

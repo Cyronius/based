@@ -1,19 +1,28 @@
-// Traces: BASED-AI-PROFILE-TIMEOUT
+// Traces: BASED-AI-PROFILE-TIMEOUT, BASED-AI-PROFILE-STEPCAP
 // Mirror of core/src/agent/provider.ts's timeout resolution. The UI doesn't import @based/core
 // (ui/src/api/types.ts duplicates the core shapes by the same convention), so the constants and the
 // fallback rule live here too — keep the two in step.
 import type { AiProfile } from "../api/types";
 
-/** Default no-activity window for an AI request, in seconds. Sized for slow local backends. */
-export const DEFAULT_AI_TIMEOUT_SECONDS = 900;
+/** Default no-activity window for an AI request, in seconds. Drives the chat's ask-to-keep-waiting
+ *  stall prompt (BASED-AGENT-CONTINUE-PROMPT), not a kill, so it can be short. */
+export const DEFAULT_AI_TIMEOUT_SECONDS = 120;
 
-/** A whole agent run gets this multiple of the idle window as an absolute backstop. */
-export const AI_RUN_TIMEOUT_MULTIPLIER = 4;
+/** Wall-clock caps get this multiple of the idle window (subagent tasks, hard backstops). */
+export const AI_RUN_TIMEOUT_MULTIPLIER = 15;
+
+/** Mirror of core's AGENT_MAX_STEPS: the tool-step budget when a profile sets none. */
+export const DEFAULT_AGENT_MAX_STEPS = 30;
+
+/** Passed as the vendored library's idle + safety timeouts. Its watchdog hard-codes an abort with
+ *  "The request timed out." — the app-side stall prompt asks instead of killing, so the library
+ *  timers are demoted to a last-resort leak guard for an unattended machine. */
+export const WATCHDOG_BACKSTOP_MS = 6 * 60 * 60 * 1000;
 
 export interface AiTimeouts {
-  /** No-activity window in ms — the chat client's idle timer. */
+  /** No-activity window in ms — the chat's stall-prompt timer. */
   idleMs: number;
-  /** Absolute cap on a whole agent run in ms; never reset by activity. */
+  /** Wall-clock cap in ms for runs with no user in the loop (subagent tasks). */
   runMs: number;
 }
 
@@ -33,4 +42,10 @@ export function resolveAiTimeouts(timeoutSeconds: number | null | undefined): Ai
  */
 export function activeProfileTimeoutSeconds(profiles: AiProfile[], activeId: string | null): number | undefined {
   return (profiles.find((p) => p.id === activeId) ?? profiles[0])?.timeoutSeconds;
+}
+
+/** The active profile's tool-step budget, resolved to a concrete number for the continue prompt. */
+export function activeProfileMaxToolSteps(profiles: AiProfile[], activeId: string | null): number {
+  const v = (profiles.find((p) => p.id === activeId) ?? profiles[0])?.maxToolSteps;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_AGENT_MAX_STEPS;
 }

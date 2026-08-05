@@ -152,16 +152,40 @@ describe.skip("BASED-AI-PROFILE-PARAMS: manual verification", () => {
 
 // Traces: BASED-AI-PROFILE-TIMEOUT (canonical spec: specs/based/spec.md)
 // Verification: manual — the profile form's "Response timeout (seconds)" field, blank showing the
-// 900 s default in its placeholder.
+// 120 s default in its placeholder. The window drives the stall prompt, not a kill.
 // 1. Settings → Agent → edit the ACTIVE profile → set Response timeout to 5 → Save
-// 2. Ask Capi something a slow local model can't answer within 5 s → the run aborts and
-//    "The request timed out. Please try again." appears (no chat remount was needed for the new
-//    value to take effect)
-// 3. Edit the same profile → set 1800 → Save → ask again → the answer streams to completion even
-//    if the model sits silent for several minutes before its first token
-// 4. Clear the field → Save → reopen the profile → the field is blank and the placeholder shows the
+// 2. Ask Capi something a slow local model can't start answering within 5 s → the run keeps going
+//    and the stall prompt appears ("No response from the model for 5 seconds." with Keep waiting /
+//    Stop) — no chat remount was needed for the new value to take effect
+// 3. Clear the field → Save → reopen the profile → the field is blank and the placeholder shows the
 //    default (the stored value was removed, not zeroed)
 describe.skip("BASED-AI-PROFILE-TIMEOUT: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-AI-PROFILE-STEPCAP (canonical spec: specs/based/spec.md)
+// Verification: manual — the profile form's "Tool call limit" field, blank showing the default (30)
+// in its placeholder; a saved value round-trips and clears like Response timeout.
+describe.skip("BASED-AI-PROFILE-STEPCAP: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-AGENT-CONTINUE-PROMPT (canonical spec: specs/based/spec.md)
+// Verification: manual — both agent caps ask instead of killing the run.
+// Stall prompt:
+// 1. Set the active profile's Response timeout to 5 → ask a slow local model a question
+// 2. After ~5 s of silence the in-chat prompt appears: "No response from the model for 5 seconds."
+// 3. Keep waiting → the prompt clears and re-appears ~5 s later if the model is still silent;
+//    if tokens arrive in the meantime the prompt clears on its own
+// 4. Stop → the run aborts (isStreaming ends); the input is usable again
+// Continue prompt:
+// 1. Set the active profile's Tool call limit to 2 → ask something tool-heavy ("audit my tables")
+// 2. The run ends after 2 tool rounds with no final text → the prompt appears: "Capi stopped
+//    without a final answer — it may have hit the tool call limit (2)."
+// 3. Keep going → a "Continue." user turn is sent; the new run has a fresh 2-step budget and the
+//    prompt re-appears if it exhausts it again; Dismiss hides the prompt for that ending
+// 4. Raise the limit to 30 → the same question completes with a final assistant summary
+describe.skip("BASED-AGENT-CONTINUE-PROMPT: manual verification", () => {
   it.todo("see spec.md procedure");
 });
 

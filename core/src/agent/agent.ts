@@ -75,6 +75,8 @@ export function buildAgent(opts: {
   /** Per-run workspace snapshot (rendered <workspace_context> block, BASED-AGENT-TAB-CONTEXT),
    *  appended after the composed instructions. Omitted → instructions identical to before. */
   contextNote?: string;
+  /** Per-profile tool-step budget (BASED-AI-PROFILE-STEPCAP); absent/invalid → AGENT_MAX_STEPS. */
+  maxSteps?: number;
 }): Agent {
   const surface = agentSurfaceFor(opts.capabilities, opts.toolDeps);
   const { modelSettings, providerOptions } = opts.executionDefaults ?? {};
@@ -94,7 +96,10 @@ export function buildAgent(opts: {
     tools: surface.tools as never,
     ...(opts.memory ? { memory: opts.memory as never } : {}),
     defaultOptions: {
-      maxSteps: AGENT_MAX_STEPS,
+      maxSteps:
+        typeof opts.maxSteps === "number" && Number.isFinite(opts.maxSteps) && opts.maxSteps > 0
+          ? Math.floor(opts.maxSteps)
+          : AGENT_MAX_STEPS,
       ...(modelSettings ? { modelSettings: modelSettings as never } : {}),
       ...(providerOptions ? { providerOptions: providerOptions as never } : {}),
     },

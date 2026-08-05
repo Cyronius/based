@@ -198,6 +198,27 @@ describe("BASED-AI-PROVIDER-PROFILES: profile CRUD + migration", () => {
     await api(`/api/ai-profiles/${created.id}`, { method: "DELETE" });
   });
 
+  // Traces: BASED-AI-PROFILE-STEPCAP
+  test("a profile's maxToolSteps persists, round-trips, and clears when re-saved without it", async () => {
+    const created = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ name: "Stepcap profile", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m", maxToolSteps: 60 }),
+      })
+    ).json()) as { id: string; maxToolSteps?: number };
+    expect(created.maxToolSteps).toBe(60);
+    const profiles = (await (await api("/api/ai-profiles")).json()) as Array<{ id: string; maxToolSteps?: number }>;
+    expect(profiles.find((p) => p.id === created.id)?.maxToolSteps).toBe(60);
+    const updated = (await (
+      await api("/api/ai-profiles", {
+        method: "POST",
+        body: JSON.stringify({ id: created.id, name: "Stepcap profile", kind: "openai-compatible", baseUrl: "http://x/v1", model: "m" }),
+      })
+    ).json()) as { maxToolSteps?: number };
+    expect(updated.maxToolSteps).toBeUndefined();
+    await api(`/api/ai-profiles/${created.id}`, { method: "DELETE" });
+  });
+
   // Traces: BASED-AI-PROFILE-PARAMS — store-level persistence across reopen
   test("params survive a store reopen", () => {
     const dir = mkdtempSync(join(tmpdir(), "based-aiprof-params-"));
@@ -357,6 +378,26 @@ describe("BASED-AGENT-MULTISTEP: default step budget", () => {
     const opts = await agent.getDefaultOptions();
     expect(opts.maxSteps).toBe(30);
   });
+
+  // Traces: BASED-AI-PROFILE-STEPCAP — the per-profile tool cap rides buildAgent's maxSteps option
+  test("a maxSteps override replaces the default budget", async () => {
+    const agent = buildAgent({
+      model: {} as never,
+      memory: {} as never,
+      capabilities: defaultCapabilitiesFor("mssql"),
+      maxSteps: 60,
+      toolDeps: {
+        getAdapter: (): never => {
+          throw new Error("must not touch the adapter");
+        },
+        connectionId: () => "c",
+        database: () => "d",
+        audit: new AuditStore(openDb(join(mkdtempSync(join(tmpdir(), "based-stepcap-")), "app.db"))),
+      },
+    });
+    const opts = await agent.getDefaultOptions();
+    expect(opts.maxSteps).toBe(60);
+  });
 });
 
 describe("BASED-AGENT-MUTATION-GATE: approval flag required", () => {
@@ -396,6 +437,16 @@ d("agent tools over the live adapter", () => {
       columns: unknown[];
     };
     expect(Array.isArray(cols.columns)).toBe(true);
+
+    // a name that doesn't resolve is an error with valid names, never columns: []
+    const missing = (await tools.describe_table.execute!({ table: first.name, schema: "no_such_schema_xyz" }, {} as never)) as {
+      columns?: unknown[];
+      error?: string;
+      validNames?: string[];
+    };
+    expect(missing.columns).toBeUndefined();
+    expect(missing.error).toMatch(/Unknown object/);
+    expect(missing.validNames!.length).toBeGreaterThan(0);
 
     // BASED-AGENT-RUNQUERY: read-only runs and is audited
     const q = (await tools.run_query.execute!({ sql: "SELECT 1 AS a, 2 AS b" }, {} as never)) as {

@@ -163,20 +163,19 @@ export function resolveExecutionDefaults(kind: ProviderKind, params: Record<stri
 // --- per-profile request timeouts (BASED-AI-PROFILE-TIMEOUT) ---
 
 /**
- * Default no-activity window for an AI request, in seconds. Sized for slow local backends: a big
- * model on a busy local GPU can sit silent for many minutes before its first token, and the old
- * hard-coded windows (180 s idle in the AG-UI client, 60 s on cluster labeling) killed those runs
- * mid-flight. Profiles pointed at a fast hosted provider can dial this back.
+ * Default no-activity window for an AI request, in seconds. In the chat this drives an
+ * ask-to-keep-waiting prompt rather than a kill, so it can be short; one-shot calls (cluster
+ * labeling) still abort on it. Profiles on very slow backends can raise it.
  */
-export const DEFAULT_AI_TIMEOUT_SECONDS = 900;
+export const DEFAULT_AI_TIMEOUT_SECONDS = 120;
 
-/** A whole agent run gets this multiple of the idle window as an absolute backstop. */
-export const AI_RUN_TIMEOUT_MULTIPLIER = 4;
+/** Wall-clock caps get this multiple of the idle window (subagent tasks, hard backstops). */
+export const AI_RUN_TIMEOUT_MULTIPLIER = 15;
 
 export interface AiTimeouts {
-  /** No-activity window in ms — the chat client's idle timer and the abort on one-shot calls. */
+  /** No-activity window in ms — the chat's stall-prompt timer and the abort on one-shot calls. */
   idleMs: number;
-  /** Absolute cap on a whole agent run in ms; never reset by activity. */
+  /** Wall-clock cap in ms for runs with no user in the loop (subagent tasks); never reset by activity. */
   runMs: number;
 }
 

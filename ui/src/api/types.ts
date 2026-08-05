@@ -417,6 +417,9 @@ export interface AiProfile {
   /** No-activity window for this profile's requests, in seconds (BASED-AI-PROFILE-TIMEOUT).
    *  Absent = DEFAULT_AI_TIMEOUT_SECONDS; see ui/src/agent/aiTimeouts.ts. */
   timeoutSeconds?: number;
+  /** Tool-step budget per agent run (BASED-AI-PROFILE-STEPCAP). Absent = 30; exhausting it
+   *  prompts the user to continue rather than ending the conversation. */
+  maxToolSteps?: number;
   hasKey: boolean;
   createdAt: string;
   updatedAt: string;

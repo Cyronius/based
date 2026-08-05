@@ -17,7 +17,7 @@ import {
   saveAgentInstructionSet,
   deleteAgentInstructionSet,
 } from "../api/client";
-import { AI_RUN_TIMEOUT_MULTIPLIER, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
+import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
 
@@ -493,6 +493,14 @@ function AiProfileForm({
     const valid = text.trim() !== "" && Number.isFinite(n) && n > 0;
     setForm({ ...form, timeoutSeconds: valid ? Math.floor(n) : undefined });
   }
+  // Tool call limit (BASED-AI-PROFILE-STEPCAP): same edited-as-text pattern as the timeout.
+  const [stepsText, setStepsText] = useState(() => (form.maxToolSteps != null ? String(form.maxToolSteps) : ""));
+  function onStepsChange(text: string) {
+    setStepsText(text);
+    const n = Number(text.trim());
+    const valid = text.trim() !== "" && Number.isFinite(n) && n > 0;
+    setForm({ ...form, maxToolSteps: valid ? Math.floor(n) : undefined });
+  }
   function onParamsChange(text: string) {
     setParamsText(text);
     if (!text.trim()) {
@@ -585,9 +593,23 @@ function AiProfileForm({
           onChange={(e) => onTimeoutChange(e.target.value)}
         />
         <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
-          How long to wait with no response from the model before giving up. Raise it for slow local
-          models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s). A whole chat turn gets{" "}
-          {AI_RUN_TIMEOUT_MULTIPLIER}× this as a hard cap.
+          How long the model may stay silent before the chat asks whether to keep waiting. Raise it
+          for slow local models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s).
+        </span>
+      </label>
+      <label className="block">
+        <span className="text-faint">Tool call limit</span>
+        <input
+          type="number"
+          min={1}
+          className={`${field} mt-0.5`}
+          placeholder={`${DEFAULT_AGENT_MAX_STEPS} (default)`}
+          value={stepsText}
+          onChange={(e) => onStepsChange(e.target.value)}
+        />
+        <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
+          Tool calls the agent may make in one turn before the chat asks whether to keep going;
+          blank uses the default ({DEFAULT_AGENT_MAX_STEPS}).
         </span>
       </label>
       <label className="block">
