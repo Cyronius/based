@@ -46,6 +46,15 @@
         "typescript": "^7.0.2",
       },
     },
+    "shell-tauri": {
+      "name": "@based/shell-tauri",
+      "dependencies": {
+        "@based/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+      },
+    },
     "specs": {
       "name": "@based/specs",
       "dependencies": {
@@ -297,6 +306,8 @@
     "@based/core": ["@based/core@workspace:core"],
 
     "@based/shell": ["@based/shell@workspace:shell"],
+
+    "@based/shell-tauri": ["@based/shell-tauri@workspace:shell-tauri"],
 
     "@based/specs": ["@based/specs@workspace:specs"],
 

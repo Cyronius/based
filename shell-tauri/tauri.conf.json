@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "based",
+  "version": "0.1.3",
+  "identifier": "dev.based.spike",
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "dist-core/core": "core",
+      "dist-core/ui": "ui",
+      "dist-core/bun": "bun"
+    }
+  }
+}

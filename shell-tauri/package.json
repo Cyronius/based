@@ -1,0 +1,17 @@
+{
+  "name": "@based/shell-tauri",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "bundle": "bun bundle-core.ts",
+    "dev": "cargo run",
+    "build": "bun bundle-core.ts && bun x @tauri-apps/cli build"
+  },
+  "dependencies": {
+    "@based/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  }
+}
