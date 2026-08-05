@@ -314,7 +314,7 @@ Within one window's session, switching to a connection already visited restores 
 **Applies to:** based (core)
 **Test category:** integration
 
-App-wide user preferences (the active theme id, and `rowPageSize` — the Table Data view's rows-per-page *and* the tab bar's ad-hoc query fetch-size cap, see BASED-UI-EXEC-PLAN) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
+App-wide user preferences (the active theme id; `fontScale`, the app-wide text-size multiplier, see BASED-UI-FONT-ZOOM; and `rowPageSize` — the Table Data view's rows-per-page *and* the tab bar's ad-hoc query fetch-size cap, see BASED-UI-EXEC-PLAN) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
 
 **Acceptance criteria:**
 - Fresh store → `GET /api/settings` returns `{ theme: "ledger", rowPageSize: 500 }`
@@ -333,6 +333,47 @@ The UI shall offer a theme picker (LeftRail header) listing all themes grouped d
 - The choice survives an app restart (loaded from `/api/settings`)
 - Result grid header/cells, NULL cells, and the editable grid's dirty/new row tints all match the active palette
 - Switching to a theme whose mono font this window has never rendered (so the webfont downloads only on the swap) leaves the editor caret exactly at the end of typed text, not a fraction of a character to its left — see BASED-EDITOR-CARET-METRICS
+
+### BASED-UI-FONT-ZOOM: App-wide text zoom from the wheel and the keyboard
+**Applies to:** based (ui)
+**Test category:** manual
+
+The app-wide font size is one setting (`fontScale`, persisted per BASED-SETTINGS) applied by writing
+`--font-scale` onto `<html>`; every `--fs-*` size and the Monaco editor's `fontSize` derive from it.
+Three inputs shall drive that one setting, all clamped to 85%–200% in 5% steps: the Font size slider
+in the settings popover's General tab, `Ctrl`+wheel anywhere in the window, and `Ctrl+=` / `Ctrl+-`
+(with `Ctrl+0` resetting to 100%).
+
+`Ctrl`+wheel is handled on `window` in the capture phase with `passive: false`. Both matter: capture
+puts the app ahead of Monaco, the Glide grids and every scroll container, so the gesture zooms rather
+than scrolling whatever sits under the cursor; `passive: false` makes `preventDefault()` effective,
+without which the host webview also runs its own page zoom and the two compound. Wheel distance is
+accumulated (~100px per step) rather than stepped per event, so a trackpad's stream of small deltas
+moves the scale at the same rate as a mouse's discrete notches.
+
+A view that owns the wheel itself opts out by carrying `data-wheel-zoom="own"`. The embeddings atlas
+canvas (BASED-EMBED-UI) is the one such view: deck.gl zooms the plot on wheel, and a trackpad
+pinch reaches the page as Ctrl+wheel, so without the opt-out pinching the plot would resize the app
+instead of zooming the plot.
+
+The server write is debounced (~400ms trailing) — a wheel gesture or a slider drag is dozens of
+events, and each one would otherwise be its own `POST /api/settings`. The visual change is immediate
+regardless; only persistence trails.
+
+**Verification procedure:**
+1. `Ctrl`+scroll up over the object explorer, the Monaco editor, and a result grid in turn → text
+   grows everywhere on each gesture; nothing under the cursor scrolls
+2. Open Settings → General while zooming → the percentage readout tracks live and lands on whole 5%
+   values (95%, 100%, 105%…), never 115.00000000000001%
+3. `Ctrl`+scroll past either end → stops at 85% / 200%
+4. In the packaged Tauri shell: only text size changes — the window chrome and layout do not scale,
+   which is the tell that the webview's native zoom is not also firing
+5. Release `Ctrl` and scroll → normal scrolling everywhere
+6. `Ctrl+=` / `Ctrl+-` step the same 5%; `Ctrl+0` returns to 100%
+7. On the Embeddings sub-view, a trackpad pinch (or `Ctrl`+wheel) over the plot zooms the *plot* and
+   leaves the app's text size alone — the `data-wheel-zoom="own"` opt-out
+8. Zoom, restart the app → the size is still in effect, painted correctly on first frame (no flash
+   of the previous size)
 
 ### BASED-EDITOR-CARET-METRICS: The caret stays glued to the text when a webfont arrives late
 **Applies to:** based (ui)
@@ -857,7 +898,7 @@ Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, 
 **Applies to:** based (core)
 **Test category:** unit
 
-The agent `run_query` tool executes only read-only statements. A pure classifier (`isReadOnly`) decides read-only vs. mutating; non-read statements are refused without touching the DB. Forwarded rows are capped (agent default 1,000) and marked truncated past the cap.
+The agent `run_query` tool executes only read-only statements. A pure classifier (`isReadOnly`) decides read-only vs. mutating; non-read statements are refused without touching the DB. Forwarded rows are capped (agent default 1,000) and marked truncated past the cap; the model sees at most `TOOL_PREVIEW_ROWS` (50) of them, size-bounded by BASED-AGENT-TOOL-PAYLOAD-CAP under one budget shared by every result set in the call.
 
 **Acceptance criteria:**
 - `SELECT`/leading-CTE → read-only; `INSERT`/`UPDATE`/`DELETE`/`DROP`/`TRUNCATE`/`EXEC`/`MERGE`/`SELECT…INTO` → not (case/whitespace/comment/string-literal insensitive)
@@ -877,6 +918,9 @@ one tool rather than the same information under two names.
 **Acceptance criteria:**
 - `list_objects()` returns a non-empty object list, each with schema/name/type
 - `describe_table({ table })` returns that table's columns and no rows
+- `describe_table` on a table/namespace that doesn't resolve returns `{ error, validNames }` — never
+  an empty column list presented as a real answer (SQL catalogs report a wrong schema as zero rows,
+  so the tool confirms existence via `listObjects()` before trusting an empty result)
 
 ### BASED-AGENT-SAMPLE: quick row peek — SUPERSEDED by BASED-AGENT-READ-ROWS
 **Applies to:** based (core)
@@ -916,6 +960,48 @@ audit line.
 - `where` forwards to the adapter on a `wherePredicate` engine and appears in the audit line
 - `columns` projects the returned page
 - Every engine surface contains `read_table`; each call writes an audit row
+- The page is size-bounded before it reaches the model (BASED-AGENT-TOOL-PAYLOAD-CAP); `hasMore`
+  still reflects the adapter's page, so rows dropped to fit the budget are never mistaken for the
+  end of the table
+
+### BASED-AGENT-TOOL-PAYLOAD-CAP: Row payloads are bounded by size, not only by row count
+**Applies to:** based (core)
+**Test category:** unit
+
+Every tool that returns rows to the model bounds the **size** of what it returns, not only the
+number of rows. A row cap alone is not a bound: 50 rows of a column holding 21,000-character
+conversation logs is roughly a quarter of a million tokens from one tool call, enough to overrun a
+262K-token window outright — and, because the result is persisted to the thread, to keep overrunning
+it on every later turn (BASED-AGENT-CONTEXT-RECOVERY).
+
+Two limits, applied in `boundRows` (`core/src/agent/toolPayload.ts`) by `run_query`, `read_table`,
+`take_rows`, and the LanceDB search tools:
+
+- **`TOOL_CELL_CAP` (300 characters per cell)** — a longer string value is cut and marked with `…`.
+  Matches the cap the UI half has always applied to the frontend tools (`ui/src/agent/tabContext.ts`).
+- **`TOOL_PAYLOAD_CAP` (100,000 characters per tool call)** — rows stop being added once the budget
+  is spent. One budget covers a whole call, so a `run_query` returning several result sets cannot
+  spend the cap once per set. The first row of a set always goes through even if it alone exceeds
+  the budget: a set with no rows tells the model nothing about the shape of what it asked for, and
+  the row is cell-capped anyway.
+
+Vector and binary cells need no handling here — the adapters already summarize them on the wire as
+`{$:"vec"}` / `{$:"bin"}` (BASED-LANCE-WIRE).
+
+Truncation is always **declared**. A result that was cut carries `truncated: true` and a `note`
+naming what was cut (cells, rows, or both) and what to do instead (fewer/narrower columns, or
+`export_data` for the full values). A silently clipped value is worse than a missing one: the model
+quotes it back as the complete value.
+
+**Acceptance criteria:**
+- A 21,000-character cell returns at 301 characters, ending in `…`, with `cellsTruncated: 1`
+- A value exactly at `TOOL_CELL_CAP` is untouched; one character longer is cut
+- Narrow rows pass through byte-for-byte with `truncated: false` and no `note`
+- `{$:"vec"}` / `{$:"bin"}` cells pass through unchanged
+- With the budget exhausted, later rows are dropped and counted in `droppedForSize`
+- A budget shared across two result sets is spent once, not once per set
+- A single row larger than the whole budget is still returned
+- The `note` names cell truncation and row dropping independently, and only when each occurred
 
 ### BASED-SCRIPT-OBJECT: Agent `describe_table` tool
 **Applies to:** based (core)
@@ -1138,11 +1224,54 @@ Every SQL the agent causes to run (reads via `run_query`/`read_table`/`count_row
 **Applies to:** based (core)
 **Test category:** unit
 
-The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) so multi-step tool runs (e.g. schema audits) are not cut off by Mastra's implicit 5-step default, which ends a run immediately after tool results with no final assistant text. (The AG-UI bridge passes no `maxSteps`/`stopWhen` of its own, so the agent-config default is what governs the loop.) A run that genuinely exhausts the budget still ends tool-calls-last without a summary — accepted residual limitation.
+The agent is built with a default step budget of 30 (`defaultOptions.maxSteps`) so multi-step tool runs (e.g. schema audits) are not cut off by Mastra's implicit 5-step default, which ends a run immediately after tool results with no final assistant text. (The AG-UI bridge passes no `maxSteps`/`stopWhen` of its own, so the agent-config default is what governs the loop.) The budget is profile-overridable (`BASED-AI-PROFILE-STEPCAP`). A run that genuinely exhausts it still ends tool-calls-last without a summary at the protocol level; the chat UI turns that ending into a "keep going?" prompt (`BASED-AGENT-CONTINUE-PROMPT`).
 
 **Acceptance criteria:**
 - `buildAgent(...)` yields an agent whose resolved default options have `maxSteps` of 30 (assert via `agent.getDefaultOptions(...)`)
 - Manual: "audit my tables" against the dev DB streams tool calls and ends with a final assistant text message before `RUN_FINISHED`
+
+### BASED-AGENT-CONTEXT-RECOVERY: A context-window overflow does not end the conversation
+**Applies to:** based (core)
+**Test category:** integration
+
+When the provider rejects a request because it does not fit the model's context window, the run
+sheds the payload it choked on and retries instead of failing. Without this, an overflow is
+terminal in the worst way: the oversized tool result is already written to the tab's thread, so it
+replays on every following turn and even a one-row follow-up query fails identically. The
+conversation is unusable until it is thrown away.
+
+`contextRecoveryProcessor` (`core/src/agent/contextRecovery.ts`) is registered as an
+`errorProcessor` on every agent `buildAgent` produces, parent and subagent alike:
+
+1. **Recognize.** `isContextOverflowError` matches how each backend phrases it — LM Studio /
+   llama.cpp `exceed_context_size_error`, OpenAI `context_length_exceeded` / "maximum context
+   length", Anthropic "prompt is too long" — across an error's `message`, `responseBody`, `data`,
+   and `cause`. Anything else is passed straight through: a real failure (bad SQL, dead connection,
+   revoked key) must never become a retry loop.
+2. **Shed.** The single largest tool result in the message list is replaced with a stub saying it
+   was dropped and what to do instead. It is rewritten through `MessageList.updateToolInvocation`,
+   which re-persists the message — so the stored thread is healed, not just the current attempt.
+   Removing the message instead would orphan its tool call and get the retry rejected on other
+   grounds. A result under 1,000 characters is not worth shedding; with nothing to shed, no retry.
+3. **Bound.** At most `CONTEXT_RECOVERY_MAX_ATTEMPTS` (3) sheds per run.
+
+Two further bounds sit behind it: agent memory recalls at most `MEMORY_LAST_MESSAGES` (40) messages,
+so an unbounded history cannot replay a bad payload forever; and an overflow that survives all of
+the above reaches the client as a plain-language `RUN_ERROR` ("start a new chat, or switch to a
+profile with a larger context") rather than raw provider JSON.
+
+**Acceptance criteria:**
+- Each provider's overflow phrasing is recognized, including when wrapped in a `cause`; a 401, an
+  `ECONNREFUSED`, and an invalid-object-name error are not
+- Shedding replaces the largest tool result only, leaves the others intact, and calls
+  `updateToolInvocation` for the shed one
+- A second shed takes the next-biggest result, never the stub written by the first
+- With no result over 1,000 characters, the processor returns `retry: false`
+- At `retryCount >= maxAttempts`, the processor returns `retry: false`
+- End to end: a run whose model returns a tool call, then rejects the request with a real LM Studio
+  overflow 400, completes — the retried request carries the stub and is smaller than the rejected one
+- The same holds on `agent.stream()`, which is the path the AG-UI endpoint actually runs
+- A non-overflow provider failure still fails, with exactly one model call
 
 ### BASED-AGENT-DELEGATE: Handing tasks to subagents
 **Applies to:** based (core)
@@ -1851,17 +1980,44 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 
 ### BASED-AI-PROFILE-TIMEOUT: Per-profile AI response timeout
 **Applies to:** based (core, ui)
-**Test category:** unit (resolution); integration (persistence); manual (a slow local model is no longer cut off)
+**Test category:** unit (resolution); integration (persistence); manual (a stalled model prompts instead of being cut off)
 
-`AiProfile` gains an optional `timeoutSeconds` — the no-activity window for requests made with that profile, configurable per profile in the settings Agent tab. A pure `resolveAiTimeouts(timeoutSeconds)` resolves it into `{ idleMs, runMs }`: `idleMs` is the window in ms, `runMs` is `idleMs × AI_RUN_TIMEOUT_MULTIPLIER` (4) as an absolute cap on a whole run. Absent, non-finite or non-positive values resolve to `DEFAULT_AI_TIMEOUT_SECONDS` (900 s), so a blank field means "default", never "no timeout". The chat client passes the resolved pair to `useAgent` as `idleTimeoutMs` / `safetyTimeoutMs`, replacing the vendored library's 180 s / 900 s defaults, which killed slow local models mid-answer; the one-shot cluster-labeling call (`BASED-EMBED-LABELS-AI`) aborts on `idleMs` instead of a fixed 60 s. The UI resolves the timeout from the **active** profile, falling back to the first profile the same way the server's `activeAiProfile()` does; because the chat timers rebuild when the values change, editing the active profile takes effect without a chat remount.
+`AiProfile` gains an optional `timeoutSeconds` — the no-activity window for requests made with that profile, configurable per profile in the settings Agent tab. A pure `resolveAiTimeouts(timeoutSeconds)` resolves it into `{ idleMs, runMs }`: `idleMs` is the window in ms, `runMs` is `idleMs × AI_RUN_TIMEOUT_MULTIPLIER` (15) — the wall-clock cap for runs with no user in the loop (each subagent task, `BASED-AGENT-DELEGATE`). Absent, non-finite or non-positive values resolve to `DEFAULT_AI_TIMEOUT_SECONDS` (120 s), so a blank field means "default", never "no timeout". In the chat, `idleMs` drives the ask-to-keep-waiting stall prompt (`BASED-AGENT-CONTINUE-PROMPT`) rather than a kill; the vendored library's own watchdog — whose expiry hard-codes an abort with "The request timed out." — is demoted to a 6 h leak-guard backstop (`WATCHDOG_BACKSTOP_MS` passed as both `idleTimeoutMs` and `safetyTimeoutMs`). The one-shot cluster-labeling call (`BASED-EMBED-LABELS-AI`) still aborts on `idleMs`. The UI resolves the timeout from the **active** profile, falling back to the first profile the same way the server's `activeAiProfile()` does; because the stall timer reads the live value, editing the active profile takes effect without a chat remount.
 
 **Acceptance criteria:**
-- `resolveAiTimeouts(1800)` → `{ idleMs: 1_800_000, runMs: 1_800_000 × 4 }`
+- `resolveAiTimeouts(1800)` → `{ idleMs: 1_800_000, runMs: 1_800_000 × 15 }`
 - `resolveAiTimeouts` of `undefined` / `null` / `0` / a negative / `NaN` / `Infinity` → `idleMs` = `DEFAULT_AI_TIMEOUT_SECONDS × 1000`
 - Fractional seconds floor to whole seconds (`90.7` → `90_000` ms)
+- `DEFAULT_AI_TIMEOUT_SECONDS` = 120, `AI_RUN_TIMEOUT_MULTIPLIER` = 15
 - A profile saved with `timeoutSeconds` round-trips through the ai-profiles API; re-saving without it clears the value (integration)
 
-**UI (manual):** the profile Add/Edit form gains a "Response timeout (seconds)" number field with helper text; blank shows the default in the placeholder. Set a small value (e.g. 5) on the active profile, ask Capi something a slow model can't answer in time → the run aborts with "The request timed out."; raise it to 1800 and the same question completes.
+**UI (manual):** the profile Add/Edit form has a "Response timeout (seconds)" number field with helper text; blank shows the default in the placeholder. Set a small value (e.g. 5) on the active profile, ask Capi something a slow model can't start answering in time → the stall prompt appears (see `BASED-AGENT-CONTINUE-PROMPT`); the run itself is not aborted.
+
+### BASED-AI-PROFILE-STEPCAP: Per-profile tool call limit
+**Applies to:** based (core, ui)
+**Test category:** unit (buildAgent option); integration (persistence); manual (form field)
+
+`AiProfile` gains an optional `maxToolSteps` — the tool-step budget for one agent run with that profile. `buildAgent` accepts a `maxSteps` option: a finite positive value (floored) becomes `defaultOptions.maxSteps`; absent or invalid falls back to `AGENT_MAX_STEPS` (30, `BASED-AGENT-MULTISTEP`). The chat endpoint passes the active profile's `maxToolSteps` through; subagents keep their own `SUBAGENT_MAX_STEPS`. The UI mirrors the default as `DEFAULT_AGENT_MAX_STEPS` and resolves the active profile's value for the continue prompt's message.
+
+**Acceptance criteria:**
+- `buildAgent({ ..., maxSteps: 60 })` → resolved default options have `maxSteps` 60; omitted → 30
+- A profile saved with `maxToolSteps` round-trips through the ai-profiles API; re-saving without it clears the value (integration)
+
+**UI (manual):** the profile Add/Edit form gains a "Tool call limit" number field next to Response timeout; blank shows the default (30) in the placeholder.
+
+### BASED-AGENT-CONTINUE-PROMPT: Caps ask to continue instead of killing the run
+**Applies to:** based (ui)
+**Test category:** manual
+
+Neither agent cap silently ends or aborts a chat run — both surface an in-chat prompt:
+
+- **Stall prompt:** while a run is streaming, a timer of the active profile's `idleMs` resets on any visible progress (streamed text, finalized messages, activity steps). When it lapses, the chat shows "No response from the model for …" with **Keep waiting** (re-arms a fresh window, as if from 0) and **Stop** (`terminateRun()`). Progress arriving while the prompt is up dismisses it automatically.
+- **Continue prompt:** a run that ends tool-calls-last with no final assistant text (the shape of an exhausted step budget) shows "Capi stopped without a final answer — it may have hit the tool call limit (N)." with **Keep going** (sends a "Continue." user turn through the normal send path — the fresh run gets a fresh step budget) and **Dismiss**. A model that deliberately ended on a tool call produces the same shape; offering to continue is correct there too.
+
+**Acceptance criteria (manual, see `specs/based/tests/manual.ui.test.ts`):**
+- Response timeout 5 on the active profile → stall prompt after ~5 s of silence; Keep waiting re-arms; Stop aborts; streaming progress auto-dismisses
+- Tool call limit 2 → tool-heavy question ends after 2 rounds → continue prompt; Keep going sends "Continue." and the new run has a fresh budget; Dismiss hides the prompt for that ending
+- Tool call limit 30 → the same question completes with a final assistant summary and no prompt
 
 ### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
 **Applies to:** based (ui + core)
@@ -1897,6 +2053,8 @@ removing, or changing a binding is a spec change to this table.
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next tab |
 | Ctrl+J | Toggle the Capi rail |
 | Ctrl+N | New window |
+| Ctrl+Scroll, Ctrl+= / Ctrl+- | Zoom the app text size in / out |
+| Ctrl+0 | Reset the text size to 100% |
 
 **Discoverability rule:** every visible control whose action is also bound to a shortcut
 advertises that shortcut in its hover tooltip — e.g. "New query tab (Ctrl+T)", "Run (F5 /
@@ -1904,8 +2062,8 @@ Ctrl+Enter)". Shortcuts with no corresponding control (Ctrl+N, Ctrl+PageUp/PageD
 discoverable via the help tab.
 
 The *behavior* behind each binding stays specified by its own requirement (BASED-UI-TABS,
-BASED-CANCEL, BASED-FILE-OPEN-SQL, BASED-CHAT-UI, BASED-WINDOW-RESTORE…) — this requirement owns
-only the key assignments and their discoverability.
+BASED-CANCEL, BASED-FILE-OPEN-SQL, BASED-CHAT-UI, BASED-WINDOW-RESTORE, BASED-UI-FONT-ZOOM…) — this
+requirement owns only the key assignments and their discoverability.
 
 **Verification procedure:**
 1. Spot-check bindings against the table: Ctrl+T opens a tab, Ctrl+W closes it, Ctrl+J toggles
@@ -2197,6 +2355,8 @@ otherwise.
 - `countRows` returns the table total and honours the same predicate
 - `takeRows` fetches by key; a quote inside a string key is data, never syntax
 - An unknown key column is rejected by name; an empty key list is a no-op, not a full scan
+- `take_rows` and the search tools size-bound their rows before returning them
+  (BASED-AGENT-TOOL-PAYLOAD-CAP) — document chunks are exactly the wide-text case a row cap misses
 - `GET /api/session/row-count` and `table-data?where=` honour the predicate over HTTP
 
 ### BASED-LANCE-VECTOR-COLUMN: Targeting one of several embeddings
@@ -2825,53 +2985,60 @@ Record: PASS/FAIL + date below.
 ## Windows packaging & file association
 
 ### BASED-PACKAGE-WIN: Packaged app bundle is self-contained
-**Applies to:** based (shell)
+**Applies to:** based (shell-tauri)
 **Test category:** manual
 
-The electrobun bundle includes the built UI (`build.copy` maps `../ui/dist` → `ui/dist`, landing
-at `Resources/app/ui/dist`), and the shell locates it bundle-relative to `process.argv0`
-(`findUiDist` in `shell/src/bun/index.ts`) — cwd is unreliable (the launcher chdirs to `bin`;
-file-association launches inherit Explorer's cwd). An installed app serves the real UI with no
-repo checkout present.
+`shell-tauri/bundle-core.ts` builds the self-contained core bundle (`dist-core/{core,ui,bun}`:
+the bundled core entry with its native addons and companion `duckdb.dll`, the built `ui/dist`,
+and the `bun.exe` runtime), which `tauri.conf.json` maps into the app's resources. Installed,
+those land beside `based-shell.exe` (`resource_dir()` = the exe dir), and `spawn_core()` in
+`shell-tauri/src/main.rs` runs `<resources>/bun/bun.exe <resources>/core/index.js` with cwd set
+to the resource dir — no repo checkout, PATH bun, or Explorer cwd involved. The bundler plugins
+(keyring createRequire fix, libsql/duckdb native-require pinning) are ported unchanged from the
+electrobun config; each one is a real packaged-only failure.
 
 **Verification procedure:**
 1. Build + install via `scripts/package-win.ps1` → run from the Start Menu shortcut on a path
    with no repo → the full UI renders (not the bare core page).
 2. In the installed app, run a query on a LanceDB connection (exercises the DuckDB native
    stack). It must return results — not "LoadLibrary failed: The specified module could not
-   be found." (`duckdb.node` is a thin shim linked against a companion `duckdb.dll`; the
-   `duckdbCompanionLibCopyEntry()` copy rule in `shell/electrobun.config.ts` ships the DLL
-   beside the bundled `.node`.)
+   be found." (`duckdb.node` is a thin shim linked against a companion `duckdb.dll`;
+   `bundle-core.ts` ships the DLL beside the bundled `.node`.)
 
-- 2026-07-25 PASS (installed via silent Setup; core server on the installed app returned the
-  built `ui/dist` index.html).
-- 2026-07-25 step 2 verified at addon-load level: bundled `duckdb-*.node` in
-  `build/dev-win-x64/.../Resources/app/bun/` loads with `duckdb.dll` beside it (279 exports,
-  identical to loading from the package); previously failed with "LoadLibrary failed".
+- 2026-07-25 PASS (electrobun-era bundle; superseded by the Tauri packaging below).
+- 2026-07-31 PASS (Tauri spike: NSIS-installed build launched the bundled core and served the
+  built UI; child-core handshake + LanceDB/DuckDB verified in the spike scorecard).
+- Tauri + Inno packaging pass pending a human run of the procedure above.
 
 ### BASED-INSTALLER-WIN: Windows installer
 **Applies to:** based (repo `scripts/`)
 **Test category:** manual
 
 `scripts/package-win.ps1` produces `dist/based-<version>-Setup.exe` (Inno Setup; version read
-from `shell/electrobun.config.ts`). It builds the UI, runs `electrobun build --env=stable`,
-extracts the stable `tar.zst` (the runnable tree ships inside the self-extractor package),
-compiles `scripts/win/based-open.cs` into the bundle with the .NET Framework `csc`
-(`/target:winexe`), and hands the tree to `scripts/installer.iss`. The installer is per-user
-(`PrivilegesRequired=lowest`, no UAC), installs to `{localappdata}\Programs\based`, creates a
-Start Menu shortcut (desktop shortcut as an unchecked task), and registers an Apps & Features
-uninstall entry. Uninstall removes the install dir (including runtime logs), shortcuts, and all
-registry keys written at install; user data in `%APPDATA%\based` (app.db, agent.db) and
-Credential Manager secrets are left in place.
+from `shell-tauri/tauri.conf.json` — the single source of truth, which
+`scripts/bump-version.ps1` keeps in step with `shell-tauri/Cargo.toml` and the generated
+`core/src/version.ts`). It builds the UI, runs `shell-tauri/bundle-core.ts`, builds the Tauri
+shell with `tauri build --no-bundle` (Tauri's own NSIS bundler is not used for release), stages
+`based-shell.exe` + the `core`/`ui`/`bun` resource dirs + `icon.ico`, and hands that tree to
+`scripts/installer.iss`. The installer is per-user (`PrivilegesRequired=lowest`, no UAC),
+installs to `{localappdata}\Programs\based`, creates a Start Menu shortcut (desktop shortcut as
+an unchecked task), and registers an Apps & Features uninstall entry. The Inno `AppId` is
+unchanged from the electrobun era, so installing over an old electrobun install upgrades it in
+place — one Apps & Features entry — and an `[InstallDelete]` rule removes the stale
+`bin`/`Resources` launcher tree at install time. Uninstall removes the install dir (including
+runtime logs), shortcuts, and all registry keys written at install; user data in
+`%APPDATA%\based` (app.db, agent.db) and Credential Manager secrets are left in place.
 
 **Verification procedure:**
-1. `pwsh scripts/package-win.ps1` (needs Inno Setup 6: `winget install JRSoftware.InnoSetup`) →
+1. `pwsh scripts/package-win.ps1` (needs Inno Setup 6 + the Rust toolchain) →
    `dist/based-<version>-Setup.exe`.
-2. Install → app in Start Menu, entry in Settings → Apps; launch works.
-3. Uninstall → install dir + registry keys gone; `%APPDATA%\based` still present.
+2. Install → app in Start Menu, entry in Settings → Apps; launch shows the Tauri shell.
+3. On a machine with an old electrobun install: install → still exactly one "based" entry;
+   `{localappdata}\Programs\based\bin\launcher.exe` gone.
+4. Uninstall → install dir + registry keys gone; `%APPDATA%\based` still present.
 
-- 2026-07-25 PASS (steps 1–2: built and silent-installed 0.1.0; uninstall entry present in
-  registry. Step 3 pending a human pass).
+- 2026-07-25 PASS (electrobun-era installer, steps 1–2; superseded by the Tauri packaging).
+- Tauri-based installer pass pending a human run of the procedure above.
 
 ### BASED-SQL-ASSOC-WIN: .sql "Open with" registration
 **Applies to:** based (installer)
@@ -2879,12 +3046,14 @@ Credential Manager secrets are left in place.
 
 The installer registers based as an *available* handler for `.sql` — never overwriting the
 user's existing default. All under HKCU: ProgID `based.sql` (friendly name, `DefaultIcon` →
-`{app}\icon.ico`, open verb `"{app}\bin\based-open.exe" "%1"`),
+`{app}\icon.ico`, open verb `"{app}\based-shell.exe" "%1"`),
 `Software\Classes\.sql\OpenWithProgids\based.sql`, and Default Programs registration
 (`Software\based\Capabilities` with `FileAssociations: .sql=based.sql`, plus
-`Software\RegisteredApplications\based`). The open verb routes through `based-open.exe` because
-electrobun's `launcher.exe` (1.18.1) does not forward argv to the bun process: the stub appends
-each path to `<dataDir>/pending-open.txt` and starts the launcher with `BASED_STUB_OPEN=1`.
+`Software\RegisteredApplications\based`). The open verb targets the app exe directly: Tauri's
+exe receives argv (and the single-instance plugin forwards a second launch's argv to the
+primary), so the electrobun-era `based-open.exe` stub is gone; the shell still consumes
+`<dataDir>/pending-open.txt` so a stale stub-written registration keeps working across the
+upgrade (BASED-OPEN-SQL-ARGV).
 
 **Verification procedure:**
 1. Right-click a `.sql` → Open with → based is listed and opens the file; the previous default
@@ -2892,23 +3061,23 @@ each path to `<dataDir>/pending-open.txt` and starts the launcher with `BASED_ST
 2. Settings → Default apps → based offers `.sql`.
 3. Uninstall → based gone from Open with and Default apps.
 
-- 2026-07-25 PASS (registry verified post-install: `based.sql` ProgID + open command,
-  OpenWithProgids alongside VSCode/SSMS entries untouched, RegisteredApplications set. Explorer
-  UI + uninstall sweep pending a human pass).
+- 2026-07-25 PASS (electrobun-era stub registration; superseded by the direct-exe verb).
+- Direct `based-shell.exe` verb pass pending a human run of the procedure above.
 
 ### BASED-OPEN-SQL-ARGV: Opening a .sql path at launch
 **Applies to:** based (shell + ui)
 **Test category:** manual
 
-A launch asked to open files (direct argv paths, or lines in `<dataDir>/pending-open.txt`
-written by `based-open.exe`) opens one window per file with `open=<path>` in the URL hash; the
-UI (BASED-FILE-OPEN-SQL's `openSqlFile`) loads it into a query tab — titled by file name,
-`filePath` set — as soon as the window has a connected session (fresh windows wait for the
-user's first connect; restored windows fire right after restore). File-open windows are
-additive to BASED-WINDOW-RESTORE. If an instance is already running, the second launch forwards
-each path to the primary over the single-instance control server (`POST /open-file`) and exits;
-a stub-spawned launch that finds nothing pending (another instance consumed it) exits without
-opening a blank window when the primary is alive.
+A launch asked to open files (direct argv paths, or leftover lines in
+`<dataDir>/pending-open.txt` from an electrobun-era stub registration) opens one window per
+file with `open=<path>` in the URL hash; the UI (BASED-FILE-OPEN-SQL's `openSqlFile`) loads it
+into a query tab — titled by file name, `filePath` set — as soon as the window has a connected
+session (fresh windows wait for the user's first connect; restored windows fire right after
+restore). File-open windows are additive to BASED-WINDOW-RESTORE. If an instance is already
+running, the OS-level second launch fires the Tauri single-instance plugin's callback in the
+primary with the secondary's argv (relative paths resolved against the secondary's cwd) and the
+secondary exits; the primary opens one window per existing file, or a plain window when the
+launch carried no files.
 
 **Verification procedure:**
 1. App not running: double-click a `.sql` → app starts, window opens; after connecting, the tab
@@ -2916,6 +3085,7 @@ opening a blank window when the primary is alive.
 2. App running: double-click another `.sql` → a new window in the same instance (no second
    process); no blank extra windows on rapid multi-double-click.
 
-- 2026-07-25 PASS (installed build: stub → pending-open.txt consumed → window per file; second
-  stub launch forwarded to the running primary — secondary exited 0, window count went 2→3 on
-  one process. In-tab content rendering after connect pending a human pass).
+- 2026-07-25 PASS (electrobun-era stub flow; superseded by native argv).
+- 2026-07-31 PASS (Tauri spike: argv path opened a window per file; single-instance plugin
+  forwarded a second launch's argv to the primary. In-tab content rendering after connect
+  pending a human pass).

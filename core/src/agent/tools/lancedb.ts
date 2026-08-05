@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { EngineCapabilities, SearchRows } from "../../db/types";
 import { resolveEmbeddingProfile, resolveRerankerProfile } from "../../db/searchProfileResolve";
 import { auditRead, SEARCH_PIPELINE_ORDER, TOOL_PREVIEW_ROWS, WHERE_GRAMMAR, type ToolDeps } from "./shared";
+import { boundRows } from "../toolPayload";
 
 // Traces: BASED-AGENT-INSTRUCTIONS — the persona splits in two, and the split is the whole point:
 //
@@ -66,11 +67,15 @@ export const LANCE_PERSONA = `How to work here:
 - Present results as a concise markdown table of the most relevant rows; summarize rather than dumping raw vectors.`;
 
 function formatResult(res: SearchRows) {
+  // Traces: BASED-AGENT-TOOL-PAYLOAD-CAP — the row cap alone doesn't bound this: search hits are
+  // usually document chunks, which is exactly the wide-text case that overruns a context window.
+  const bounded = boundRows(res.rows.slice(0, TOOL_PREVIEW_ROWS));
   return {
     columns: res.columns.map((c) => c.name),
-    rows: res.rows.slice(0, TOOL_PREVIEW_ROWS),
+    rows: bounded.rows,
     rowCount: res.rows.length,
-    truncated: res.rows.length > TOOL_PREVIEW_ROWS,
+    truncated: res.rows.length > TOOL_PREVIEW_ROWS || bounded.truncated,
+    ...(bounded.note ? { note: bounded.note } : {}),
   };
 }
 

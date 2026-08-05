@@ -86,18 +86,13 @@ the same change. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 .\scripts\package-win.ps1      # -> dist\based-<version>-Setup.exe
 ```
 
-Five steps: build the UI, run `electrobun build --env=stable` (which extracts the emitted
-`tar.zst` into a staging tree), compile the `.sql` association stub with `csc`, stage the app icon
-into the bundle, and run Inno Setup. The version comes from
-`app.version` in [shell/electrobun.config.ts](../shell/electrobun.config.ts), which is the single
-source of truth.
-
-The script also mounts a small **rcedit shim** on `D:` before building. This works around an
-upstream electrobun bug: its Windows CLI is a Bun-compiled binary whose icon-embed step resolves
-`rcedit` against an absolute path baked in at electrobun's own CI (`D:\a\electrobun\...`) rather
-than against this project's `node_modules`. Recreating that path on a substed drive is the only
-known fix. If `D:` is already taken by a real drive the build still succeeds — only `launcher.exe`'s
-own icon falls back. Root cause and workaround details: [shell/README.md](../shell/README.md).
+Five steps: build the UI, bundle the core (`shell-tauri/bundle-core.ts` →
+`dist-core/{core,ui,bun}`), build the Tauri shell (`tauri build --no-bundle`; Tauri's own NSIS
+bundler is not used — Inno Setup is the installer, and keeping the electrobun-era Inno `AppId`
+means installing over an old install upgrades it in place instead of registering a second
+"based"), stage `based-shell.exe` + resources + icon, and run Inno Setup. The version comes from
+[shell-tauri/tauri.conf.json](../shell-tauri/tauri.conf.json), which is the single source of
+truth. Requires Inno Setup 6 (`winget install JRSoftware.InnoSetup`) and the Rust toolchain.
 
 ## Cutting a release
 
@@ -117,13 +112,14 @@ Version bumping alone:
 .\scripts\bump-version.ps1 minor
 ```
 
-It rewrites `app.version` in the electrobun config and regenerates
+It rewrites the version in `shell-tauri/tauri.conf.json` and `shell-tauri/Cargo.toml` (kept in
+step — Cargo.toml feeds the exe's file-version metadata) and regenerates
 [core/src/version.ts](../core/src/version.ts), which is committed so a fresh clone typechecks
 without running the script first. The version reaches the status bar via `/api/health`.
 
-**Releases are built locally, not in CI.** Between the rcedit shim, Inno Setup, `csc.exe`, and
-native modules whose bindings are selected from the build host's platform, a Windows runner is
-four fragile pieces at once. Moving to GitHub Actions is tracked as future work; `release.ps1` is
+**Releases are built locally, not in CI.** Between Inno Setup, the Rust toolchain, and native
+modules whose bindings are selected from the build host's platform, a Windows runner is several
+fragile pieces at once. Moving to GitHub Actions is tracked as future work; `release.ps1` is
 written so the same steps would drop into a workflow when it's worth doing.
 
 ### Note on PowerShell scripts

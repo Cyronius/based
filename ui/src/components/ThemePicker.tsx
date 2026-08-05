@@ -1,4 +1,4 @@
-// Traces: BASED-THEME, BASED-FONT-SCALE, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES,
+// Traces: BASED-THEME, BASED-UI-FONT-ZOOM, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES,
 // BASED-AI-PROFILE-TIMEOUT
 // Settings modal (gear icon) mounted in the LeftRail header: General (font-size scale), Theme (color
 // theme picker), Search (embedding/reranker profile CRUD), and Agent (AI-provider profile CRUD + agent
@@ -7,17 +7,18 @@
 // Presented as a centered modal over a dimmed scrim (same shell as
 // ConnectionDialog), with a titled header + close button; the panel has a fixed viewport-relative size
 // (min(80vw, 960px) × 85vh) so switching tabs never resizes it, and the tab body scrolls. Selecting a theme applies + persists it via the store; the font-size slider
-// applies live on every drag and persists on release.
+// applies live on every drag and persists on a trailing debounce (BASED-UI-FONT-ZOOM), so a drag is
+// one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
-import { THEMES, type ThemeDef, type ThemeMode } from "../theme";
+import { THEMES, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
 import {
   getAgentInstructions,
   saveAgentInstructionSet,
   deleteAgentInstructionSet,
 } from "../api/client";
-import { AI_RUN_TIMEOUT_MULTIPLIER, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
+import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
 
@@ -63,9 +64,9 @@ function GeneralTab() {
       <div className="ledger-label">Font size</div>
       <input
         type="range"
-        min={0.85}
-        max={2.0}
-        step={0.05}
+        min={FONT_SCALE_MIN}
+        max={FONT_SCALE_MAX}
+        step={FONT_SCALE_STEP}
         value={fontScale}
         onChange={(e) => setFontScale(Number(e.target.value))}
         className="w-full accent-(--color-brass)"
@@ -75,6 +76,8 @@ function GeneralTab() {
         <span className="text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
         <span>Large</span>
       </div>
+      {/* Traces: BASED-UI-SHORTCUTS discoverability — the gesture shares this control's action. */}
+      <div className="text-[length:var(--fs-sm)] text-faint">Or hold Ctrl and scroll, or press Ctrl+= / Ctrl+- (Ctrl+0 resets).</div>
 
       {/* Traces: BASED-EDITOR-VIM — modal editing in the query editor; the mode indicator and the
           `:` command line share the app's bottom status bar. */}
@@ -493,6 +496,14 @@ function AiProfileForm({
     const valid = text.trim() !== "" && Number.isFinite(n) && n > 0;
     setForm({ ...form, timeoutSeconds: valid ? Math.floor(n) : undefined });
   }
+  // Tool call limit (BASED-AI-PROFILE-STEPCAP): same edited-as-text pattern as the timeout.
+  const [stepsText, setStepsText] = useState(() => (form.maxToolSteps != null ? String(form.maxToolSteps) : ""));
+  function onStepsChange(text: string) {
+    setStepsText(text);
+    const n = Number(text.trim());
+    const valid = text.trim() !== "" && Number.isFinite(n) && n > 0;
+    setForm({ ...form, maxToolSteps: valid ? Math.floor(n) : undefined });
+  }
   function onParamsChange(text: string) {
     setParamsText(text);
     if (!text.trim()) {
@@ -585,9 +596,23 @@ function AiProfileForm({
           onChange={(e) => onTimeoutChange(e.target.value)}
         />
         <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
-          How long to wait with no response from the model before giving up. Raise it for slow local
-          models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s). A whole chat turn gets{" "}
-          {AI_RUN_TIMEOUT_MULTIPLIER}× this as a hard cap.
+          How long the model may stay silent before the chat asks whether to keep waiting. Raise it
+          for slow local models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s).
+        </span>
+      </label>
+      <label className="block">
+        <span className="text-faint">Tool call limit</span>
+        <input
+          type="number"
+          min={1}
+          className={`${field} mt-0.5`}
+          placeholder={`${DEFAULT_AGENT_MAX_STEPS} (default)`}
+          value={stepsText}
+          onChange={(e) => onStepsChange(e.target.value)}
+        />
+        <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
+          Tool calls the agent may make in one turn before the chat asks whether to keep going;
+          blank uses the default ({DEFAULT_AGENT_MAX_STEPS}).
         </span>
       </label>
       <label className="block">

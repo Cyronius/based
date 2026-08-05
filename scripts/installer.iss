@@ -1,11 +1,14 @@
 ; Traces: BASED-INSTALLER-WIN, BASED-SQL-ASSOC-WIN
 ; Windows installer for based. Built by scripts/package-win.ps1, which passes:
-;   /DAppVersion=<version from shell/electrobun.config.ts>
-;   /DBundleDir=<electrobun stable bundle dir, already containing bin\based-open.exe + icon.ico>
+;   /DAppVersion=<version from shell-tauri/tauri.conf.json>
+;   /DBundleDir=<staged Tauri tree: based-shell.exe + core\ ui\ bun\ + icon.ico>
 ;   /DOutputDir=<repo dist\>
 ; Per-user install (no UAC), Start Menu shortcut, Apps & Features uninstall entry, and HKCU
 ; registration of based as an *available* handler for .sql (Open With + Default Apps) — the
 ; user's existing .sql default is never overwritten.
+; AppId is unchanged from the electrobun era ON PURPOSE: installing this version over an old
+; electrobun install upgrades it in place (one Apps & Features entry, old tree swept), instead
+; of registering a second "based".
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -45,19 +48,27 @@ RestartApplications=no
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
+[InstallDelete]
+; Upgrading over an electrobun-era install: Inno overwrites files but never removes ones the new
+; version no longer ships, so the old launcher tree would linger (and its bin\launcher.exe would
+; still be a runnable stale app). Delete it at install time.
+Type: filesandordirs; Name: "{app}\bin"
+Type: filesandordirs; Name: "{app}\Resources"
+
 [Files]
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\bin\launcher.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}\bin"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\launcher.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}\bin"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\based-shell.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\based-shell.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
-; ProgID: what "opening a .sql with based" means. The open verb routes through based-open.exe
-; because electrobun's launcher.exe drops argv (see scripts/win/based-open.cs).
+; ProgID: what "opening a .sql with based" means. The open verb targets the app exe directly —
+; Tauri's exe receives argv (and the single-instance plugin forwards a second launch's argv to
+; the primary), so the electrobun-era based-open.exe stub is gone (BASED-OPEN-SQL-ARGV).
 Root: HKCU; Subkey: "Software\Classes\{#ProgId}"; ValueType: string; ValueData: "SQL file"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\{#ProgId}\DefaultIcon"; ValueType: string; ValueData: "{app}\icon.ico"
-Root: HKCU; Subkey: "Software\Classes\{#ProgId}\shell\open\command"; ValueType: string; ValueData: """{app}\bin\based-open.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\{#ProgId}\shell\open\command"; ValueType: string; ValueData: """{app}\based-shell.exe"" ""%1"""
 ; Add based to .sql's Open With list WITHOUT touching the extension's default handler. Only our
 ; value is removed on uninstall — the .sql key belongs to the system/other apps.
 Root: HKCU; Subkey: "Software\Classes\.sql\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
@@ -68,9 +79,10 @@ Root: HKCU; Subkey: "Software\{#AppName}\Capabilities\FileAssociations"; ValueTy
 Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "{#AppName}"; ValueData: "Software\{#AppName}\Capabilities"; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\bin\launcher.exe"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}\bin"
+Filename: "{app}\based-shell.exe"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}"
 
 [UninstallDelete]
-; The app writes logs beside its binaries (bin\app.log); sweep the install dir so uninstall
-; leaves nothing. User data (app.db, agent.db, secrets) lives in %APPDATA%\based — untouched.
+; Sweep the install dir so uninstall leaves nothing — this also removes leftovers of an upgraded
+; electrobun-era tree (bin\launcher.exe etc.). User data (app.db, agent.db, secrets) lives in
+; %APPDATA%\based — untouched.
 Type: filesandordirs; Name: "{app}"

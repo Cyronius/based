@@ -66,6 +66,13 @@ const SHORTCUTS: Array<[ReactNode, ReactNode]> = [
   ],
   [<Kbd>Ctrl+J</Kbd>, "Toggle the Capi rail"],
   [<Kbd>Ctrl+N</Kbd>, "New window"],
+  [
+    <>
+      <Kbd>Ctrl+Scroll</Kbd> / <Kbd>Ctrl+=</Kbd> / <Kbd>Ctrl+-</Kbd>
+    </>,
+    "Zoom the app text size in / out",
+  ],
+  [<Kbd>Ctrl+0</Kbd>, "Reset the text size to 100%"],
 ];
 
 const VIM_COMMANDS: Array<[ReactNode, ReactNode]> = [

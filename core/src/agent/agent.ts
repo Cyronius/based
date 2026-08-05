@@ -8,6 +8,7 @@ import type { Memory } from "@mastra/memory";
 import type { DbEngine, EngineCapabilities } from "../db/types";
 import { agentSurfaceFor } from "./surface";
 import { type ToolDeps } from "./tools/shared";
+import { contextRecoveryProcessor } from "./contextRecovery";
 import { catalog as skillCatalog } from "./skills";
 import type { ExecutionDefaults } from "./provider";
 
@@ -75,6 +76,8 @@ export function buildAgent(opts: {
   /** Per-run workspace snapshot (rendered <workspace_context> block, BASED-AGENT-TAB-CONTEXT),
    *  appended after the composed instructions. Omitted → instructions identical to before. */
   contextNote?: string;
+  /** Per-profile tool-step budget (BASED-AI-PROFILE-STEPCAP); absent/invalid → AGENT_MAX_STEPS. */
+  maxSteps?: number;
 }): Agent {
   const surface = agentSurfaceFor(opts.capabilities, opts.toolDeps);
   const { modelSettings, providerOptions } = opts.executionDefaults ?? {};
@@ -93,8 +96,15 @@ export function buildAgent(opts: {
     model: opts.model as never,
     tools: surface.tools as never,
     ...(opts.memory ? { memory: opts.memory as never } : {}),
+    // Traces: BASED-AGENT-CONTEXT-RECOVERY — on this agent and on every subagent, since a child run
+    // reading rows can overflow the same window. Only matches context-overflow rejections; every
+    // other API error falls through to the normal failure path.
+    errorProcessors: [contextRecoveryProcessor()] as never,
     defaultOptions: {
-      maxSteps: AGENT_MAX_STEPS,
+      maxSteps:
+        typeof opts.maxSteps === "number" && Number.isFinite(opts.maxSteps) && opts.maxSteps > 0
+          ? Math.floor(opts.maxSteps)
+          : AGENT_MAX_STEPS,
       ...(modelSettings ? { modelSettings: modelSettings as never } : {}),
       ...(providerOptions ? { providerOptions: providerOptions as never } : {}),
     },

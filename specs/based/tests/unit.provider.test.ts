@@ -125,7 +125,10 @@ describe("BASED-AI-PROFILE-TIMEOUT: resolveAiTimeouts", () => {
     expect(resolveAiTimeouts(90.7).idleMs).toBe(90_000);
   });
 
-  test("the default is well above the AG-UI library's 180 s idle default", () => {
-    expect(DEFAULT_AI_TIMEOUT_SECONDS).toBeGreaterThan(180);
+  test("defaults: 2 min silence window, ×15 whole-run/subagent cap", () => {
+    // The idle window now drives an ask-to-keep-waiting prompt (not a kill), so it can be short;
+    // the multiplier sizes the subagent wall-clock cap (120 s × 15 = 30 min per child task).
+    expect(DEFAULT_AI_TIMEOUT_SECONDS).toBe(120);
+    expect(AI_RUN_TIMEOUT_MULTIPLIER).toBe(15);
   });
 });

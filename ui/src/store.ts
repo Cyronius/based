@@ -28,7 +28,7 @@ import {
   newWindowApi,
   setSessionHealer,
 } from "./api/client";
-import { applyTheme, themeHint, applyFontScale, fontScaleHint } from "./theme";
+import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
 import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
@@ -373,6 +373,17 @@ function updateTab(tabs: TabState[], id: string, patch: Partial<QueryTabState>):
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Traces: BASED-UI-FONT-ZOOM — font scale arrives as a stream of events (a wheel gesture or a
+// slider drag is dozens), so the local apply is immediate but the server write trails the gesture.
+let fontScaleTimer: ReturnType<typeof setTimeout> | null = null;
+function persistFontScaleSoon(fontScale: number): void {
+  if (fontScaleTimer) clearTimeout(fontScaleTimer);
+  fontScaleTimer = setTimeout(() => {
+    fontScaleTimer = null;
+    void saveSettings({ fontScale }).catch(() => {});
+  }, 400);
+}
+
 /** All persistable tabs (every kind, excluding the hidden SQL-view tabs `ensureSqlView` creates
  *  behind a table/view tab's "SQL" mode) as the wire shape `/api/tabs` expects. */
 function buildTabPayload(tabs: TabState[], connectionId: string): Array<Omit<TabRecord, "updatedAt">> {
@@ -667,10 +678,14 @@ export const useStore = create<AppState>((set, get) => {
       void saveSettings({ theme: id }).catch(() => {});
     },
 
+    // Traces: BASED-UI-FONT-ZOOM — the one entry point for every font-size input (settings slider,
+    // Ctrl+wheel, Ctrl+±/0); it owns the clamp so unbounded wheel input can't run off the scale.
     setFontScale(n) {
-      applyFontScale(n);
-      set({ fontScale: n });
-      void saveSettings({ fontScale: n }).catch(() => {});
+      const scale = clampFontScale(n);
+      if (scale === get().fontScale) return;
+      applyFontScale(scale);
+      set({ fontScale: scale });
+      persistFontScaleSoon(scale);
     },
 
     setRowPageSize(n) {

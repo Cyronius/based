@@ -45,6 +45,7 @@ import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
+import { isContextOverflowError } from "./agent/contextRecovery";
 import { buildAgent, AGENT_ID } from "./agent/agent";
 import { createSubagentRunner } from "./agent/subagent";
 import { SUBAGENT_CONCURRENCY } from "./agent/tools/delegate";
@@ -1169,6 +1170,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       persona: active.persona,
       contextNote: contextNote ?? undefined,
       executionDefaults,
+      // Per-profile tool-step budget (BASED-AI-PROFILE-STEPCAP); exhausting it ends the run
+      // tool-calls-last, which the UI turns into a "keep going?" prompt.
+      maxSteps: profile.maxToolSteps,
       toolDeps: {
         ...childDeps,
         // Traces: BASED-AGENT-TRANSCRIPT — parent-only, exactly like runSubagent below: a subagent
@@ -1182,9 +1186,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           toolDeps: childDeps,
           persona: active.persona,
           executionDefaults,
-          // The profile's idle window is already the user's answer to "how long may one model call
-          // hang?" — reuse it rather than inventing a second number that can disagree with it.
-          timeoutMs: resolveAiTimeouts(profile.timeoutSeconds).idleMs,
+          // The whole-run window, not the idle one: a child task spans many model calls, no user
+          // can be asked to extend it mid-tool, and the short idle window would strangle it.
+          timeoutMs: resolveAiTimeouts(profile.timeoutSeconds).runMs,
           concurrency: SUBAGENT_CONCURRENCY,
         }),
       },
@@ -1215,9 +1219,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           error: (err: unknown) => {
             if (!closed) {
               try {
-                controller.enqueue(
-                  aguiEncoder.encode({ type: "RUN_ERROR", message: String((err as { message?: string })?.message ?? err) } as unknown as BaseEvent),
-                );
+                // Traces: BASED-AGENT-CONTEXT-RECOVERY — reaching here with an overflow means the
+                // recovery processor already shed what it could and the request STILL doesn't fit,
+                // so the user has to act. Say what to do; the raw provider JSON (token counts,
+                // error codes) tells them nothing they can use.
+                const message = isContextOverflowError(err)
+                  ? "This conversation no longer fits the model's context window. Start a new chat, or switch to a profile with a larger context."
+                  : String((err as { message?: string })?.message ?? err);
+                controller.enqueue(aguiEncoder.encode({ type: "RUN_ERROR", message } as unknown as BaseEvent));
               } catch {
                 // controller already torn down
               }

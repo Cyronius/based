@@ -6,7 +6,7 @@
 #   .\scripts\release.ps1 patch -DryRun    # everything local; no commit, tag, push, or upload
 #
 # Runs from the machine that builds the installer -- see docs/development.md for why this is not
-# a GitHub Actions job yet (the electrobun icon shim and the Inno Setup / csc toolchain).
+# a GitHub Actions job yet (the Inno Setup / Rust toolchain).
 #
 # NOTE: keep this file ASCII-only. Windows PowerShell 5.1 decodes .ps1 as ANSI, so a UTF-8 dash
 # or curly quote anywhere in it corrupts the parse of the whole script.
@@ -190,7 +190,7 @@ on first run -- click **More info**, then **Run anyway**. Verify the download fi
   Write-Host "`nDone: based $newVersion" -ForegroundColor Green
   if ($DryRun) {
     Write-Host "Dry run -- the version bump and CHANGELOG edit are still on disk. Revert with:" -ForegroundColor Yellow
-    Write-Host "  git checkout -- shell/electrobun.config.ts core/src/version.ts CHANGELOG.md" -ForegroundColor Yellow
+    Write-Host "  git checkout -- shell-tauri/tauri.conf.json shell-tauri/Cargo.toml core/src/version.ts CHANGELOG.md" -ForegroundColor Yellow
   }
 } finally {
   Pop-Location

@@ -29,6 +29,7 @@ import { describeLanceSchema } from "../../db/lanceDescribe";
 import type { ScriptAction } from "../../db/scripter";
 import { scriptWithAdapter } from "../../db/scriptDispatch";
 import { collectQuery, AGENT_ROW_CAP } from "../runSql";
+import { boundRows, payloadBudget } from "../toolPayload";
 import { exportData, sanitizeExportFileName, EXPORT_ROW_CAP } from "../../export/exportData";
 import {
   MAX_SAVE_FILE_BYTES,
@@ -197,6 +198,19 @@ function describeTableTool(deps: ToolDeps, caps: EngineCapabilities, prose: Engi
       try {
         if (format === "columns") {
           const columns = await adapter.getTableColumns(ns, args.table);
+          // SQL catalogs answer a wrong schema/name with zero rows, not an error — an empty column
+          // list here almost always means the name didn't resolve, and reporting it as a real
+          // answer leaves the agent nothing to self-correct from. Confirm existence before trusting it.
+          if (columns.length === 0) {
+            const objects = await adapter.listObjects().catch(() => []);
+            if (!objects.some((o) => o.schema === ns && o.name === args.table)) {
+              auditRead(deps, op, "error", Math.round(performance.now() - t0), "unknown object");
+              return {
+                error: `Unknown object ${qualify(ns, args.table)}`,
+                validNames: objects.map((o) => qualify(o.schema, o.name)).slice(0, 200),
+              };
+            }
+          }
           auditRead(deps, op, "ok", Math.round(performance.now() - t0), null);
           return { table: args.table, namespace: ns, columns };
         }
@@ -311,14 +325,18 @@ function readTableTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAg
         auditRead(deps, op, "ok", Math.round(performance.now() - t0), null);
         const keep = args.columns?.length ? page.columns.filter((c) => args.columns!.includes(c.name)) : page.columns;
         const keepIdx = keep.map((c) => page.columns.findIndex((p) => p.name === c.name));
+        const bounded = boundRows(page.rows.map((row) => keepIdx.map((i) => row[i]!)));
         return {
           columns: keep.map((c) => c.name),
-          rows: page.rows.map((row) => keepIdx.map((i) => row[i]!)),
+          rows: bounded.rows,
           orderBy: page.orderBy,
           offset: off,
-          returned: page.rows.length,
-          // Heuristic — TablePage carries no total; call count_rows when the scale matters.
+          returned: bounded.returned,
+          // Heuristic — TablePage carries no total; call count_rows when the scale matters. Read off
+          // the page the ADAPTER returned, not the size-bounded one: dropping rows to fit the
+          // payload budget must not be mistaken for reaching the end of the table.
           hasMore: page.rows.length === n,
+          ...(bounded.note ? { truncated: true, note: bounded.note } : {}),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -411,11 +429,17 @@ function takeRowsTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAge
         });
         auditRead(deps, op, "ok", Math.round(performance.now() - t0), null);
         const missing = args.keys.length - page.rows.length;
+        const bounded = boundRows(page.rows);
+        const notes = [
+          ...(missing > 0 ? [`${missing} of the requested keys matched no row.`] : []),
+          ...(bounded.note ? [bounded.note] : []),
+        ];
         return {
           columns: page.columns.map((c) => c.name),
-          rows: page.rows,
-          returned: page.rows.length,
-          ...(missing > 0 ? { note: `${missing} of the requested keys matched no row.` } : {}),
+          rows: bounded.rows,
+          returned: bounded.returned,
+          ...(bounded.truncated ? { truncated: true } : {}),
+          ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -534,14 +558,21 @@ function runQueryTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineAge
       const result = await collectQuery(adapter, sql, { rowCap: AGENT_ROW_CAP });
       auditRead(deps, sql, result.status === "ok" ? "ok" : "error", result.durationMs, result.errors[0] ?? null);
       if (result.status === "error") return { error: result.errors.join("; ") || "Query failed" };
+      // One budget across every result set: a batch returning five of them must not be allowed to
+      // spend the cap five times (BASED-AGENT-TOOL-PAYLOAD-CAP).
+      const budget = payloadBudget();
       return {
-        resultSets: result.resultSets.map((rs) => ({
-          columns: rs.columns.map((c) => c.name),
-          rows: rs.rows.slice(0, TOOL_PREVIEW_ROWS),
-          rowCount: rs.rowCount,
-          truncated: rs.truncated || rs.rowCount > TOOL_PREVIEW_ROWS,
-          previewedRows: Math.min(rs.rows.length, TOOL_PREVIEW_ROWS),
-        })),
+        resultSets: result.resultSets.map((rs) => {
+          const bounded = boundRows(rs.rows.slice(0, TOOL_PREVIEW_ROWS), { budget });
+          return {
+            columns: rs.columns.map((c) => c.name),
+            rows: bounded.rows,
+            rowCount: rs.rowCount,
+            truncated: rs.truncated || rs.rowCount > TOOL_PREVIEW_ROWS || bounded.truncated,
+            previewedRows: bounded.returned,
+            ...(bounded.note ? { note: bounded.note } : {}),
+          };
+        }),
         messages: result.messages,
         durationMs: result.durationMs,
       };
