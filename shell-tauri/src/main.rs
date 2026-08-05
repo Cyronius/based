@@ -167,6 +167,15 @@ fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
         c
     };
 
+    // CREATE_NO_WINDOW: bun.exe is a console-subsystem exe; without this, launching the
+    // windows-subsystem shell pops a console window for the child. Piped/inherited handles
+    // still work, so dev-terminal output is unaffected.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+
     let mut child = cmd
         .stdin(Stdio::piped()) // held open; EOF tells core the shell is gone (crash backstop)
         .stdout(Stdio::piped())
