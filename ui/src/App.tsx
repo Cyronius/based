@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { openEvents } from "./api/client";
 import { activeQueryTab, useStore, visibleTabs } from "./store";
 import monaco from "./monacoSetup";
-import { syncMonacoTheme } from "./theme";
+import { syncMonacoTheme, DEFAULT_FONT_SCALE, FONT_SCALE_STEP } from "./theme";
 import { LeftRail } from "./components/LeftRail";
 import { TabStrip } from "./components/TabStrip";
 import { QueryTabView } from "./components/QueryTabView";
@@ -28,6 +28,10 @@ const bootOpenPath = (() => {
   return p;
 })();
 let bootOpenConsumed = false;
+
+// BASED-UI-FONT-ZOOM: accumulated wheel distance for one font-size step. One mouse notch is
+// ~100–120px, so a notch is a step; a trackpad's finer deltas add up to the same thing.
+const WHEEL_PX_PER_STEP = 100;
 
 function EmptyState() {
   const connections = useStore((s) => s.connections);
@@ -153,6 +157,15 @@ export function App() {
       } else if (e.key.toLowerCase() === "w" && e.ctrlKey) {
         e.preventDefault();
         if (state.activeTabId) state.closeTab(state.activeTabId);
+      } else if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "_")) {
+        // Traces: BASED-UI-FONT-ZOOM — "=" and "-" are the unshifted keys; "+"/"_" cover Shift and
+        // the numpad. Monaco's own zoom commands are not registered, so nothing shadows these.
+        e.preventDefault();
+        const grow = e.key === "=" || e.key === "+";
+        state.setFontScale(state.fontScale + (grow ? FONT_SCALE_STEP : -FONT_SCALE_STEP));
+      } else if (e.ctrlKey && e.key === "0") {
+        e.preventDefault();
+        state.setFontScale(DEFAULT_FONT_SCALE);
       } else if ((e.key === "PageUp" || e.key === "PageDown") && e.ctrlKey) {
         e.preventDefault();
         const visible = visibleTabs(state);
@@ -164,8 +177,35 @@ export function App() {
         }
       }
     };
+    // Traces: BASED-UI-FONT-ZOOM — Ctrl+wheel drives the same setting as the settings slider.
+    // `passive: false` is required: without it preventDefault is ignored and the webview runs its
+    // own page zoom underneath ours. `capture: true` puts us ahead of Monaco, the Glide grids and
+    // every scroll container, so the gesture zooms instead of scrolling whatever is under the
+    // cursor.
+    let wheelAccum = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      // A view that owns the wheel itself (the embeddings atlas — deck.gl zooms on wheel, and a
+      // trackpad pinch arrives as Ctrl+wheel) opts out, so pinching the plot doesn't resize the app.
+      if (e.target instanceof Element && e.target.closest('[data-wheel-zoom="own"]')) return;
+      e.preventDefault();
+      // Line-mode wheels (Firefox, some mice) report ~3 lines where pixel-mode reports ~100px.
+      // Accumulate rather than reacting per event: a trackpad gesture fires ~10 tiny deltas, so
+      // stepping on each one's sign would slam the scale to a rail in a single swipe.
+      wheelAccum += e.deltaMode === 0 ? e.deltaY : e.deltaY * 16;
+      const steps = Math.trunc(wheelAccum / WHEEL_PX_PER_STEP);
+      if (steps === 0) return;
+      wheelAccum -= steps * WHEEL_PX_PER_STEP;
+      const state = useStore.getState();
+      // Scrolling up is a negative deltaY and means bigger text.
+      state.setFontScale(state.fontScale - steps * FONT_SCALE_STEP);
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel, { capture: true });
+    };
   }, []);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);

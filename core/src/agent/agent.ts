@@ -8,6 +8,7 @@ import type { Memory } from "@mastra/memory";
 import type { DbEngine, EngineCapabilities } from "../db/types";
 import { agentSurfaceFor } from "./surface";
 import { type ToolDeps } from "./tools/shared";
+import { contextRecoveryProcessor } from "./contextRecovery";
 import { catalog as skillCatalog } from "./skills";
 import type { ExecutionDefaults } from "./provider";
 
@@ -95,6 +96,10 @@ export function buildAgent(opts: {
     model: opts.model as never,
     tools: surface.tools as never,
     ...(opts.memory ? { memory: opts.memory as never } : {}),
+    // Traces: BASED-AGENT-CONTEXT-RECOVERY — on this agent and on every subagent, since a child run
+    // reading rows can overflow the same window. Only matches context-overflow rejections; every
+    // other API error falls through to the normal failure path.
+    errorProcessors: [contextRecoveryProcessor()] as never,
     defaultOptions: {
       maxSteps:
         typeof opts.maxSteps === "number" && Number.isFinite(opts.maxSteps) && opts.maxSteps > 0

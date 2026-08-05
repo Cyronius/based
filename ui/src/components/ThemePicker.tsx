@@ -1,4 +1,4 @@
-// Traces: BASED-THEME, BASED-FONT-SCALE, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES,
+// Traces: BASED-THEME, BASED-UI-FONT-ZOOM, BASED-LANCE-SEARCH-PROFILES-UI, BASED-AI-PROVIDER-PROFILES,
 // BASED-AI-PROFILE-TIMEOUT
 // Settings modal (gear icon) mounted in the LeftRail header: General (font-size scale), Theme (color
 // theme picker), Search (embedding/reranker profile CRUD), and Agent (AI-provider profile CRUD + agent
@@ -7,10 +7,11 @@
 // Presented as a centered modal over a dimmed scrim (same shell as
 // ConnectionDialog), with a titled header + close button; the panel has a fixed viewport-relative size
 // (min(80vw, 960px) × 85vh) so switching tabs never resizes it, and the tab body scrolls. Selecting a theme applies + persists it via the store; the font-size slider
-// applies live on every drag and persists on release.
+// applies live on every drag and persists on a trailing debounce (BASED-UI-FONT-ZOOM), so a drag is
+// one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
-import { THEMES, type ThemeDef, type ThemeMode } from "../theme";
+import { THEMES, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
 import {
   getAgentInstructions,
@@ -63,9 +64,9 @@ function GeneralTab() {
       <div className="ledger-label">Font size</div>
       <input
         type="range"
-        min={0.85}
-        max={2.0}
-        step={0.05}
+        min={FONT_SCALE_MIN}
+        max={FONT_SCALE_MAX}
+        step={FONT_SCALE_STEP}
         value={fontScale}
         onChange={(e) => setFontScale(Number(e.target.value))}
         className="w-full accent-(--color-brass)"
@@ -75,6 +76,8 @@ function GeneralTab() {
         <span className="text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
         <span>Large</span>
       </div>
+      {/* Traces: BASED-UI-SHORTCUTS discoverability — the gesture shares this control's action. */}
+      <div className="text-[length:var(--fs-sm)] text-faint">Or hold Ctrl and scroll, or press Ctrl+= / Ctrl+- (Ctrl+0 resets).</div>
 
       {/* Traces: BASED-EDITOR-VIM — modal editing in the query editor; the mode indicator and the
           `:` command line share the app's bottom status bar. */}

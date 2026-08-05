@@ -122,7 +122,22 @@ export {
   type InstructionSet,
 } from "./agent/instructionsStore";
 export * as skills from "./agent/skills";
-export { createAgentMemory } from "./agent/memory";
+export { createAgentMemory, MEMORY_LAST_MESSAGES } from "./agent/memory";
+export {
+  boundRows,
+  payloadBudget,
+  TOOL_CELL_CAP,
+  TOOL_PAYLOAD_CAP,
+  type BoundedRows,
+  type PayloadBudget,
+} from "./agent/toolPayload";
+export {
+  contextRecoveryProcessor,
+  isContextOverflowError,
+  shedLargestToolResult,
+  CONTEXT_RECOVERY_MAX_ATTEMPTS,
+  SHED_TOOL_RESULT_NOTE,
+} from "./agent/contextRecovery";
 export { describeLanceSchema } from "./db/lanceDescribe";
 export { exportData, sanitizeExportFileName, EXPORT_ROW_CAP, type ExportSource, type ExportResult } from "./export/exportData";
 export {

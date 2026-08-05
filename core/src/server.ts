@@ -45,6 +45,7 @@ import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
+import { isContextOverflowError } from "./agent/contextRecovery";
 import { buildAgent, AGENT_ID } from "./agent/agent";
 import { createSubagentRunner } from "./agent/subagent";
 import { SUBAGENT_CONCURRENCY } from "./agent/tools/delegate";
@@ -1218,9 +1219,14 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
           error: (err: unknown) => {
             if (!closed) {
               try {
-                controller.enqueue(
-                  aguiEncoder.encode({ type: "RUN_ERROR", message: String((err as { message?: string })?.message ?? err) } as unknown as BaseEvent),
-                );
+                // Traces: BASED-AGENT-CONTEXT-RECOVERY — reaching here with an overflow means the
+                // recovery processor already shed what it could and the request STILL doesn't fit,
+                // so the user has to act. Say what to do; the raw provider JSON (token counts,
+                // error codes) tells them nothing they can use.
+                const message = isContextOverflowError(err)
+                  ? "This conversation no longer fits the model's context window. Start a new chat, or switch to a profile with a larger context."
+                  : String((err as { message?: string })?.message ?? err);
+                controller.enqueue(aguiEncoder.encode({ type: "RUN_ERROR", message } as unknown as BaseEvent));
               } catch {
                 // controller already torn down
               }

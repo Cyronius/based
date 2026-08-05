@@ -236,6 +236,18 @@ export function themeHint(): string {
 
 const FONT_SCALE_HINT_KEY = "based.fontScale";
 export const DEFAULT_FONT_SCALE = 1;
+export const FONT_SCALE_MIN = 0.85;
+export const FONT_SCALE_MAX = 2.0;
+export const FONT_SCALE_STEP = 0.05;
+
+/** Clamp to the supported range and snap to the step grid, so the settings slider and Ctrl+wheel /
+ *  Ctrl+± land on the same values — and so repeated float nudges can't drift to 1.1500000000000001,
+ *  which the settings panel would then render as "115%". */
+export function clampFontScale(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_FONT_SCALE;
+  const snapped = Math.round(n / FONT_SCALE_STEP) * FONT_SCALE_STEP;
+  return Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, Number(snapped.toFixed(2))));
+}
 
 /** Apply the app-wide font-size multiplier by writing --font-scale onto <html>. Also caches it in
  *  localStorage as a first-paint hint, mirroring applyTheme/themeHint. */

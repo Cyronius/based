@@ -164,5 +164,7 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.positionsVersion, props.colorsVersion, props.mode, props.n, props.highlight]);
 
-  return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />;
+  // Traces: BASED-UI-FONT-ZOOM — deck.gl's controller owns the wheel here (and a trackpad pinch
+  // reaches the page as Ctrl+wheel), so this canvas opts out of the app-wide Ctrl+wheel text zoom.
+  return <canvas ref={canvasRef} data-wheel-zoom="own" className="absolute inset-0 h-full w-full" />;
 }

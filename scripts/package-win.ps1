@@ -1,66 +1,28 @@
 # Traces: BASED-INSTALLER-WIN, BASED-PACKAGE-WIN
 # Builds the Windows installer: dist\based-<version>-Setup.exe
 #
-#   1. bun run build:ui                      -> ui\dist (shipped inside the bundle, BASED-PACKAGE-WIN)
-#   2. electrobun build --env=stable         -> shell\build\stable-win-x64\<app>\
-#   3. csc scripts\win\based-open.cs         -> <bundle>\bin\based-open.exe (.sql association stub)
-#   4. copy shell\assets\icon.ico            -> <bundle>\icon.ico (ProgID DefaultIcon + shortcuts)
-#   5. ISCC scripts\installer.iss            -> dist\based-<version>-Setup.exe
+#   1. bun run build:ui                          -> ui\dist
+#   2. bun shell-tauri\bundle-core.ts            -> shell-tauri\dist-core\{core,ui,bun}
+#   3. tauri build --no-bundle                   -> shell-tauri\target\release\based-shell.exe
+#                                                   (+ core\ ui\ bun\ resource dirs beside it,
+#                                                   copied by tauri-build from dist-core)
+#   4. stage exe + resources + icon.ico          -> shell-tauri\target\release\installer-staging\
+#   5. ISCC scripts\installer.iss                -> dist\based-<version>-Setup.exe
 #
 # Requires Inno Setup 6:  winget install JRSoftware.InnoSetup
+# Requires the Rust toolchain (cargo) for the Tauri build.
 #
-# electrobun's icon embed into launcher.exe is broken upstream (rcedit resolution bug -- see
-# shell\README.md for the full diagnosis). Ensure-RceditShim below applies the workaround
-# automatically, so a release build gets the right exe icon without anyone remembering a manual
-# step. If the shim can't be mounted the build still succeeds; only launcher.exe's own icon falls
-# back, and the installer, shortcuts, and .sql association still use icon.ico.
+# NOTE: keep this file ASCII-only. Windows PowerShell 5.1 decodes .ps1 as ANSI, so a UTF-8 dash
+# or curly quote anywhere in it corrupts the parse of the whole script.
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+$shellDir = Join-Path $repo "shell-tauri"
 
-# The absolute path electrobun's compiled CLI has baked in from its own upstream CI build. We
-# recreate it on a substed D: so its broken require.resolve finds a real rcedit.
-$RCEDIT_BAKED_SUBPATH = "a\electrobun\electrobun\package\node_modules\rcedit"
-
-function Ensure-RceditShim {
-  $shimRoot = Join-Path $env:USERPROFILE ".electrobun-rcedit-shim"
-  $target = Join-Path $shimRoot $RCEDIT_BAKED_SUBPATH
-  # String concat, not Join-Path: PS 5.1's Join-Path throws DriveNotFound when D: isn't mounted yet.
-  $probe = "D:\$RCEDIT_BAKED_SUBPATH\package.json"
-
-  # Populate (or refresh) the shim from the real rcedit in the workspace bun store. electrobun only
-  # shells out to the binary, so package.json + the exes are the whole dependency.
-  $storeDir = Get-ChildItem (Join-Path $repo "node_modules\.bun") -Directory -Filter "rcedit@*" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if (-not $storeDir) {
-    Write-Warning "rcedit not found in node_modules\.bun -- skipping icon shim (run 'bun install'?)"
-    return
-  }
-  $src = Join-Path $storeDir.FullName "node_modules\rcedit"
-  New-Item -ItemType Directory -Force -Path (Join-Path $target "bin") | Out-Null
-  Copy-Item (Join-Path $src "package.json") (Join-Path $target "package.json") -Force
-  Copy-Item (Join-Path $src "bin\*.exe") (Join-Path $target "bin") -Force
-
-  if (Test-Path $probe) {
-    Write-Host "  rcedit shim already mounted on D:" -ForegroundColor DarkGray
-    return
-  }
-  if (Test-Path "D:\") {
-    Write-Warning "D: is already in use by something other than the rcedit shim -- launcher.exe will keep electrobun's default icon. See shell\README.md."
-    return
-  }
-  & "$env:WINDIR\System32\subst.exe" D: $shimRoot
-  if (Test-Path $probe) {
-    Write-Host "  mounted rcedit shim: D: -> $shimRoot" -ForegroundColor DarkGray
-  } else {
-    Write-Warning "subst D: did not take -- launcher.exe will keep electrobun's default icon."
-  }
-}
-
-# --- version from shell/electrobun.config.ts ---
-$config = Get-Content (Join-Path $repo "shell\electrobun.config.ts") -Raw
-if ($config -notmatch 'version:\s*"([^"]+)"') { throw "Could not read app.version from shell\electrobun.config.ts" }
-$version = $Matches[1]
+# --- version from shell-tauri/tauri.conf.json (source of truth, see bump-version.ps1) ---
+$conf = Get-Content (Join-Path $shellDir "tauri.conf.json") -Raw | ConvertFrom-Json
+$version = $conf.version
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Bad version '$version' in shell-tauri\tauri.conf.json" }
 Write-Host "Packaging based $version" -ForegroundColor Cyan
 
 # --- 1. UI build ---
@@ -69,48 +31,40 @@ Push-Location $repo
 try { bun run build:ui; if ($LASTEXITCODE -ne 0) { throw "UI build failed" } }
 finally { Pop-Location }
 
-# --- 2. electrobun stable bundle ---
-Write-Host "`n[2/5] Building electrobun stable bundle..." -ForegroundColor Cyan
-Ensure-RceditShim
-Push-Location (Join-Path $repo "shell")
+# --- 2. core bundle (must precede the cargo build: tauri-build validates bundle.resources) ---
+Write-Host "`n[2/5] Bundling core..." -ForegroundColor Cyan
+Push-Location $shellDir
 try {
-  & (Join-Path $repo "shell\node_modules\.bin\electrobun.exe") build --env=stable
-  if ($LASTEXITCODE -ne 0) { throw "electrobun build failed" }
+  bun bundle-core.ts
+  if ($LASTEXITCODE -ne 0) { throw "bundle-core failed" }
+
+  # --- 3. tauri release build (no NSIS bundle; Inno Setup is the installer) ---
+  Write-Host "`n[3/5] Building Tauri shell..." -ForegroundColor Cyan
+  bun x @tauri-apps/cli build --no-bundle
+  if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 }
 finally { Pop-Location }
 
-$stableRoot = Join-Path $repo "shell\build\stable-win-x64"
-# The stable build emits a self-extractor package; the runnable app tree lives inside its
-# tar.zst. Extract it (Windows bsdtar handles zstd) and hand that tree to Inno Setup.
-$tarZst = Join-Path $stableRoot "based-Setup.tar.zst"
-if (-not (Test-Path $tarZst)) { throw "Expected $tarZst from electrobun build" }
-$staging = Join-Path $stableRoot "installer-staging"
+$release = Join-Path $shellDir "target\release"
+$exe = Join-Path $release "based-shell.exe"
+if (-not (Test-Path $exe)) { throw "Expected $exe from tauri build" }
+
+# --- 4. staging: the exact tree the installed app runs from (resource_dir = exe dir) ---
+Write-Host "`n[4/5] Staging bundle..." -ForegroundColor Cyan
+$staging = Join-Path $release "installer-staging"
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
-& "$env:WINDIR\System32\tar.exe" -xf $tarZst -C $staging
-if ($LASTEXITCODE -ne 0) { throw "Extracting $tarZst failed" }
-
-$bundle = Get-ChildItem $staging -Directory |
-  Where-Object { Test-Path (Join-Path $_.FullName "bin\launcher.exe") } |
-  Select-Object -First 1
-if (-not $bundle) { throw "No app bundle (containing bin\launcher.exe) found under $staging" }
-Write-Host "Bundle: $($bundle.FullName)"
-if (-not (Test-Path (Join-Path $bundle.FullName "Resources\app\ui\dist\index.html"))) {
-  throw "Bundle is missing Resources\app\ui\dist -- ui build didn't get copied (check electrobun.config.ts build.copy)"
+Copy-Item $exe $staging
+foreach ($dir in "core", "ui", "bun") {
+  $src = Join-Path $release $dir
+  if (-not (Test-Path $src)) { throw "Missing resource dir $src (tauri-build copies bundle.resources beside the exe)" }
+  Copy-Item $src (Join-Path $staging $dir) -Recurse
 }
-
-# --- 3. association stub ---
-Write-Host "`n[3/5] Compiling based-open.exe (file-association stub)..." -ForegroundColor Cyan
-$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc (.NET Framework 4.x required)" }
-$ico = Join-Path $repo "shell\assets\icon.ico"
-$stubOut = Join-Path $bundle.FullName "bin\based-open.exe"
-& $csc /nologo /target:winexe /optimize+ "/win32icon:$ico" "/out:$stubOut" (Join-Path $repo "scripts\win\based-open.cs")
-if ($LASTEXITCODE -ne 0) { throw "stub compile failed" }
-
-# --- 4. icon into bundle ---
-Write-Host "`n[4/5] Staging icon..." -ForegroundColor Cyan
-Copy-Item $ico (Join-Path $bundle.FullName "icon.ico") -Force
+Copy-Item (Join-Path $shellDir "icons\icon.ico") (Join-Path $staging "icon.ico")
+if (-not (Test-Path (Join-Path $staging "ui\dist\index.html"))) { throw "Staged bundle is missing ui\dist\index.html" }
+if (-not (Test-Path (Join-Path $staging "core\index.js"))) { throw "Staged bundle is missing core\index.js" }
+if (-not (Test-Path (Join-Path $staging "bun\bun.exe"))) { throw "Staged bundle is missing bun\bun.exe" }
+Write-Host "Bundle: $staging"
 
 # --- 5. Inno Setup ---
 Write-Host "`n[5/5] Building installer..." -ForegroundColor Cyan
@@ -124,7 +78,7 @@ if (-not $iscc) { throw "Inno Setup not found. Install it with:  winget install 
 
 $dist = Join-Path $repo "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
-& $iscc "/DAppVersion=$version" "/DBundleDir=$($bundle.FullName)" "/DOutputDir=$dist" (Join-Path $repo "scripts\installer.iss")
+& $iscc "/DAppVersion=$version" "/DBundleDir=$staging" "/DOutputDir=$dist" (Join-Path $repo "scripts\installer.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 Write-Host "`nDone: $dist\based-$version-Setup.exe" -ForegroundColor Green
