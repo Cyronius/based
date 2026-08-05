@@ -7,6 +7,21 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.4] - 2026-08-05
+
+### Tauri desktop shell, agent resilience, and text zoom
+
+This release replaces the Windows Electrobun build with a smaller Tauri 2 shell while preserving existing application behavior.
+
+* **Tauri desktop shell:** Matching window management, session cleanup and restore, child-process lifecycle, Ctrl+N handling, devtools support, and single-instance behavior. The installer remains compatible with in-place upgrades and is slightly smaller and faster to launch.
+* **Agent reliability:** Large tool results are truncated by cell and total payload size. Context overflows now recover automatically, while timeouts and step limits offer the option to continue instead of ending the run.
+* **SQL Server feedback:** `describe_table` now clearly reports nonexistent objects and suggests valid object names.
+* **Text zoom:** Added application-wide zoom through Ctrl+wheel, Ctrl+=, Ctrl+-, and Ctrl+0, with improved trackpad handling and debounced slider updates.
+* **Windows packaging:** Removed obsolete Electrobun packaging components and updated the release pipeline to build the Tauri shell.
+* **Visual updates:** Refreshed the application icons and Based logo assets.
+* **Tests and specifications:** Expanded coverage for payload truncation, context recovery, agent behavior, SQL table lookup, packaging, and UI behavior.
+
+
 ## [0.1.3] - 2026-07-29
 
 ### Changed
