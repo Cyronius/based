@@ -80,6 +80,13 @@ export const THEMES: ThemeDef[] = [
     tokens: { bg0: "#081517", bg1: "#0c1c1f", bg2: "#112629", bg3: "#183236", line: "#234249", lineSoft: "#16292e", text: "#e6f2f0", textDim: "#c1d8d5", muted: "#87a5a2", faint: "#6a8885", accent: "#d94fb0", ok: "#2ec4a6", err: "#ef476f", info: "#4fb3d9" } },
   { id: "absinthe", label: "Absinthe", mode: "dark", fonts: [SERIF("Cormorant Garamond"), SANS("Karla"), MONO("Sometype Mono")],
     tokens: { bg0: "#0f1207", bg1: "#151909", bg2: "#1c210e", bg3: "#272e15", line: "#363f20", lineSoft: "#222913", text: "#eff2d6", textDim: "#cfd8a6", muted: "#99a473", faint: "#7b8659", accent: "#c0f22f", ok: "#8fd63f", err: "#e0653f", info: "#5fc9a0" } },
+  // Port of VS Code's Monokai Dimmed (extensions/theme-monokai-dimmed). The editor background,
+  // foreground, and the syntax hexes our Monaco rules consume are the originals: accent = keyword/
+  // storage purple, ok = string olive, info = numeric blue, faint = comment grey. bg0 is deliberately
+  // *lighter* than bg1 — the only theme here that inverts the ramp — because Monokai Dimmed frames a
+  // dark editor (#1e1e1e) in lighter chrome (sidebar #272727), and dropping that loses the look.
+  { id: "monokai-dimmed", label: "Monokai Dimmed", mode: "dark", fonts: [SANS("Source Sans 3"), SANS("Source Sans 3"), MONO("Fira Code")],
+    tokens: { bg0: "#272727", bg1: "#1e1e1e", bg2: "#282828", bg3: "#3a3a3a", line: "#4a4a4a", lineSoft: "#333333", text: "#c5c8c6", textDim: "#b6b9b7", muted: "#a8aba9", faint: "#9a9b99", accent: "#9872a2", ok: "#9aa83a", err: "#f48771", info: "#6089b4" } },
   // ── midtone ── (between light and dark: mid-luminance backgrounds, tinted not neutral, high
   // foreground contrast — comfortable in both bright and dim rooms)
   { id: "slate-noon", label: "Slate Noon", mode: "dark", tone: "midtone", fonts: [SANS("Space Grotesk"), SANS("IBM Plex Sans"), MONO("JetBrains Mono")],
@@ -116,6 +123,20 @@ export const THEMES: ThemeDef[] = [
     tokens: { bg0: "#5a3d31", bg1: "#66473a", bg2: "#735244", bg3: "#7f5d4e", line: "#8e6b5a", lineSoft: "#6a4b3d", text: "#faeee5", textDim: "#e6cdb9", muted: "#e3d3c6", faint: "#c9b3a4", accent: "#5fb8e8", ok: "#93bf6a", err: "#e05a45", info: "#8fc9e8" } },
   { id: "periwinkle-dusk", label: "Periwinkle Dusk", mode: "dark", tone: "midtone", fonts: [SERIF("Lora"), SANS("Mulish"), MONO("Azeret Mono")],
     tokens: { bg0: "#454a63", bg1: "#50556f", bg2: "#5b617f", bg3: "#676d8e", line: "#777da0", lineSoft: "#565c78", text: "#f2f3fa", textDim: "#d6d9ec", muted: "#d5d8e8", faint: "#b5b9d1", accent: "#ffb08a", ok: "#8fd49f", err: "#e87a7a", info: "#9fb3f2" } },
+  { id: "ultramarine", label: "Ultramarine", mode: "dark", tone: "midtone", fonts: [SERIF("Playfair Display"), SANS("Jost"), MONO("Fragment Mono")],
+    tokens: { bg0: "#2b3168", bg1: "#333a78", bg2: "#3c4489", bg3: "#464f9b", line: "#5b66b4", lineSoft: "#39408a", text: "#f0eff8", textDim: "#c6c8ea", muted: "#cfd1ee", faint: "#adb0d6", accent: "#ff9a3c", ok: "#64dba0", err: "#ff6b8a", info: "#7fd0ff" } },
+  { id: "cinnabar", label: "Cinnabar", mode: "dark", tone: "midtone", fonts: [SERIF("Noto Serif JP"), SANS("Rubik"), MONO("M PLUS 1 Code")],
+    tokens: { bg0: "#4d2823", bg1: "#5a2f29", bg2: "#683730", bg3: "#764038", line: "#8b4e44", lineSoft: "#613229", text: "#fdeee2", textDim: "#edc9ae", muted: "#ecd2bf", faint: "#d0b09c", accent: "#f0c14b", ok: "#86c98f", err: "#ff7a63", info: "#7fc0d9" } },
+  { id: "cyberdeck", label: "Cyberdeck", mode: "dark", tone: "midtone", fonts: [SANS("Unbounded"), SANS("Outfit"), MONO("Azeret Mono")],
+    tokens: { bg0: "#2f3740", bg1: "#38414b", bg2: "#424c58", bg3: "#4d5865", line: "#5f6d7d", lineSoft: "#3e4854", text: "#eff5fa", textDim: "#c3d0dc", muted: "#ccd8e2", faint: "#a8b6c4", accent: "#c6f24a", ok: "#5fe0a0", err: "#ff6f9a", info: "#59d8ff" } },
+  // Inverted-polarity midtones: the background still sits mid-luminance, but the foreground is ink
+  // rather than paper, so these carry mode "light" (color-scheme, and Monaco's "vs" base) while the
+  // picker still groups them under Midtone — groupOf() branches on tone before mode. Their ramp runs
+  // the light-theme direction too: bg1 is the lightest surface, bg2/bg3 step *down* into it.
+  { id: "kraft", label: "Kraft", mode: "light", tone: "midtone", fonts: [SERIF("Zilla Slab"), SANS("Instrument Sans"), MONO("Fragment Mono")],
+    tokens: { bg0: "#ae9971", bg1: "#bfa87f", bg2: "#b39c72", bg3: "#a68f66", line: "#86714b", lineSoft: "#b7a077", text: "#241c10", textDim: "#3b2f1b", muted: "#4c3e24", faint: "#665538", accent: "#8f2c14", ok: "#35631f", err: "#a03018", info: "#1f4f7a" } },
+  { id: "sage-chalk", label: "Sage Chalk", mode: "light", tone: "midtone", fonts: [SERIF("Newsreader"), SANS("Karla"), MONO("Sometype Mono")],
+    tokens: { bg0: "#94a890", bg1: "#a3b79f", bg2: "#99ad95", bg3: "#8da189", line: "#74896f", lineSoft: "#9db19a", text: "#131e15", textDim: "#26332a", muted: "#37473a", faint: "#4e6250", accent: "#8f3a63", ok: "#24632f", err: "#96301f", info: "#23557a" } },
   // ── light ──
   { id: "porcelain", label: "Porcelain", mode: "light", fonts: [SANS("Hanken Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
     tokens: { bg0: "#eef0f3", bg1: "#f8f9fb", bg2: "#eaedf1", bg3: "#dfe3e9", line: "#d3d8e0", lineSoft: "#e5e8ee", text: "#1e242c", textDim: "#3d4652", muted: "#5e6671", faint: "#6f7b8b", accent: "#3a6ea5", ok: "#3f8a5a", err: "#c0503f", info: "#4f7fb0" } },
