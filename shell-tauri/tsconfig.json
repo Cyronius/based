@@ -1,0 +1,7 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": ["bundle-core.ts", "core-child.ts", "ensure-dist-core.ts"]
+}
