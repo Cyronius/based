@@ -1,7 +1,7 @@
 // Traces: BASED-SKILL-REGISTRY
 // The skill registry. `catalog()` yields the cheap name+description pairs for the system prompt;
 // `get(name)` returns the full skill (body included) for the load_skill tool. TS modules, not
-// runtime-loaded files — bundler-safe for the electrobun shell (cf. the keyring saga in the spec).
+// runtime-loaded files — bundler-safe for the packaged core bundle (cf. the keyring saga in the spec).
 import type { DbEngine } from "../../db/types";
 import type { Skill } from "./types";
 import { diagrams } from "./diagrams";

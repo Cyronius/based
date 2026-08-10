@@ -536,7 +536,7 @@ verification procedure. If you want to know exactly what's specified to work, th
 
 ## Built with
 
-[Bun](https://bun.sh) · [Electrobun](https://github.com/blackboardsh/electrobun) · React 19 · Vite ·
+[Bun](https://bun.sh) · [Tauri](https://tauri.app) · React 19 · Vite ·
 Tailwind 4 · [Monaco](https://microsoft.github.io/monaco-editor/) ·
 [glide-data-grid](https://github.com/glideapps/glide-data-grid) · [deck.gl](https://deck.gl) ·
 [Mastra](https://mastra.ai) · [AG-UI](https://github.com/ag-ui-protocol/ag-ui) ·

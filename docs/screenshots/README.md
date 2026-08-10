@@ -5,8 +5,10 @@ markdown edits needed.
 
 ## Capture settings
 
-- **2560x1440 at 100% display scaling.** Electrobun's WebView2 renders at 96dpi and does not do
-  per-monitor DPI awareness, so anything above 100% scaling will look soft.
+- **2560x1440 at 100% display scaling.** This was originally forced by the Electrobun shell, whose
+  WebView2 rendered at 96dpi with no per-monitor DPI awareness, so anything above 100% looked soft.
+  Tauri may well handle scaling better — that has not been re-verified — but keep capturing at 100%
+  so new screenshots match the existing set.
 - Downscale to **1600px wide** for the repo. The README requests them at `width="800"` (900 for the
   hero), so 1600 gives a crisp 2x.
 - **Use a demo database with non-sensitive data.** Schema names, table names, and rows are legible

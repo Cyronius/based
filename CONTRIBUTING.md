@@ -16,7 +16,7 @@ Both must pass. Integration tests self-skip without a SQL Server — that's expe
 
 Match the surrounding code. This codebase has a consistent house style: comments explain *why*, not
 *what*, and non-obvious workarounds carry the diagnosis that justifies them. Several files
-(`shell/electrobun.config.ts` especially) are load-bearing comment as much as code — read before
+(`shell-tauri/bundle-core.ts` especially) are load-bearing comment as much as code — read before
 editing.
 
 UI conventions are in [CLAUDE.md](CLAUDE.md): no uppercased labels, and any icon-only control uses

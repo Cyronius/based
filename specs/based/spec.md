@@ -37,7 +37,7 @@ Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credent
 - A secret over the cap throws a message naming the limit, and stores nothing
 - A credential written by the legacy password path still reads back, and reads back correctly after being rewritten
 
-**Implementation note (packaging, no spec impact):** `@napi-rs/keyring`'s loader reassigns `require = createRequire(__filename)` so it resolves its native `.node` binding relative to its own package when run unbundled (validated directly under Bun). electrobun's Bun bundler inlines `__filename` as the store path and lets that reassignment clobber the bundle-global `require` (`import.meta.require`), so the platform binary — which the bundler copies next to the output `index.js` — is resolved against the wrong directory and fails to load as a misleading "Cannot find native binding". Fixed in [shell/electrobun.config.ts](../../shell/electrobun.config.ts) with a `Bun.build` `onLoad` plugin that strips the reassignment for the shell bundle only (core's direct-Bun path and these tests are unaffected). Upstream this is an electrobun 1.18.1 bundler bug with napi-rs loaders that reassign `require`; the config plugin is a rebuild-surviving workaround. If keyring loading breaks again after an electrobun upgrade, re-check that plugin.
+**Implementation note (packaging, no spec impact):** `@napi-rs/keyring`'s loader reassigns `require = createRequire(__filename)` so it resolves its native `.node` binding relative to its own package when run unbundled (validated directly under Bun). Bun's bundler inlines `__filename` as the store path and lets that reassignment clobber the bundle-global `require` (`import.meta.require`), so the platform binary — which the bundler copies next to the output `index.js` — is resolved against the wrong directory and fails to load as a misleading "Cannot find native binding". Fixed in [shell-tauri/bundle-core.ts](../../shell-tauri/bundle-core.ts) with a `Bun.build` `onLoad` plugin that strips the reassignment for the packaged core bundle only (core's direct-Bun path and these tests are unaffected). Upstream this is a Bun bundler bug with napi-rs loaders that reassign `require`; the plugin is a rebuild-surviving workaround. If keyring loading breaks again after a Bun upgrade, re-check that plugin.
 
 ### BASED-CONN-TEST: Test connection
 **Applies to:** based (core)
@@ -2994,8 +2994,8 @@ and the `bun.exe` runtime), which `tauri.conf.json` maps into the app's resource
 those land beside `based-shell.exe` (`resource_dir()` = the exe dir), and `spawn_core()` in
 `shell-tauri/src/main.rs` runs `<resources>/bun/bun.exe <resources>/core/index.js` with cwd set
 to the resource dir — no repo checkout, PATH bun, or Explorer cwd involved. The bundler plugins
-(keyring createRequire fix, libsql/duckdb native-require pinning) are ported unchanged from the
-electrobun config; each one is a real packaged-only failure.
+(keyring createRequire fix, libsql/duckdb native-require pinning) each address a real
+packaged-only failure — none reproduces under `bun run`.
 
 **Verification procedure:**
 1. Build + install via `scripts/package-win.ps1` → run from the Start Menu shortcut on a path

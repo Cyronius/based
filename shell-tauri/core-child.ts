@@ -1,13 +1,11 @@
-// Child-process entry for the Tauri shell. The Bun shell runs core in-process and gets
-// {url, token} as a return value; here core is a separate process, so both the ready info and
+// Child-process entry for the shell. Core runs as a separate process, so both the ready info and
 // the UI's "new window" requests (POST /api/window/new -> onRequestNewWindow) cross the process
 // boundary as single stdout lines the Rust shell parses (see shell-tauri/src/main.rs).
 import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { startServer } from "@based/core";
 
-/** Same lookup as shell/src/bun/index.ts findUiDist(), with the packaged branch adjusted to the
- *  Tauri resource layout: this bundle runs as <resources>/core/index.js with the UI beside it at
+/** Packaged layout: this bundle runs as <resources>/core/index.js with the UI beside it at
  *  <resources>/ui/dist. Dev fallback: walk up from cwd (the Rust shell sets cwd to the repo root). */
 function findUiDist(): string | undefined {
   if (process.env.BASED_UI_DIST && existsSync(process.env.BASED_UI_DIST)) return process.env.BASED_UI_DIST;

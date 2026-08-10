@@ -5,10 +5,9 @@
 // tauri.conf.json maps these into <resources>/{core,ui,bun}; spawn_core() in src/main.rs runs
 // <resources>/bun/bun.exe <resources>/core/index.js.
 //
-// The three plugins are ported unchanged from shell/electrobun.config.ts — each one is a real
-// packaged-only failure (see the comments there before touching them): keyring's createRequire
-// reassignment clobbers the bundle-global require; libsql's template-string require can't be
-// followed by the bundler; duckdb's per-platform require switch resolves every branch.
+// The three bundler plugins below each fix a real packaged-only failure — none of them reproduces
+// under `bun run`, so the only way to catch a regression is to build and launch the installed app.
+// Read the comment above a plugin before touching it.
 import { readFile } from "node:fs/promises";
 import { existsSync, readdirSync, mkdirSync, cpSync, copyFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -16,6 +15,15 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 const outRoot = join(import.meta.dir, "dist-core");
 
+// @napi-rs/keyring's loader reassigns `require = createRequire(__filename)` (index.js:7) so that,
+// when run unbundled, it resolves its native binding relative to its own package. Bun's bundler
+// inlines __filename as the source path in the bun store and lets that reassignment clobber the
+// bundle-global `require` (import.meta.require). The bundler copies the platform .node beside the
+// output index.js and rewrites the load to a bundle-relative `./…node`, but the clobbered require
+// now resolves that path against the store dir instead of the bundle — so the (present) binary is
+// never found: "Cannot find native binding". Stripping the reassignment leaves
+// `require` = import.meta.require, which resolves the copied binary next to index.js. Only affects
+// this bundle; core's direct-Bun path and the specs tests never hit this plugin.
 const fixNapiKeyringCreateRequire: import("bun").BunPlugin = {
   name: "fix-napi-keyring-create-require",
   setup(build) {
@@ -23,13 +31,18 @@ const fixNapiKeyringCreateRequire: import("bun").BunPlugin = {
       const source = await readFile(args.path, "utf8");
       const contents = source.replace(
         /^\s*require\s*=\s*createRequire\(__filename\).*$/m,
-        "// [tauri bundle fix] createRequire reassignment removed — see shell/electrobun.config.ts",
+        "// [tauri bundle fix] createRequire reassignment removed — see bundle-core.ts",
       );
       return { contents, loader: "js" };
     });
   },
 };
 
+// libsql (via @mastra/libsql) loads its native binding with a runtime-computed
+// `require(`@libsql/${target}`)` (index.js:26) that Bun's bundler can't follow, so the platform
+// .node is never copied beside the bundle -> "Cannot find module '@libsql/win32-x64-msvc'" at
+// startup. Rewrite it to a static literal require for the build host's target so Bun resolves and
+// copies index.node, the same way keyring/lancedb already work.
 const LIBSQL_NEON_TARGETS: Record<string, string> = {
   "win32-x64": "win32-x64-msvc",
   "darwin-arm64": "darwin-arm64",
@@ -52,6 +65,14 @@ const fixLibsqlNativeRequire: import("bun").BunPlugin = {
   },
 };
 
+// @duckdb/node-bindings loads its native binding via a switch of per-platform *static* require()
+// literals (duckdb.js) — unlike libsql's template-string require, each branch is individually
+// resolvable, so Bun's bundler dutifully tries to resolve EVERY branch (not just the one
+// getRuntimePlatformArch() would pick at runtime), including the platform-specific optional
+// dependency packages that were never installed for platforms other than the build host's:
+// "Could not resolve: @duckdb/node-bindings-<other-platform>/duckdb.node". Replace the whole file
+// with a single static require for the build host's target, so only that (installed) package is
+// ever referenced — same fix shape as fixLibsqlNativeRequire above.
 const DUCKDB_BINDING_TARGETS: Record<string, string> = {
   "win32-x64": "win32-x64",
   "win32-arm64": "win32-arm64",
@@ -71,8 +92,16 @@ const fixDuckdbNativeRequire: import("bun").BunPlugin = {
   },
 };
 
-/** duckdb.node is a thin shim linked against a companion duckdb.dll shipped beside it in the
- *  platform package; the bundler copies the .node but not its dependent DLL (BASED-PACKAGE-WIN). */
+/** BASED-PACKAGE-WIN: duckdb.node is only a thin N-API shim dynamically linked against a large
+ *  companion library (duckdb.dll / libduckdb.dylib / libduckdb.so) shipped beside it in the platform
+ *  package. Bun's bundler copies the required .node next to the bundle output but not its dependent
+ *  library, so the packaged app fails the first LanceDB/DuckDB query with "LoadLibrary failed: The
+ *  specified module could not be found." Copy the companion next to the bundled .node — the OS
+ *  loader searches the addon's own directory first for its dependents.
+ *
+ *  Located by scanning the workspace .bun store directly (version-agnostic prefix match) rather than
+ *  Bun.resolveSync, because the platform package is a transitive dep of core, not a dep of
+ *  shell-tauri, so it has no top-level node_modules entry to resolve against. */
 function duckdbCompanionLibPath(): string {
   const lib = { win32: "duckdb.dll", darwin: "libduckdb.dylib", linux: "libduckdb.so" }[process.platform as string] ?? "duckdb.dll";
   const store = join(root, "node_modules", ".bun");

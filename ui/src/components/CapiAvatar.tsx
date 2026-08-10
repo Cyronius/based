@@ -1,5 +1,5 @@
 // Animated capybara avatar for "Ask Capi" — layered SVG art adapted from
-// shell/assets/capi/capy-demo.html. Body/head/ears are static; eyebrows,
+// assets/capi/capy-demo.html. Body/head/ears are static; eyebrows,
 // eyes, and mouth are each a "slot" of stacked poses crossfaded via opacity.
 import {
   Children,
