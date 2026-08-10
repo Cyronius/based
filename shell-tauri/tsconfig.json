@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["bun"]
   },
-  "include": ["src"]
+  "include": ["bundle-core.ts", "core-child.ts", "ensure-dist-core.ts"]
 }

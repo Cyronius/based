@@ -1,7 +1,7 @@
-// based — Tauri shell spike. Same duty list as shell/src/bun/index.ts: start core, open one
-// window per sid at a tokened URL, forward window lifecycle to core over loopback HTTP. All app
-// logic stays in core; the page never gets Tauri IPC (windows load External URLs, so the Tauri
-// API is not injected — core keeps every secret, exactly as with Electrobun).
+// based — the native shell. Duty list: start core, open one window per sid at a tokened URL,
+// forward window lifecycle to core over loopback HTTP. All app logic stays in core; the page never
+// gets Tauri IPC (windows load External URLs, so the Tauri API is not injected — core keeps every
+// secret).
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 use std::io::{BufRead, BufReader};
@@ -33,8 +33,9 @@ fn data_dir() -> PathBuf {
     Path::new(&appdata).join("based")
 }
 
-/// Mirror of shell/src/bun/pendingOpens.ts consumePendingOpens(): read + delete
-/// <dataDir>/pending-open.txt, keep lines that are existing files.
+/// Read + delete <dataDir>/pending-open.txt, keeping lines that are existing files. Written by the
+/// legacy based-open.exe stub registration (see BASED-OPEN-SQL-ARGV); consumed here so a mid-upgrade
+/// machine whose .sql association still points at the old stub keeps working.
 fn consume_pending_opens() -> Vec<String> {
     let file = data_dir().join("pending-open.txt");
     let Ok(raw) = std::fs::read_to_string(&file) else {
@@ -217,9 +218,9 @@ fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
 }
 
 fn main() {
-    // BASED-OPEN-SQL-ARGV: files this launch was asked to open. Tauri's exe receives argv
-    // directly (unlike electrobun's launcher, which drops it) — the pending-opens file is kept
-    // for compatibility with the based-open.exe stub.
+    // BASED-OPEN-SQL-ARGV: files this launch was asked to open. The exe receives argv directly, so
+    // the association points at it; the pending-opens file is kept only for compatibility with the
+    // legacy based-open.exe stub registration.
     let open_requests: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with('-') && Path::new(a).exists())
@@ -227,8 +228,8 @@ fn main() {
         .collect();
 
     tauri::Builder::default()
-        // Replaces the hand-rolled lock + control server in shell/src/bun/singleInstance.ts:
-        // a second OS-level launch fires this callback in the primary with the secondary's argv.
+        // Single-instance at the OS level: a second launch fires this callback in the primary with
+        // the secondary's argv, then exits.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let mut files: Vec<String> = argv
                 .iter()
@@ -271,7 +272,8 @@ fn main() {
             });
             app.manage(CoreChild(Mutex::new(child)));
 
-            // Same restore ordering as shell/src/bun/index.ts:100-109.
+            // Restore ordering: persisted sids first, then explicit file-open requests, and a bare
+            // window only if neither produced one — so a launch never opens zero windows.
             let handle = app.handle().clone();
             let restorable: Vec<String> = fetch_persisted_sids(&base_url, &token)
                 .into_iter()

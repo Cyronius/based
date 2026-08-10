@@ -6,12 +6,16 @@ based is a Bun workspace with four packages:
 |---|---|
 | `core/` | Bun server. Every bit of logic and every secret lives here: engine adapters, the agent, the language servers, storage, import/export. REST + NDJSON query streaming + SSE + a WebSocket LSP endpoint on `127.0.0.1:<port>`, behind a per-launch bearer token. |
 | `ui/` | React 19 + Vite + Tailwind webview. Talks only to core. |
-| `shell/` | Electrobun native window. Deliberately thin and disposable — it starts core in-process and points a window at it. |
+| `shell-tauri/` | Tauri 2 native window. Deliberately thin and disposable — it spawns core as a child process and points a window at it. The only shell: dev and release run the same one. |
 | `specs/` | Requirements (`specs/based/spec.md`) and the tests that verify them. |
 
 ## Prerequisites
 
 - **Bun** (a recent 1.x)
+- **The Rust toolchain** (`rustup`) — the shell is Rust, so `bun run dev` builds it. The first
+  `bun run dev` on a clean checkout compiles it and takes a few minutes; after that it is
+  near-instant. If you are only working on `core` or `ui`, the `dev:core` + `dev:ui` browser loop
+  below needs no Rust at all.
 - **Windows 11 x64** for the shell and installer. `core` and `ui` are platform-agnostic enough to
   develop on, but secrets go through Windows Credential Manager and packaging is Windows-only.
 - For the installer: **Inno Setup 6** (`winget install JRSoftware.InnoSetup`) and .NET Framework
@@ -26,24 +30,27 @@ bun install
 Three ways to run it, fastest feedback first.
 
 **`bun run dev` — the one you want.** [scripts/dev.ts](../scripts/dev.ts) starts core in watch mode
-and Vite, waits for both to listen, then launches the native window pointed at Vite
-(`BASED_DEV_URL=http://localhost:5183`). Full hot reload inside the real window. Ctrl-C, or closing
-the window, tears all three down. Logs interleave in one terminal.
+and Vite, waits for both to listen, then launches the Tauri window pointed at Vite
+(`BASED_DEV_URL=http://localhost:5183`, which makes the shell skip spawning its own core). Full hot
+reload inside the real window. Ctrl-C, or closing the window, tears all three down. Logs interleave
+in one terminal. Rust changes are not hot-reloaded — restart to rebuild the shell.
 
 **`bun run dev:core` + `bun run dev:ui` — browser loop.** Same core (port 7042, token `dev`) and
 Vite (port 5183, proxying `/api`), but you iterate at http://localhost:5183 in a browser. The
 client falls back to token `dev` when there's no URL hash, so there's no auth wiring to do.
 
-**`bun run shell` — production-like smoke test.** Serves the static `ui/dist`. No watch, no HMR —
-run `bun run build:ui` after UI changes or you'll be looking at a stale bundle.
+**`bun run shell` — production-like smoke test.** The same Tauri shell with no `BASED_DEV_URL`, so
+it spawns core as a real child process and serves the static `ui/dist` — the packaged topology, from
+the checkout. No watch, no HMR — run `bun run build:ui` after UI changes or you'll be looking at a
+stale bundle.
 
 ```sh
-bun run dev            # core + Vite + native window, all with HMR
+bun run dev            # core + Vite + Tauri window, all with HMR
 bun run dev:core       # core alone on 127.0.0.1:7042
 bun run dev:ui         # Vite alone on 5183
 bun run build:ui       # -> ui/dist
-bun run shell          # Electrobun window over ui/dist
-bun run typecheck      # core, ui, shell
+bun run shell          # Tauri window + core child over ui/dist
+bun run typecheck      # core, ui, shell-tauri
 bun test               # specs
 ```
 

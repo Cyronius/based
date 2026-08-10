@@ -88,7 +88,9 @@ export interface ServerOptions {
   dbPath?: string;
   /** LibSQL file for agent memory; defaults to agent.db in the data dir. */
   agentDbPath?: string;
-  /** BASED-UI-SHORTCUTS (Ctrl+N): only set when shell and core run in-process (see shell/src/bun/index.ts) — opens a new native window. */
+  /** BASED-UI-SHORTCUTS (Ctrl+N): opens a new native window. Set by the shell's core child
+   *  (shell-tauri/core-child.ts), which forwards it to Rust as a stdout line; unset in dev:core and
+   *  in tests, where the route answers 404. */
   onRequestNewWindow?: () => void;
 }
 

@@ -1,5 +1,5 @@
-// Native file dialogs via PowerShell (WinForms) — keeps the Electrobun shell dialog-free,
-// so the "shell is disposable" principle holds. Windows-only, like the rest of Phase 1.
+// Native file dialogs via PowerShell (WinForms) — keeps the shell dialog-free, so the "shell is
+// disposable" principle holds. Windows-only, like the rest of Phase 1.
 
 function runPwshDialog(script: string): Promise<string | null> {
   const encoded = Buffer.from(script, "utf16le").toString("base64");

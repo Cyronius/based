@@ -37,8 +37,8 @@ async function waitFor(label: string, url: string, timeoutMs = 30_000): Promise<
 }
 
 /** Each tracked child is itself a multi-level wrapper (bun run -> bun --watch -> the real core
- *  worker; bun run -> vite.exe -> the real node vite process; bun run -> electrobun -> the real app
- *  process), and Windows doesn't cascade a kill (or even a clean exit) from a process to whatever it
+ *  worker; bun run -> vite.exe -> the real node vite process; bun run -> cargo -> the real shell
+ *  exe), and Windows doesn't cascade a kill (or even a clean exit) from a process to whatever it
  *  spawned. A plain Subprocess.kill() on just the tracked pid reliably orphans the actual listening
  *  process behind it — that's BASED-DEV-CLEAN-SHUTDOWN's bug: stray core/vite processes surviving
  *  every `bun run dev` session, still holding their ports next time. `taskkill /T` kills the whole
@@ -52,16 +52,14 @@ function killTree(pid: number): void {
   }
 }
 
-/** Electrobun's CLI (the "shell" child) re-spawns itself on Windows in a way that detaches from
- *  whatever spawned it within a couple seconds — by the time shutdown() runs, the tracked "shell" pid
- *  has typically already exited on its own (that's literally what triggers shutdown), which breaks
- *  taskkill /T's ancestry walk: it can only discover a live pid's descendants, not a dead one's. That
- *  leaves the actual launcher/app process behind. Sweep by command-line path instead of by process
- *  ancestry — safe because these paths are unique to this project's own shell build output, not
- *  generic terms that could match an unrelated app. Excludes $PID since the sweep script's own
- *  invoking powershell.exe command line echoes these same path fragments back at itself. */
+/** Backstop for the shell child. shutdown() usually runs *because* the shell exited (window closed),
+ *  and taskkill /T can only discover a live pid's descendants — so a shell process that outlived its
+ *  cargo parent would survive the tree-kill. Sweep by command-line path instead of by process
+ *  ancestry — safe because this path is unique to this project's own build output, not a generic
+ *  term that could match an unrelated app. Excludes $PID since the sweep script's own invoking
+ *  powershell.exe command line echoes the same path fragment back at itself. */
 function killOrphanedShellProcesses(): void {
-  const patterns = ["*shell\\node_modules\\electrobun*", "*node_modules\\.bun\\electrobun*", "*shell\\build\\*"];
+  const patterns = ["*shell-tauri\\target\\debug\\based-shell*"];
   const filter = patterns.map((p) => `$_.CommandLine -like '${p}'`).join(" -or ");
   const script = `Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $PID) -and (${filter}) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
   try {
@@ -100,6 +98,26 @@ function freeDevPorts(): void {
   }
 }
 
+/** The shell is Rust now that dev and release run the same Tauri binary, so a missing toolchain is
+ *  a hard stop. Check before spawning anything: otherwise the failure is a lone
+ *  `bun: command not found: cargo` buried under core/vite's startup logs, followed by a teardown
+ *  that looks clean because the shell child "exited" the same way a closed window does. */
+function requireCargo(): void {
+  let ok = false;
+  try {
+    ok = spawnSync(["cargo", "--version"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  } catch {
+    ok = false; // not on PATH — Bun throws rather than returning a code
+  }
+  if (ok) return;
+  console.error(
+    "[dev] cargo not found on PATH. The shell is Tauri (Rust), so `bun run dev` needs the Rust\n" +
+      "      toolchain: https://rustup.rs — then reopen the terminal.\n" +
+      "      To work on core/ui only, skip the window: `bun run dev:core` + `bun run dev:ui`.",
+  );
+  process.exit(1);
+}
+
 async function shutdown(code = 0): Promise<never> {
   // On Windows, Ctrl-C is a console-wide broadcast: core/vite/shell get it at the same
   // instant we do and start their own graceful exit (Vite in particular restores the raw
@@ -118,6 +136,7 @@ async function shutdown(code = 0): Promise<never> {
 process.on("SIGINT", () => void shutdown(0));
 process.on("SIGTERM", () => void shutdown(0));
 
+requireCargo();
 freeDevPorts();
 
 run("core (watch)", ["bun", "run", "dev:core"]);
@@ -130,7 +149,10 @@ try {
   shutdown(1);
 }
 
-const shell = run("shell", ["bun", "run", "shell"], { BASED_DEV_URL: VITE_URL });
+// `cargo run`, not `tauri dev`: with BASED_DEV_URL set the shell skips spawning core entirely and
+// just points a window at Vite, so there is no frontend build for the Tauri CLI to orchestrate.
+// The first run compiles the Rust shell (minutes); after that it is near-instant.
+const shell = run("shell (tauri)", ["bun", "run", "--cwd", "shell-tauri", "dev"], { BASED_DEV_URL: VITE_URL });
 
 // When the shell window closes, tear down core + Vite too.
 await shell.exited;

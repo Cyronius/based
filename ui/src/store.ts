@@ -341,7 +341,7 @@ function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | 
 /** In-session, per-window cache of a connection's full view state — keyed by connectionId so
  *  switching back to a connection already visited this session is an instant swap instead of a
  *  server refetch (BASED-CONN-SWITCH-CACHE). Module-level: survives store re-renders, scoped to
- *  this window's own JS context (each Electrobun window has its own). */
+ *  this window's own JS context (each shell window has its own). */
 interface ConnectionSnapshot {
   database: string | null;
   databases: string[];

@@ -15,7 +15,6 @@
   "workspaces": [
     "core",
     "ui",
-    "shell",
     "shell-tauri",
     "specs"
   ],
@@ -24,9 +23,9 @@
     "dev:core": "bun run --cwd core dev",
     "dev:ui": "bun run --cwd ui dev",
     "build:ui": "bun run --cwd ui build",
-    "shell": "bun run --cwd shell start",
+    "shell": "bun run --cwd shell-tauri dev",
     "test": "bun run --cwd specs test",
-    "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell typecheck"
+    "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell-tauri typecheck"
   },
   "overrides": {
     "zod": "3.25.76"

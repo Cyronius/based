@@ -11,9 +11,9 @@ TypeScript end to end, three processes, one of which is deliberately disposable.
 
 ```
 +-------------------------------------------------------------+
-|  shell/  Electrobun native window                           |
-|  - starts core in-process, points a webview at it           |
-|  - single-instance control server (.sql file forwarding)    |
+|  shell-tauri/  Tauri 2 native window (Rust + WebView2)      |
+|  - spawns core as a child process, points a webview at it   |
+|  - single-instance plugin (.sql file forwarding via argv)   |
 |  - reuses each window's sid across restarts                 |
 +---------------------------+---------------------------------+
                             | 127.0.0.1:<port>, per-launch token
@@ -36,9 +36,10 @@ TypeScript end to end, three processes, one of which is deliberately disposable.
 +-------------------------------------------------------------+
 ```
 
-**The shell is thin on purpose.** Electrobun is a young runtime with a solo maintainer and an
-announced 2.0 that decouples from Bun. Keeping the shell to window management and process startup
-means replacing it is a contained job, not a rewrite.
+**The shell is thin on purpose.** It holds no app logic — window management and process startup,
+nothing else — so replacing it is a contained job, not a rewrite. That was not hypothetical: the
+shell was Electrobun through v0.1.3 and swapping it for Tauri touched no `core/` or `ui/` code. The
+same thinness is what makes the macOS port tractable.
 
 **Core holds every secret.** The webview never sees a connection password or an API key. It gets a
 per-launch bearer token in its URL hash and talks to loopback.
@@ -178,8 +179,8 @@ animates from noise into structure. Same table plus same seed gives a byte-ident
 to `%LOCALAPPDATA%\Programs\based`, no UAC, and non-destructive `.sql` registration — based is added
 to the Open With list and Default Apps without displacing whatever already owns the extension.
 
-The Electrobun bundle needs three custom Bun bundler plugins to get native modules into a working
-bundle (`shell/electrobun.config.ts`): `@napi-rs/keyring` clobbers the bundle-global `require`,
+The core bundle needs three custom Bun bundler plugins to get native modules into a working
+bundle (`shell-tauri/bundle-core.ts`): `@napi-rs/keyring` clobbers the bundle-global `require`,
 libsql's binding load is a template-string `require` the bundler can't follow, and
 `@duckdb/node-bindings` resolves *every* platform branch instead of the host's. DuckDB's `.node` is
 also only a shim against a companion `duckdb.dll`, copied beside it explicitly by a separate build
