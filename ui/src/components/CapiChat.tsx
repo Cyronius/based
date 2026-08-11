@@ -16,6 +16,7 @@ import {
   resolveAiTimeouts,
 } from "../agent/aiTimeouts";
 import { parseSqlBlocks } from "../lib/sqlBlocks";
+import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
 import { CapiAvatar } from "./CapiAvatar";
 
 function SendIcon() {
@@ -232,6 +233,14 @@ export function CapiChat() {
       );
       // runAgent resolves at turn end (after any chained tool runs) — wall-clock from send to answer.
       setLastTurnMs(performance.now() - startedAt);
+    } catch (err) {
+      // Traces: BASED-CHAT-UI — a run that dies before the stream opens (HTTP error, unreachable
+      // server, no AI profile) rejects here instead of emitting RUN_ERROR; without this catch the
+      // rejection is unhandled and the chat goes silent. `error_`-prefixed ids get the error
+      // treatment in the render below; a user-initiated Stop is not a failure.
+      if (!isAbortError(err)) {
+        addMessage({ id: `error_${Date.now()}`, role: "assistant", content: `Error: ${describeRunError(err)}` });
+      }
     } finally {
       sendingRef.current = false;
     }
@@ -268,15 +277,20 @@ export function CapiChat() {
   // assistant text (Mastra stops the loop cold). That shape — indistinguishable from a model that
   // chose to end on a tool call, where continuing is equally the right offer — gets a "keep going?"
   // prompt whose Continue turn starts a fresh run and therefore a fresh step budget.
+  //
+  // The same prompt covers a turn that produced nothing at all (BASED-CHAT-UI): no text, no tool
+  // calls, no RUN_ERROR and no rejection, so neither error path fires. Gated on lastTurnMs so it can
+  // only appear after runAgent has actually resolved — between addMessage(userMsg) and isStreaming
+  // flipping true, the transcript momentarily has that exact shape.
   const lastNonTool = [...messages].reverse().find((m) => m.role !== "tool");
-  const lastToolCalls = (lastNonTool as { toolCalls?: unknown[] } | undefined)?.toolCalls;
-  const endedOnToolCalls =
-    !isStreaming &&
-    lastNonTool?.role === "assistant" &&
-    !!lastToolCalls?.length &&
-    !(typeof lastNonTool.content === "string" && lastNonTool.content.trim());
+  const turnEnd = classifySettledTurn(messages);
+  const endedOnToolCalls = !isStreaming && turnEnd === "tool-calls";
+  const producedNothing = !isStreaming && lastTurnMs != null && turnEnd === "no-output";
   const [dismissedContinueId, setDismissedContinueId] = useState<string | null>(null);
-  const showContinue = endedOnToolCalls && dismissedContinueId !== lastNonTool?.id;
+  const showContinue = (endedOnToolCalls || producedNothing) && dismissedContinueId !== lastNonTool?.id;
+  // Retrying an empty turn resends what the user actually asked, not a bare "Continue."
+  const lastUserText =
+    lastNonTool?.role === "user" && typeof lastNonTool.content === "string" ? lastNonTool.content : null;
 
   // Message ids are not unique. When a run interleaves tool calls, the Mastra bridge pins every
   // later text segment of that run to one continuation id (`<base>-agui-text`), the client re-emits
@@ -351,6 +365,15 @@ export function CapiChat() {
             );
           }
           const content = typeof m.content === "string" ? m.content : "";
+          // Run failures (this component's catch and the library's RUN_ERROR handler both use
+          // `error_` ids) read as a warning block, not as words the model said.
+          if (m.role === "assistant" && m.id.startsWith("error_")) {
+            return (
+              <div key={key} className="fade-up rounded-md border border-err/30 bg-err/10 px-2.5 py-2 text-[length:var(--fs-sm)] text-err break-words">
+                {content}
+              </div>
+            );
+          }
           return (
             <div key={key} className="fade-up text-[length:var(--fs-md)] leading-relaxed break-words">
               <Markdown text={content} />
@@ -389,14 +412,16 @@ export function CapiChat() {
         {showContinue && (
           <div className="fade-up rounded-md border border-brass/30 bg-brass/10 px-2.5 py-2 text-[length:var(--fs-sm)]">
             <div className="text-paper-dim">
-              Capi stopped without a final answer — it may have hit the tool call limit ({maxToolSteps}).
+              {producedNothing
+                ? "Capi returned nothing — the model replied with no content. Check the AI profile's base URL and that the model backend is reachable (Settings → Agent)."
+                : `Capi stopped without a final answer — it may have hit the tool call limit (${maxToolSteps}).`}
             </div>
             <div className="mt-1.5 flex gap-2">
               <button
                 className="rounded border border-brass/40 px-2 py-0.5 font-semibold text-brass hover:bg-brass/10"
-                onClick={() => void sendText("Continue.")}
+                onClick={() => void sendText(producedNothing ? (lastUserText ?? "Continue.") : "Continue.")}
               >
-                Keep going
+                {producedNothing ? "Try again" : "Keep going"}
               </button>
               <button
                 className="rounded border border-line px-2 py-0.5 text-muted hover:text-paper"
