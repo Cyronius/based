@@ -2989,7 +2989,33 @@ A fourth sub-view button, "Embeddings", appears on table tabs only when the engi
 Record: PASS/FAIL + date below.
 - 2026-07-25 PASS (automated Playwright pass against the dev app, steps 1-6 + 10-equivalent: 3-cluster fixture laid out, labels/legend/tooltip/click-details/find-similar/lasso-grid/2D-3D all verified by screenshot; found and fixed ortho depth-clipping and a lasso pointer-event crash). Steps 7 (AI label — LM Studio was down) and 8-9 (worker survival, theme sweep) pending a human pass.
 
-## Windows packaging & file association
+## Packaging, platform paths & file association
+
+### BASED-PLATFORM-PATHS: Per-platform application-data root
+**Applies to:** based (core + shell-tauri)
+**Test category:** unit
+
+`appDataRoot(platform?, env?)` in `core/src/storage/db.ts` resolves the OS's per-user
+application-data root: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS (falling
+back to `homedir()` when `HOME` is unset). `dataDir()` appends `based` to it and creates the
+directory, unless `BASED_DATA_DIR` overrides the whole path — which `core/src/dev.ts` uses to point
+dev sessions at a `based-dev` sibling so they never pollute the real `app.db`/`agent.db`. There is
+no Linux branch; a Linux port would add XDG here.
+
+Both parameters are injectable specifically so each platform's branch is testable from either build
+host — the packaged app only ever exercises one of them.
+
+`data_dir()` in `shell-tauri/src/main.rs` **mirrors this function in Rust** and must be changed with
+it. The shell reads `pending-open.txt` from the directory core writes it to, so a drift between the
+two implementations silently breaks opening a `.sql` file at launch (BASED-OPEN-SQL-ARGV) rather
+than failing loudly.
+
+**Acceptance criteria:**
+- `appDataRoot("darwin", { HOME: "/Users/ada" })` → path segments `Users/ada/Library/Application Support`
+- `appDataRoot("win32", { APPDATA: "C:\\Users\\ada\\AppData\\Roaming" })` → that value verbatim
+- `appDataRoot("win32", {})` → `"."` (never a darwin path)
+- `appDataRoot("darwin", {})` → still ends in `Library/Application Support`
+- `BASED_DATA_DIR` set → `dataDir()` returns it exactly, and the directory exists afterwards
 
 ### BASED-PACKAGE-WIN: Packaged app bundle is self-contained
 **Applies to:** based (shell-tauri)

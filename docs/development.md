@@ -101,6 +101,28 @@ means installing over an old install upgrades it in place instead of registering
 [shell-tauri/tauri.conf.json](../shell-tauri/tauri.conf.json), which is the single source of
 truth. Requires Inno Setup 6 (`winget install JRSoftware.InnoSetup`) and the Rust toolchain.
 
+## Building for macOS
+
+```
+Actions tab -> "build (macOS)" -> Run workflow
+```
+
+macOS apps cannot be cross-compiled from Windows: the macOS SDK is licensed to Apple hardware, and
+`tauri build` shells out to `hdiutil` and `iconutil` to make the bundle. So the build runs on a
+GitHub-hosted macOS runner — real Mac hardware — via
+[.github/workflows/build-macos.yml](../.github/workflows/build-macos.yml), and no Mac is needed to
+produce a `.dmg`. Standard runners are free for public repositories.
+
+Same first three steps as Windows (`build:ui` → `bundle-core.ts` → `tauri build`), but it bundles a
+`.dmg` rather than handing an unbundled exe to Inno Setup, and it checks the bundle layout first
+(`libduckdb.dylib` present, `bun/bun` present and executable) so a misbuild fails at the runner
+instead of on a user's machine.
+
+The app this produces **is not usable yet** — file dialogs still shell out to `powershell.exe`,
+there is no macOS menu (so Cmd+C/V do nothing in the webview), and shortcuts are Ctrl-based. That
+work, and the tag-triggered release pipeline that will replace the manual trigger, is
+[specs/based/plans/macos-port.md](../specs/based/plans/macos-port.md).
+
 ## Cutting a release
 
 ```powershell
@@ -124,10 +146,13 @@ step — Cargo.toml feeds the exe's file-version metadata) and regenerates
 [core/src/version.ts](../core/src/version.ts), which is committed so a fresh clone typechecks
 without running the script first. The version reaches the status bar via `/api/health`.
 
-**Releases are built locally, not in CI.** Between Inno Setup, the Rust toolchain, and native
+**Releases are still cut locally, not in CI.** Between Inno Setup, the Rust toolchain, and native
 modules whose bindings are selected from the build host's platform, a Windows runner is several
-fragile pieces at once. Moving to GitHub Actions is tracked as future work; `release.ps1` is
-written so the same steps would drop into a workflow when it's worth doing.
+fragile pieces at once. That is now changing from the other end: the macOS build already runs in
+Actions (above), and Phase 6 of the
+[macOS port plan](../specs/based/plans/macos-port.md) splits `release.ps1` at the build boundary —
+bump/changelog/tag stay local, and a tag push builds and publishes both platforms. `release.ps1`
+was written so those steps drop into a workflow largely unchanged.
 
 ### Note on PowerShell scripts
 

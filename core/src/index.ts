@@ -13,7 +13,7 @@ export { isRetryableError, withReconnect, MAX_RECONNECT_ATTEMPTS } from "./db/re
 export { RowCollector, DEFAULT_ROW_CAP } from "./db/rowcap";
 export { toCsv, cellText } from "./export/csv";
 export { writeXlsx } from "./export/xlsx";
-export { openDb, dataDir } from "./storage/db";
+export { openDb, dataDir, appDataRoot } from "./storage/db";
 export { ConnectionStore } from "./storage/connections";
 export { TabStore, type TabRecord, type TabKind } from "./storage/tabs";
 export { WindowStateStore, type WindowStateRecord } from "./storage/windowState";

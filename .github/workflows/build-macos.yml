@@ -1,0 +1,75 @@
+# Phase 2 of specs/based/plans/macos-port.md — prove the macOS toolchain works end to end.
+#
+# This produces a .dmg. It does NOT yet produce a *usable* app: file dialogs still shell out to
+# powershell.exe, there is no macOS menu (so Cmd+C/V do not work in the webview), and shortcuts are
+# still Ctrl-based. Those are Phases 3 and 4. The point of this workflow is to surface toolchain
+# failures — a missing darwin-arm64 native prebuild, the .bun store layout differing on a runner,
+# DMG bundling needing something the image lacks — before that work starts.
+#
+# Manually triggered on purpose: Phase 6 folds this into a tag-triggered release workflow that
+# builds both platforms. Until then, run it from the Actions tab.
+name: build (macOS)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-latest is Apple Silicon, and arm64 is the only macOS target we ship (see the plan's
+    # "arm64 only" decision — macOS Tahoe 26 is Apple's last Intel release). Phase 6 should pin an
+    # explicit image instead of "latest" so a release is reproducible.
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell-tauri
+
+      # Plain install, not --frozen-lockfile: bun.lock was written on Windows and this is the first
+      # darwin resolve, so the optional per-platform native packages may legitimately differ.
+      # Phase 6 should tighten this once a macOS install is known-good.
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build UI
+        run: bun run build:ui
+
+      # BASED-PLATFORM-PATHS: this resolves every native addon by host platform+arch, so it is the
+      # step that fails first if a darwin-arm64 prebuild is missing from any of duckdb / lancedb /
+      # libsql / keyring.
+      - name: Bundle core
+        working-directory: shell-tauri
+        run: bun bundle-core.ts
+
+      # Fail loudly here rather than shipping a .dmg that dies on first launch. Each check maps to
+      # a specific Phase 1 change: the darwin companion library name, and the bun runtime's
+      # platform filename plus its executable bit.
+      - name: Verify bundle layout
+        working-directory: shell-tauri
+        run: |
+          set -euo pipefail
+          test -f dist-core/core/index.js         || { echo "missing core/index.js"; exit 1; }
+          test -f dist-core/core/libduckdb.dylib  || { echo "missing core/libduckdb.dylib"; exit 1; }
+          test -f dist-core/ui/dist/index.html    || { echo "missing ui/dist/index.html"; exit 1; }
+          test -x dist-core/bun/bun               || { echo "missing or non-executable bun/bun"; exit 1; }
+          echo "--- bundled natives ---"
+          ls -la dist-core/core
+
+      - name: Build Tauri app
+        working-directory: shell-tauri
+        run: bun x @tauri-apps/cli build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: based-macos-arm64
+          path: shell-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
