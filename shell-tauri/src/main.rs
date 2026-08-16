@@ -24,14 +24,30 @@ struct ShellState {
 /// The spawned core process. None in dev mode, where dev:core runs separately (BASED_DEV_URL).
 struct CoreChild(Mutex<Option<Child>>);
 
-/// Mirror of core's dataDir() (core/src/storage/db.ts): %APPDATA%/based unless overridden.
+/// BASED-PLATFORM-PATHS: mirror of core's appDataRoot()/dataDir() (core/src/storage/db.ts).
+/// %APPDATA%\based on Windows, ~/Library/Application Support/based on macOS, unless overridden.
+/// Change this and the TypeScript side together — the shell reads pending-open.txt from the
+/// directory core writes it to, so a drift between them silently breaks file-open-at-launch.
+///
+/// `cfg!` (not `#[cfg]`) so both branches type-check on every host; the dead one is optimized out.
 fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("BASED_DATA_DIR") {
         return PathBuf::from(d);
     }
-    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    Path::new(&appdata).join("based")
+    if cfg!(target_os = "macos") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        Path::new(&home)
+            .join("Library")
+            .join("Application Support")
+            .join("based")
+    } else {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+        Path::new(&appdata).join("based")
+    }
 }
+
+/// The bundled Bun runtime's filename, as written by shell-tauri/bundle-core.ts.
+const BUN_EXE: &str = if cfg!(windows) { "bun.exe" } else { "bun" };
 
 /// Read + delete <dataDir>/pending-open.txt, keeping lines that are existing files. Written by the
 /// legacy based-open.exe stub registration (see BASED-OPEN-SQL-ARGV); consumed here so a mid-upgrade
@@ -139,8 +155,9 @@ fn repo_root_from_exe() -> Option<PathBuf> {
 /// in-process startServer() call the Bun shell makes; the onRequestNewWindow callback becomes a
 /// BASED_EVENT line on the child's stdout (read by a thread for the life of the process).
 fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
-    // Packaged layout: <resources>/{bun/bun.exe, core/index.js, ui/dist}. Dev: run the TS entry
-    // from the repo checkout with whatever bun is on PATH.
+    // Packaged layout: <resources>/{bun/<BUN_EXE>, core/index.js, ui/dist} — the exe dir on Windows,
+    // based.app/Contents/Resources on macOS. Dev: run the TS entry from the repo checkout with
+    // whatever bun is on PATH.
     let resource_dir = app.path().resource_dir().ok();
     let packaged = resource_dir
         .as_ref()
@@ -148,7 +165,7 @@ fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
         .cloned();
 
     let mut cmd = if let Some(res) = packaged {
-        let bun = res.join("bun").join("bun.exe");
+        let bun = res.join("bun").join(BUN_EXE);
         let program = if bun.exists() {
             bun.into_os_string()
         } else {

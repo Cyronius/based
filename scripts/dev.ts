@@ -5,9 +5,11 @@
 // launched the shell before Vite/core were listening, the first paint would error until a manual
 // reload. So we spawn core + Vite, poll both until healthy, THEN spawn the shell.
 import { spawn, spawnSync, type Subprocess } from "bun";
+import { join } from "node:path";
 
 const VITE_URL = "http://localhost:5183";
 const CORE_HEALTH = "http://127.0.0.1:7042/api/health";
+const IS_WIN = process.platform === "win32";
 
 const children: Subprocess[] = [];
 
@@ -36,36 +38,102 @@ async function waitFor(label: string, url: string, timeoutMs = 30_000): Promise<
   throw new Error(`[dev] ${label} did not come up within ${timeoutMs}ms (${url})`);
 }
 
-/** Each tracked child is itself a multi-level wrapper (bun run -> bun --watch -> the real core
- *  worker; bun run -> vite.exe -> the real node vite process; bun run -> cargo -> the real shell
- *  exe), and Windows doesn't cascade a kill (or even a clean exit) from a process to whatever it
- *  spawned. A plain Subprocess.kill() on just the tracked pid reliably orphans the actual listening
- *  process behind it — that's BASED-DEV-CLEAN-SHUTDOWN's bug: stray core/vite processes surviving
- *  every `bun run dev` session, still holding their ports next time. `taskkill /T` kills the whole
- *  tree instead. Safe to call even on an already-exited pid (harmless no-op), so we always run it
- *  rather than only for stragglers — a child that exited cleanly may still have left descendants. */
-function killTree(pid: number): void {
+function parsePids(out: string): number[] {
+  return out
+    .split(/\s+/)
+    .map(Number)
+    .filter((n: number) => Number.isInteger(n) && n > 0);
+}
+
+/** Force-kill one pid. Bun's process.kill throws ESRCH on an already-exited pid; that is the normal
+ *  case here, not an error. */
+function killPid(pid: number): void {
   try {
-    spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
+    if (IS_WIN) {
+      spawnSync(["powershell.exe", "-NoProfile", "-Command", `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    } else {
+      process.kill(pid, "SIGKILL");
+    }
   } catch {
     // already gone
   }
 }
 
-/** Backstop for the shell child. shutdown() usually runs *because* the shell exited (window closed),
- *  and taskkill /T can only discover a live pid's descendants — so a shell process that outlived its
- *  cargo parent would survive the tree-kill. Sweep by command-line path instead of by process
- *  ancestry — safe because this path is unique to this project's own build output, not a generic
- *  term that could match an unrelated app. Excludes $PID since the sweep script's own invoking
- *  powershell.exe command line echoes the same path fragment back at itself. */
-function killOrphanedShellProcesses(): void {
-  const patterns = ["*shell-tauri\\target\\debug\\based-shell*"];
-  const filter = patterns.map((p) => `$_.CommandLine -like '${p}'`).join(" -or ");
-  const script = `Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $PID) -and (${filter}) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+/** Each tracked child is itself a multi-level wrapper (bun run -> bun --watch -> the real core
+ *  worker; bun run -> vite -> the real node vite process; bun run -> cargo -> the real shell
+ *  exe), and neither platform cascades a kill (or even a clean exit) from a process to whatever it
+ *  spawned. A plain Subprocess.kill() on just the tracked pid reliably orphans the actual listening
+ *  process behind it — that's BASED-DEV-CLEAN-SHUTDOWN's bug: stray core/vite processes surviving
+ *  every `bun run dev` session, still holding their ports next time. Safe to call even on an
+ *  already-exited pid (harmless no-op), so we always run it rather than only for stragglers — a
+ *  child that exited cleanly may still have left descendants.
+ *
+ *  Windows has `taskkill /T` for this. POSIX has nothing equivalent, so walk the tree with
+ *  `pgrep -P` and kill depth-first: killing a parent first would reparent its children to launchd,
+ *  where no ancestry query can still find them. */
+function killTree(pid: number): void {
+  if (IS_WIN) {
+    try {
+      spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
+    } catch {
+      // already gone
+    }
+    return;
+  }
+  for (const child of childPids(pid)) killTree(child);
+  killPid(pid);
+}
+
+function childPids(pid: number): number[] {
   try {
-    spawnSync(["powershell.exe", "-NoProfile", "-Command", script], { stdout: "ignore", stderr: "ignore" });
+    // pgrep exits 1 with empty stdout when there are no matches — parsePids handles that.
+    const result = spawnSync(["pgrep", "-P", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    return parsePids(result.stdout.toString());
+  } catch {
+    return [];
+  }
+}
+
+/** Backstop for the shell child. shutdown() usually runs *because* the shell exited (window closed),
+ *  and a tree-kill can only discover a live pid's descendants — so a shell process that outlived its
+ *  cargo parent would survive it. Sweep by command-line path instead of by process ancestry — safe
+ *  because this path is unique to this project's own build output, not a generic term that could
+ *  match an unrelated app. `join` builds the fragment with the host's separator, which is what each
+ *  platform's command lines actually contain. */
+function killOrphanedShellProcesses(): void {
+  const marker = join("shell-tauri", "target", "debug", "based-shell");
+  try {
+    if (IS_WIN) {
+      // Excludes $PID: the sweep script's own invoking powershell.exe command line echoes the same
+      // path fragment back at itself.
+      const filter = `$_.CommandLine -like '*${marker}*'`;
+      const script = `Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $PID) -and (${filter}) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+      spawnSync(["powershell.exe", "-NoProfile", "-Command", script], { stdout: "ignore", stderr: "ignore" });
+    } else {
+      // pkill never matches its own process, so the self-exclusion above has no counterpart here.
+      spawnSync(["pkill", "-9", "-f", marker], { stdout: "ignore", stderr: "ignore" });
+    }
   } catch {
     // best-effort
+  }
+}
+
+/** Pids holding a listening socket on `port`, or [] if none/unknowable. */
+function listenerPids(port: number): number[] {
+  try {
+    if (IS_WIN) {
+      const query = `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique`;
+      const result = spawnSync(["powershell.exe", "-NoProfile", "-Command", query], { stdout: "pipe", stderr: "ignore" });
+      return parsePids(result.stdout.toString());
+    }
+    // lsof exits 1 with empty stdout when nothing is listening.
+    const result = spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"], { stdout: "pipe", stderr: "ignore" });
+    return parsePids(result.stdout.toString());
+  } catch {
+    return [];
   }
 }
 
@@ -76,24 +144,9 @@ function killOrphanedShellProcesses(): void {
  *  spawning fresh children, mirroring killOrphanedShellProcesses' shutdown-time cleanup above. */
 function freeDevPorts(): void {
   for (const port of [7042, 5183]) {
-    const query = `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique`;
-    let pids: number[] = [];
-    try {
-      const result = spawnSync(["powershell.exe", "-NoProfile", "-Command", query], { stdout: "pipe", stderr: "ignore" });
-      pids = result.stdout
-        .toString()
-        .split(/\s+/)
-        .map(Number)
-        .filter((n: number) => Number.isInteger(n) && n > 0);
-    } catch {
-      continue;
-    }
-    for (const pid of pids) {
+    for (const pid of listenerPids(port)) {
       console.log(`[dev] port ${port} was held by stale pid ${pid} (leftover from a previous session) — freeing it`);
-      spawnSync(["powershell.exe", "-NoProfile", "-Command", `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      killPid(pid);
     }
   }
 }

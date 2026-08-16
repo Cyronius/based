@@ -1,15 +1,20 @@
 // Builds the self-contained core bundle the packaged Tauri shell spawns:
-//   dist-core/core/index.js  (+ copied .node natives + duckdb.dll)
-//   dist-core/ui/dist        (built frontend)
-//   dist-core/bun/bun.exe    (runtime for the core bundle)
+//   dist-core/core/index.js       (+ copied .node natives + the duckdb companion library)
+//   dist-core/ui/dist             (built frontend)
+//   dist-core/bun/bun[.exe]       (runtime for the core bundle)
 // tauri.conf.json maps these into <resources>/{core,ui,bun}; spawn_core() in src/main.rs runs
-// <resources>/bun/bun.exe <resources>/core/index.js.
+// <resources>/bun/bun[.exe] <resources>/core/index.js.
+//
+// BASED-PLATFORM-PATHS: this script builds for the *host* platform and architecture — every native
+// binding below is picked by `${process.platform}-${process.arch}`. That is correct because we build
+// each target on its own machine (Windows locally, macOS on a CI runner); it is also why there is no
+// cross-compilation path. Producing a bundle for another platform means running this there.
 //
 // The three bundler plugins below each fix a real packaged-only failure — none of them reproduces
 // under `bun run`, so the only way to catch a regression is to build and launch the installed app.
 // Read the comment above a plugin before touching it.
 import { readFile } from "node:fs/promises";
-import { existsSync, readdirSync, mkdirSync, cpSync, copyFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, cpSync, copyFileSync, chmodSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -92,18 +97,25 @@ const fixDuckdbNativeRequire: import("bun").BunPlugin = {
   },
 };
 
-/** BASED-PACKAGE-WIN: duckdb.node is only a thin N-API shim dynamically linked against a large
- *  companion library (duckdb.dll / libduckdb.dylib / libduckdb.so) shipped beside it in the platform
- *  package. Bun's bundler copies the required .node next to the bundle output but not its dependent
- *  library, so the packaged app fails the first LanceDB/DuckDB query with "LoadLibrary failed: The
- *  specified module could not be found." Copy the companion next to the bundled .node — the OS
- *  loader searches the addon's own directory first for its dependents.
+/** BASED-PACKAGE-WIN / BASED-PACKAGE-MAC: duckdb.node is only a thin N-API shim dynamically linked
+ *  against a large companion library shipped beside it in the platform package. Bun's bundler copies
+ *  the required .node next to the bundle output but not its dependent library, so the packaged app
+ *  fails the first LanceDB/DuckDB query with "LoadLibrary failed: The specified module could not be
+ *  found." (Windows) or an equivalent dyld load error (macOS). Copy the companion next to the
+ *  bundled .node — the OS loader searches the addon's own directory first for its dependents.
  *
  *  Located by scanning the workspace .bun store directly (version-agnostic prefix match) rather than
  *  Bun.resolveSync, because the platform package is a transitive dep of core, not a dep of
  *  shell-tauri, so it has no top-level node_modules entry to resolve against. */
+const DUCKDB_COMPANION_LIBS: Record<string, string> = {
+  win32: "duckdb.dll",
+  darwin: "libduckdb.dylib",
+  linux: "libduckdb.so",
+};
+const duckdbCompanionLib = DUCKDB_COMPANION_LIBS[process.platform] ?? "duckdb.dll";
+
 function duckdbCompanionLibPath(): string {
-  const lib = { win32: "duckdb.dll", darwin: "libduckdb.dylib", linux: "libduckdb.so" }[process.platform as string] ?? "duckdb.dll";
+  const lib = duckdbCompanionLib;
   const store = join(root, "node_modules", ".bun");
   const prefix = `@duckdb+node-bindings-${duckdbTarget}@`;
   const entry = readdirSync(store).find((d) => d.startsWith(prefix));
@@ -130,7 +142,7 @@ if (!result.success) {
   process.exit(1);
 }
 
-copyFileSync(duckdbCompanionLibPath(), join(outRoot, "core", { win32: "duckdb.dll", darwin: "libduckdb.dylib", linux: "libduckdb.so" }[process.platform as string] ?? "duckdb.dll"));
+copyFileSync(duckdbCompanionLibPath(), join(outRoot, "core", duckdbCompanionLib));
 
 const uiDist = join(root, "ui", "dist");
 if (!existsSync(join(uiDist, "index.html"))) {
@@ -138,8 +150,16 @@ if (!existsSync(join(uiDist, "index.html"))) {
 }
 cpSync(uiDist, join(outRoot, "ui", "dist"), { recursive: true });
 
+// The runtime is whichever bun is running this script — so it is already the host's platform and
+// arch, matching the natives resolved above. main.rs looks for this exact filename (BUN_EXE).
 mkdirSync(join(outRoot, "bun"), { recursive: true });
-copyFileSync(process.execPath, join(outRoot, "bun", "bun.exe"));
+const bunExeName = process.platform === "win32" ? "bun.exe" : "bun";
+const bunExePath = join(outRoot, "bun", bunExeName);
+copyFileSync(process.execPath, bunExePath);
+// copyFileSync carries the source mode over, but the bundle is worthless if the bit is ever lost in
+// transit (DMG round-trip, artifact zip), and the failure mode is an opaque "permission denied" at
+// launch rather than anything pointing here.
+if (process.platform !== "win32") chmodSync(bunExePath, 0o755);
 
 console.log(`bundled core -> ${outRoot}`);
 for (const f of readdirSync(join(outRoot, "core"))) console.log(`  core/${f}`);

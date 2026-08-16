@@ -1,9 +1,26 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+
+/**
+ * BASED-PLATFORM-PATHS: the OS's per-user application-data root — `%APPDATA%` on Windows,
+ * `~/Library/Application Support` on macOS. `data_dir()` in shell-tauri/src/main.rs mirrors this
+ * (the shell reads pending-open.txt out of the same directory); the two must be changed together.
+ *
+ * Parameterized rather than reading `process.platform`/`process.env` directly so both branches are
+ * testable from either build host. No Linux branch yet — a Linux port would add XDG here.
+ */
+export function appDataRoot(
+  platform: string = process.platform,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Application Support");
+  return env.APPDATA ?? ".";
+}
 
 export function dataDir(): string {
-  const dir = process.env.BASED_DATA_DIR ?? join(process.env.APPDATA ?? ".", "based");
+  const dir = process.env.BASED_DATA_DIR ?? join(appDataRoot(), "based");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
