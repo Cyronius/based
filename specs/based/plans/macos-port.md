@@ -1,7 +1,7 @@
 # Plan: macOS port + CI release pipeline
 
 **Status:** in progress — **Phases 1–2 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
-macOS build workflow landed, awaiting its first run)
+macOS build workflow landed and green, `.dmg` artifact produced)
 **Spec impact:** 6 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-MENU-MAC`,
 `BASED-WINDOW-LIFECYCLE-MAC`, `BASED-PACKAGE-MAC`, `BASED-INSTALLER-MAC`, `BASED-RELEASE-CI`),
 8 modified (`BASED-SECRET-STORE`, `BASED-DIALOG-OPEN-FILE`, `BASED-FILE-OPEN-SQL`,
@@ -81,7 +81,7 @@ addons.
 
 ---
 
-### ✅ Phase 2 — First macOS build in CI (landed; first run pending)
+### ✅ Phase 2 — First macOS build in CI (done)
 
 Get `tauri build` to *complete* on a macOS runner. The resulting app is expected to launch and then
 misbehave (no menu, PowerShell dialogs throw, Ctrl shortcuts) — that is fine. This phase is about
@@ -113,8 +113,16 @@ generated at some earlier point. No `tauri icon` run was needed.
 `icon` array *is* read by `tauri-build` on both platforms, which is why the release build was
 re-run after the change rather than only `cargo check`.
 
-**Exit criterion (open):** a downloadable `.dmg` artifact from a green run. Needs a human to click
-Run workflow — everything up to that point is landed.
+**Exit criterion (met):** [run 31622051229](https://github.com/Cyronius/based/actions/runs/31622051229)
+was green in 5m07s and uploaded a 76 MB `based-macos-arm64` `.dmg`. Nothing on the runner needed a
+darwin-specific workaround — every native prebuild resolved, the `.bun` store layout matched, and
+DMG bundling worked on the stock image. The toolchain risk this phase existed to surface did not
+materialize.
+
+The `.dmg` has **not** been launched on a Mac. It is not expected to work yet; that is Phase 7.
+
+The workflow's temporary `push: branches: [macos_port_wip]` trigger was removed once the run had
+served its purpose, leaving `workflow_dispatch` as the sole trigger described in its header.
 
 ---
 
