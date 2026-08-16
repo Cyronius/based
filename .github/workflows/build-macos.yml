@@ -12,10 +12,6 @@ name: build (macOS)
 
 on:
   workflow_dispatch:
-  # Temporary: workflow_dispatch only works once this file is on the default branch, so trigger on
-  # pushes to the WIP branch until then. Remove when merging.
-  push:
-    branches: [macos_port_wip]
 
 jobs:
   build:
