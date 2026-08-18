@@ -1,22 +1,38 @@
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 
 /**
  * BASED-PLATFORM-PATHS: the OS's per-user application-data root — `%APPDATA%` on Windows,
- * `~/Library/Application Support` on macOS. `data_dir()` in shell-tauri/src/main.rs mirrors this
- * (the shell reads pending-open.txt out of the same directory); the two must be changed together.
+ * `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` (default `~/.local/share`) elsewhere.
+ * `data_dir()` in shell-tauri/src/main.rs mirrors this (the shell reads pending-open.txt out of the
+ * same directory); the two must be changed together.
  *
- * Parameterized rather than reading `process.platform`/`process.env` directly so both branches are
- * testable from either build host. No Linux branch yet — a Linux port would add XDG here.
+ * Linux gets the *data* root, not the config root: what lands here is app.db, agent.db, and
+ * window-restore state — databases, not user-editable settings — so `~/.local/share` is right and
+ * `~/.config` is not. It also matches what Rust's `dirs::data_dir()` and Tauri's own path API
+ * resolve to, which keeps the shell mirror honest.
+ *
+ * The Windows branch is now explicit rather than the fallback it used to be. That mattered: a Linux
+ * process took the `%APPDATA% ?? "."` path and got the *relative* `"."`, so app.db was written into
+ * whatever the working directory happened to be — and core and the shell do not share one, so the
+ * two could disagree about where pending-open.txt lives.
+ *
+ * Parameterized rather than reading `process.platform`/`process.env` directly so every branch is
+ * testable from any build host.
  */
 export function appDataRoot(
   platform: string = process.platform,
   env: Record<string, string | undefined> = process.env,
 ): string {
   if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Application Support");
-  return env.APPDATA ?? ".";
+  if (platform === "win32") return env.APPDATA ?? ".";
+  // XDG requires a relative $XDG_DATA_HOME to be ignored, and `||` (not `??`) so an empty
+  // string — how an unset variable often reaches a child process — falls through too.
+  const xdg = env.XDG_DATA_HOME || "";
+  if (xdg && isAbsolute(xdg)) return xdg;
+  return join(env.HOME ?? homedir(), ".local", "share");
 }
 
 export function dataDir(): string {

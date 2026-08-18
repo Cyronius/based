@@ -121,13 +121,41 @@ function killOrphanedShellProcesses(): void {
   }
 }
 
-/** Pids holding a listening socket on `port`, or [] if none/unknowable. */
+/** Pull pids out of `ss -p` output, which embeds them in
+ *  `users:(("bun",pid=1234,fd=20),("bun",pid=1235,fd=21))` rather than printing them bare.
+ *  Deduplicated because one process listening on both IPv4 and IPv6 appears once per socket, and
+ *  the caller logs a line per pid — the Windows query says `Select-Object -Unique` for the same
+ *  reason. */
+function parseSsPids(out: string): number[] {
+  const pids = [...out.matchAll(/pid=(\d+)/g)]
+    .map((m) => Number(m[1]))
+    .filter((n: number) => Number.isInteger(n) && n > 0);
+  return [...new Set(pids)];
+}
+
+/** Pids holding a listening socket on `port`, or [] if none/unknowable.
+ *
+ *  Linux tries `ss` before `lsof`. `ss` ships in iproute, which every distro installs, whereas
+ *  **Fedora Workstation does not install lsof by default** — and a missing tool here fails silently
+ *  to [], which leaves a stale core holding 7042 and makes the next `bun run dev` die on EADDRINUSE
+ *  with nothing pointing at the cause. macOS has no `ss`, so it stays on lsof. */
 function listenerPids(port: number): number[] {
   try {
     if (IS_WIN) {
       const query = `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Select-Object -Unique`;
       const result = spawnSync(["powershell.exe", "-NoProfile", "-Command", query], { stdout: "pipe", stderr: "ignore" });
       return parsePids(result.stdout.toString());
+    }
+    if (process.platform === "linux") {
+      try {
+        // -H no header, -l listening, -t tcp, -n numeric, -p owning process. Exits 0 with empty
+        // output when nothing matches, so a clean exit is an answer — only a missing binary
+        // (which throws) should fall through to lsof.
+        const ss = spawnSync(["ss", "-Hltnp", `sport = :${port}`], { stdout: "pipe", stderr: "ignore" });
+        if (ss.success) return parseSsPids(ss.stdout.toString());
+      } catch {
+        // ss not installed — fall through to lsof
+      }
     }
     // lsof exits 1 with empty stdout when nothing is listening.
     const result = spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"], { stdout: "pipe", stderr: "ignore" });

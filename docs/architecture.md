@@ -25,8 +25,8 @@ TypeScript end to end, three processes, one of which is deliberately disposable.
 |  +-- db/       adapters behind one DatabaseAdapter iface    |
 |  +-- agent/    Mastra agent, tools, skills, audit           |
 |  +-- lsp/      two in-house language servers                |
-|  +-- storage/  bun:sqlite in %APPDATA%/based/app.db         |
-|  +-- secrets   Windows Credential Manager (@napi-rs/keyring)|
+|  +-- storage/  bun:sqlite in <app data>/based/app.db        |
+|  +-- secrets   OS keychain (@napi-rs/keyring)               |
 |  +-- import/export  CSV/XLSX                                |
 +---------------------------+---------------------------------+
                             |
@@ -36,10 +36,16 @@ TypeScript end to end, three processes, one of which is deliberately disposable.
 +-------------------------------------------------------------+
 ```
 
-**The shell is thin on purpose.** It holds no app logic — window management and process startup,
-nothing else — so replacing it is a contained job, not a rewrite. That was not hypothetical: the
-shell was Electrobun through v0.1.3 and swapping it for Tauri touched no `core/` or `ui/` code. The
-same thinness is what makes the macOS port tractable.
+**The shell is thin on purpose.** It holds no app logic — window management, process startup, and
+native file dialogs, nothing else — so replacing it is a contained job, not a rewrite. That was not
+hypothetical: the shell was Electrobun through v0.1.3 and swapping it for Tauri touched no `core/`
+or `ui/` code. The same thinness is what makes the macOS and Linux ports tractable.
+
+Dialogs are the one deliberate exception to "no app logic", and they are the kind that proves the
+rule: a file picker is a windowing-system concern, and the shell is the only process with a window.
+Core asks for one over the loopback channel and gets back a path (BASED-DIALOG-CHANNEL). Before
+this, core spawned `powershell.exe` with WinForms to draw them, which worked on exactly one
+platform and left a database client shelling out to PowerShell to choose a file.
 
 **Core holds every secret.** The webview never sees a connection password or an API key. It gets a
 per-launch bearer token in its URL hash and talks to loopback.
@@ -166,12 +172,23 @@ animates from noise into structure. Same table plus same seed gives a byte-ident
 
 ## Storage and secrets
 
-- `%APPDATA%/based/app.db` (`bun:sqlite`) — connections, tabs, window state, history, settings,
+The data directory is `%APPDATA%\based` on Windows and `~/Library/Application Support/based` on
+macOS. `appDataRoot()` in [core/src/storage/db.ts](../core/src/storage/db.ts) picks it, and
+`data_dir()` in `shell-tauri/src/main.rs` mirrors it in Rust — change the two together
+(`BASED-PLATFORM-PATHS`).
+
+- `<data dir>/app.db` (`bun:sqlite`) — connections, tabs, window state, history, settings,
   AI/embedding/reranker profiles, agent instruction sets, audit log.
-- `%APPDATA%/based/agent.db` (LibSQL) — agent thread memory.
-- **Windows Credential Manager** — every secret, keyed by id: SQL passwords, service principal
-  secrets, and all provider API keys. Deleted with the connection or profile. Uninstall leaves both
-  the data directory and the credentials alone.
+- `<data dir>/agent.db` (LibSQL) — agent thread memory.
+- **The OS keychain** — every secret, keyed by id: SQL passwords, service principal secrets, and all
+  provider API keys. Deleted with the connection or profile. Uninstall leaves both the data directory
+  and the credentials alone.
+
+One `@napi-rs/keyring` call reaches Windows Credential Manager and the macOS login Keychain alike, so
+[core/src/secrets.ts](../core/src/secrets.ts) has no platform branch. Entries use the service name
+`based-db-client`; the account is the connection id, or a profile id under an `ai:` / `embed:` /
+`rerank:` prefix. The 2560-byte size cap in that file is a Credential Manager limit, applied on both
+platforms so a secret that saves on one saves on the other.
 
 ## Packaging
 

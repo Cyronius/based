@@ -110,7 +110,8 @@ gateway. If you already run LM Studio with something loaded, pointing a profile 
 address (`http://localhost:1234/v1`) needs no API key; the others are the same two fields at their
 own address. OpenAI, Azure OpenAI, and Anthropic work this way too if you'd rather point at a hosted
 model instead.
-Connection secrets and API keys live in **Windows Credential Manager**, never in a config file; core
+Connection secrets and API keys live in your **OS keychain** — Windows Credential Manager, or the
+macOS login Keychain — never in a config file; core
 listens on loopback behind a per-launch token; there is no telemetry. See
 [docs/local-models.md](docs/local-models.md) for a local setup that works well on modest hardware.
 
@@ -124,6 +125,8 @@ region into a grid, find nearest neighbours by cosine similarity, let the model 
 <img src="docs/screenshots/atlas.gif" width="800" alt="The Embeddings Atlas: a point cloud animating from noise into labelled clusters as UMAP converges">
 
 ## Install
+
+**Windows x64.** There is no macOS build to install yet — see [Status](#status).
 
 Download the latest `based-<version>-Setup.exe` from
 **[Releases](https://github.com/Cyronius/based/releases/latest)** and run it. Per-user install into
@@ -174,12 +177,12 @@ authentication modes:
 |---|---|
 | **Entra ID interactive** | Opens your system browser to sign in; a local loopback listener captures the redirect |
 | **Azure CLI credential** | Reuses your existing `az login` session — no extra prompt |
-| **SQL login** | Username + password, stored in Windows Credential Manager |
+| **SQL login** | Username + password, stored in the OS keychain |
 | **Service principal** | Client ID + secret for automated/service accounts |
 
 Connection metadata (name, server, auth type) is stored locally; the secret itself never touches
-that store — it goes straight to Windows Credential Manager, keyed by connection ID, and is deleted
-when the connection is.
+that store — it goes straight to the OS keychain, keyed by connection ID, and is deleted when the
+connection is.
 
 **LanceDB**, local or cloud:
 
@@ -193,7 +196,7 @@ when the connection is.
 
 | Auth mode | How it works |
 |---|---|
-| **Password** | Username + password, stored in Windows Credential Manager |
+| **Password** | Username + password, stored in the OS keychain |
 | **Key pair (JWT)** | Paste a PEM private key (for an encrypted key, `{"key": "<PEM>", "pass": "<passphrase>"}`). Also how a service account satisfies Snowflake's MFA policy, which blocks password sign-in |
 | **SSO (external browser)** | Opens your system browser to your identity provider — no stored secret at all |
 
@@ -486,9 +489,9 @@ with no server round-trip, and flushes any unsaved editor edits first rather tha
 
 **Security posture, concretely:**
 
-- Every secret — SQL passwords, service principal secrets, every provider API key — is stored in
-  **Windows Credential Manager**, never in the local app database or any config file, and is deleted
-  when its connection or profile is.
+- Every secret — SQL passwords, service principal secrets, every provider API key — is stored in the
+  **OS keychain** (Windows Credential Manager; the login Keychain on macOS), never in the local app
+  database or any config file, and is deleted when its connection or profile is.
 - Core listens only on `127.0.0.1`, behind a **bearer token minted fresh per launch**; every request
   needs it.
 - The agent gets **schema, not data**, by default — row access only through explicit, row-capped
@@ -523,7 +526,11 @@ set (SQL Server keeps counting the true total past that point; DuckDB/LanceDB si
 **Alpha, and young.** based is useful enough to be a daily driver and is being used as one, but it's
 weeks old, not years. Specifically:
 
-- **Windows x64 only.** Secrets go through Windows Credential Manager and packaging is Windows-only.
+- **Windows x64 only, for now.** A macOS (arm64) port is underway and partly landed: per-platform
+  data directories ship today, and a macOS CI build produces a `.dmg`. That build has not been
+  launched on a Mac yet, and native dialogs, the app menu, Cmd-key shortcuts, and distribution are
+  still to do — see [specs/based/plans/macos-port.md](specs/based/plans/macos-port.md). Secrets are
+  not a blocker: the keychain layer is already platform-neutral.
 - **SQL Server / Azure SQL, Snowflake, and LanceDB.** The engine registry is built for more —
   adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.

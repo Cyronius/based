@@ -12,8 +12,6 @@
 //
 // Engine-specific tools (vector/keyword/hybrid search) live alongside in lancedb.ts. Personas live
 // with their engine. agentSurfaceFor (../surface.ts) assembles the whole thing.
-import { existsSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
@@ -640,9 +638,9 @@ function exportDataTool(deps: ToolDeps, caps: EngineCapabilities, prose: EngineA
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
-      const downloads = join(homedir(), "Downloads");
-      const targetDir = deps.exportDir?.() ?? (existsSync(downloads) ? downloads : tmpdir());
-      const targetPath = join(targetDir, name);
+      // Was a hand-rolled copy of resolveDownloadDir. The duplicate is what made the localized-
+      // Downloads fix a two-site change, so export_data now shares the one resolver.
+      const targetPath = join(resolveDownloadDir(deps.exportDir?.()), name);
       const op = `export_data(${format}, ${sql != null ? "sql" : qualify(ns, table!)} → ${targetPath})`;
       const t0 = performance.now();
       try {

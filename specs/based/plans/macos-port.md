@@ -1,8 +1,10 @@
 # Plan: macOS port + CI release pipeline
 
-**Status:** in progress — **Phases 1–2 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
-macOS build workflow landed and green, `.dmg` artifact produced)
-**Spec impact:** 6 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-MENU-MAC`,
+**Status:** in progress — **Phases 1–3 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
+macOS build workflow landed and green, `.dmg` artifact produced; dialogs moved into the shell as
+`BASED-DIALOG-CHANNEL`)
+**Spec impact:** 7 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-DIALOG-CHANNEL` ✅,
+`BASED-MENU-MAC`,
 `BASED-WINDOW-LIFECYCLE-MAC`, `BASED-PACKAGE-MAC`, `BASED-INSTALLER-MAC`, `BASED-RELEASE-CI`),
 8 modified (`BASED-SECRET-STORE`, `BASED-DIALOG-OPEN-FILE`, `BASED-FILE-OPEN-SQL`,
 `BASED-SAVE-FILE-WRITER`, `BASED-UI-SHORTCUTS`, `BASED-OPEN-SQL-ARGV`, `BASED-DEV-CLEAN-SHUTDOWN`,
@@ -126,35 +128,57 @@ served its purpose, leaving `workflow_dispatch` as the sole trigger described in
 
 ---
 
-### Phase 3 — Native dialogs (2 d)
+### ✅ Phase 3 — Native dialogs (done)
 
-[`core/src/dialogs.ts`](../../../core/src/dialogs.ts) is the single genuinely Windows-locked source
-file: all four exports shell out to `powershell.exe` with WinForms
+[`core/src/dialogs.ts`](../../../core/src/dialogs.ts) was the single genuinely Windows-locked source
+file: all four exports shelled out to `powershell.exe` with WinForms
 (`SaveFileDialog` / `OpenFileDialog` / `FolderBrowserDialog`) or to `cmd.exe /c start`.
 
-Two viable designs:
+**Design (2) was taken** — dialogs moved into the Tauri shell — over design (1), an `osascript`
+sibling branch. What settled it was the Linux port ([`linux-port.md`](linux-port.md)): design (1)
+would have needed a *third* branch (`zenity`/`kdialog` plus `xdg-open`) and a runtime dependency on
+a dialog binary that is not guaranteed present, while (2) covers all three targets at once. It also
+retires code the spec had to apologize for.
 
-1. **`osascript` sibling** — add a darwin branch that shells to `osascript -e 'choose file …'` and
-   `open <path>`. Preserves the existing spawn-a-subprocess shape and the "shell is disposable"
-   principle. Roughly a day.
-2. **Move dialogs into the Tauri shell** (`tauri-plugin-dialog`), exposed to core over the existing
-   loopback channel. Real native dialogs on both platforms, deletes the PowerShell hack outright,
-   and removes the odd situation where a *database client* spawns a PowerShell process to pick a
-   file. Roughly two days.
+Shipped as the new **`BASED-DIALOG-CHANNEL`** requirement:
 
-**Recommend (2).** It costs one extra day and retires code the spec currently has to apologize for.
-The tradeoff is that it breaks the current invariant that the shell holds no app logic — dialogs
-become the one exception, which is defensible because they are inherently a windowing-system
-concern. If (1) is chosen instead to save time, `BASED-DIALOG-OPEN-FILE`'s wording changes but the
-loopback API surface does not, so the choice is reversible.
+- `core/src/dialogs.ts` is now a broker, not a subprocess launcher. `requestDialog()` queues a
+  `{ id, kind, … }` request and awaits an answer; `filterFor()` returns
+  `{ name, extensions[] }[]` (mirroring `tauri-plugin-dialog`'s `add_filter`) instead of a
+  pipe-delimited WinForms filter string.
+- Two routes carry it, behind the existing token auth: `GET /api/shell/dialog/next` (long-poll,
+  `204` when idle) and `POST /api/shell/dialog/result`.
+- [`main.rs`](../../../shell-tauri/src/main.rs) gained `start_dialog_worker`, a background thread
+  that polls, draws the picker with `tauri-plugin-dialog`'s **blocking** API (correct precisely
+  because it is not the main thread), and posts the answer back.
+  `openWithDefaultApp` became `tauri-plugin-opener`.
 
-Either way the core-facing API (`POST /api/dialog/open-file`, `/api/file/open-sql`,
-`/api/file/save-sql`) is unchanged, so the UI needs no edits and the existing integration tests keep
-passing.
+**HTTP rather than the `BASED_EVENT` stdout protocol** — the design detail worth remembering. In
+dev, `scripts/dev.ts` starts core, so the shell is *not* core's parent and has no stdout to read.
+Loopback HTTP is the only channel that exists in both dev and packaged runs.
 
-**Also in this phase:** `resolveDownloadDir()` in `core/src/files/saveFile.ts`
+The core-facing API (`POST /api/dialog/open-file`, `/api/file/open-sql`, `/api/file/save-sql`) is
+unchanged, so the UI needed no edits.
+
+**Two consequences, both accepted:**
+
+1. The `dev:core` + `dev:ui` browser loop has no native pickers — nothing is attached to draw them.
+   Those routes answer with a named error naming the explicit-path alternative rather than hanging.
+   Documented in [`docs/development.md`](../../../docs/development.md).
+2. The "shell holds no app logic" invariant now has exactly one exception, noted in
+   [`docs/architecture.md`](../../../docs/architecture.md). A file picker is a windowing-system
+   concern and the shell is the only process with a window.
+
+**Verified:** `cargo check` clean, 621 pass / 0 fail (up from 606), and a new
+[`integration.dialogChannel.test.ts`](../tests/integration.dialogChannel.test.ts) plays the shell's
+part — 11 tests covering both routes, all four kinds, cancel, the no-shell error, duplicate and
+unknown result ids, and auth. That turns what was a `manual` requirement into a real `integration`
+one; only "does the picker widget actually appear" stays manual, on the Phase 7 checklist.
+
+**Still open from this phase:** `resolveDownloadDir()` in `core/src/files/saveFile.ts`
 (`BASED-SAVE-FILE-WRITER`) — verify it resolves the Downloads folder from `$HOME` on macOS rather
-than `USERPROFILE`, and that its temp-dir fallback is right.
+than `USERPROFILE`, and that its temp-dir fallback is right. (The Linux plan additionally wants XDG
+user-dirs there, since a localized desktop has no `~/Downloads`.)
 
 ---
 
@@ -269,7 +293,13 @@ restore, and the dock-reopen behavior.
 **New requirements:**
 
 - ✅ **`BASED-PLATFORM-PATHS`** (core + shell-tauri, unit) — per-platform data directory, and the
-  obligation that the TS and Rust implementations agree. **Merged into `spec.md`.**
+  obligation that the TS and Rust implementations agree. **Merged into `spec.md`.** (Later extended
+  with the Linux/XDG branch by [`linux-port.md`](linux-port.md) Phase 1.)
+- ✅ **`BASED-DIALOG-CHANNEL`** (core + shell-tauri, integration) — the shell draws every native
+  picker; core requests one over loopback HTTP. Added in Phase 3, not in the original sketch, which
+  assumed the dialog change would only reword `BASED-DIALOG-OPEN-FILE`. It needs its own requirement
+  because the wire protocol, the no-shell failure mode, and the fire-and-forget `open-path` kind are
+  all behavior a stakeholder would file a bug about. **Merged into `spec.md`.**
 - **`BASED-MENU-MAC`** (shell-tauri, manual) — the macOS menu bar, and specifically that webview
   edit commands work because of it.
 - **`BASED-WINDOW-LIFECYCLE-MAC`** (shell-tauri, manual) — close ≠ quit, dock reopen, core child
@@ -284,13 +314,17 @@ restore, and the dock-reopen behavior.
 
 **Modified:**
 
-- **`BASED-SECRET-STORE`** — title and body currently say "Windows Credential Manager". Becomes the
-  OS keychain (Credential Manager / macOS Keychain) via the same `@napi-rs/keyring` API. Note that
-  the 2560-byte blob cap and the UTF-16 halving are **Credential Manager limits, not Keychain
-  limits** — the byte-encoding requirement and the over-cap guard stay, but their justification and
-  the platforms they bite on need restating. The legacy-blob upgrade path is Windows-only history.
-- **`BASED-DIALOG-OPEN-FILE`**, **`BASED-FILE-OPEN-SQL`** — dialog mechanism is no longer
-  "PowerShell WinForms"; endpoint contracts unchanged.
+- ✅ **`BASED-SECRET-STORE`** — **merged into `spec.md`.** Retitled "Secrets in the OS keychain";
+  body now says Credential Manager / macOS Keychain behind one `@napi-rs/keyring` API. The
+  2560-byte blob cap and the UTF-16 halving are restated as **Credential Manager limits, not
+  Keychain limits**, applied on both platforms so one entry format reads back anywhere; the
+  legacy-blob upgrade path is called out as Windows-only history. No code change was needed — only
+  comments, the test's describe title, and the docs (README, `docs/architecture.md`,
+  `docs/development.md`, `docs/local-models.md`). The on-hardware round-trip stays a Phase 7 item.
+- ✅ **`BASED-DIALOG-OPEN-FILE`**, **`BASED-FILE-OPEN-SQL`** — **merged into `spec.md`.** Both now
+  say "native open-file picker (BASED-DIALOG-CHANNEL)" rather than "PowerShell WinForms"; endpoint
+  contracts unchanged. `BASED-DIALOG-OPEN-FILE` stays `manual`, but only for the widget itself —
+  its verification note now points at the channel's integration test for the round trip.
 - **`BASED-SAVE-FILE-WRITER`** — `resolveDownloadDir` resolution on macOS. Extension whitelist is
   unchanged (`.exe`/`.ps1` etc. stay refused regardless of platform — the caller is still the model).
 - **`BASED-UI-SHORTCUTS`** — binding table gains macOS modifiers; discoverability rule now requires
@@ -307,13 +341,13 @@ restore, and the dock-reopen behavior.
 | Phase | Est. | Mac needed? |
 |---|---|---|
 | ~~1 — Platform abstraction~~ | ~~0.5 d~~ **done** | no |
-| ~~2 — First CI build~~ | ~~1 d~~ **done, run pending** | no |
-| 3 — Native dialogs | 2 d | no (verify in 7) |
+| ~~2 — First CI build~~ | ~~1 d~~ **done** | no |
+| ~~3 — Native dialogs~~ | ~~2 d~~ **done** | no (verify in 7) |
 | 4 — macOS UX conventions | 2.5 d | no (verify in 7) |
 | 5 — Packaging + distribution | 1.5 d | no (verify in 7) |
 | 6 — Release pipeline | 1 d | no |
 | 7 — Verification + WKWebView shakeout | 1–3 d | **yes** |
-| | **8–10 d remaining** | |
+| | **6–8 d remaining** | |
 
 ## Out of scope
 

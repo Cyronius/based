@@ -5,9 +5,84 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_SAVE_FILE_BYTES, SAVE_FILE_EXTENSIONS, sanitizeSaveFileName, writeTextFileUnique } from "@based/core";
+import {
+  MAX_SAVE_FILE_BYTES,
+  SAVE_FILE_EXTENSIONS,
+  parseXdgDownloadDir,
+  resolveDownloadDir,
+  sanitizeSaveFileName,
+  writeTextFileUnique,
+} from "@based/core";
 
 const dir = mkdtempSync(join(tmpdir(), "based-savefile-"));
+
+/** Compare by path segments so these hold on any build host, not just one whose separator matches
+ *  the platform under test. */
+function seg(p: string): string[] {
+  return p.split(/[\\/]/).filter(Boolean);
+}
+
+describe("BASED-SAVE-FILE-WRITER: resolveDownloadDir + XDG user-dirs", () => {
+  test("an explicit override wins over everything", () => {
+    expect(resolveDownloadDir(dir)).toBe(dir);
+  });
+
+  // The Downloads folder is localized on Linux — a French desktop has ~/Téléchargements and no
+  // ~/Downloads at all, so the hardcoded name fell through to the temp directory.
+  test("a localized XDG_DOWNLOAD_DIR is read, with $HOME expanded", () => {
+    const body = [
+      "# This file is written by xdg-user-dirs-update",
+      'XDG_DESKTOP_DIR="$HOME/Bureau"',
+      'XDG_DOWNLOAD_DIR="$HOME/Téléchargements"',
+      'XDG_MUSIC_DIR="$HOME/Musique"',
+      "",
+    ].join("\n");
+    expect(seg(parseXdgDownloadDir(body, "/home/ada")!)).toEqual(["home", "ada", "Téléchargements"]);
+  });
+
+  test("an absolute value is taken as-is, off the home directory entirely", () => {
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="/mnt/bulk/dl"', "/home/ada")).toBe("/mnt/bulk/dl");
+  });
+
+  test("bare $HOME resolves to the home directory", () => {
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="$HOME"', "/home/ada")).toBe("/home/ada");
+  });
+
+  test("a commented-out entry is not read", () => {
+    expect(parseXdgDownloadDir('#XDG_DOWNLOAD_DIR="$HOME/Downloads"', "/home/ada")).toBeNull();
+    expect(parseXdgDownloadDir('  # XDG_DOWNLOAD_DIR="$HOME/Downloads"', "/home/ada")).toBeNull();
+  });
+
+  test("a file naming no download dir, or an empty one, yields null", () => {
+    expect(parseXdgDownloadDir('XDG_MUSIC_DIR="$HOME/Music"', "/home/ada")).toBeNull();
+    expect(parseXdgDownloadDir("", "/home/ada")).toBeNull();
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR=""', "/home/ada")).toBeNull();
+  });
+
+  // Half-expanding an unknown variable would produce a path that looks valid and is not, so the
+  // whole value is discarded instead.
+  test("a value naming any variable other than $HOME is discarded, not half-expanded", () => {
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="$XDG_DATA_HOME/dl"', "/home/ada")).toBeNull();
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="$HOME/$USER/dl"', "/home/ada")).toBeNull();
+  });
+
+  test("a relative value is rejected — the caller needs an absolute directory to write into", () => {
+    expect(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="Downloads"', "/home/ada")).toBeNull();
+  });
+
+  test("the last assignment wins, matching shell sourcing semantics", () => {
+    const body = ['XDG_DOWNLOAD_DIR="$HOME/first"', 'XDG_DOWNLOAD_DIR="$HOME/second"'].join("\n");
+    expect(seg(parseXdgDownloadDir(body, "/home/ada")!)).toEqual(["home", "ada", "second"]);
+  });
+
+  test("CRLF line endings parse the same as LF", () => {
+    expect(seg(parseXdgDownloadDir('XDG_DOWNLOAD_DIR="$HOME/Downloads"\r\n', "/home/ada")!)).toEqual([
+      "home",
+      "ada",
+      "Downloads",
+    ]);
+  });
+});
 
 describe("BASED-SAVE-FILE-WRITER: sanitizeSaveFileName", () => {
   test("rejects directories, traversal, and empty names", () => {

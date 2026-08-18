@@ -25,24 +25,31 @@ struct ShellState {
 struct CoreChild(Mutex<Option<Child>>);
 
 /// BASED-PLATFORM-PATHS: mirror of core's appDataRoot()/dataDir() (core/src/storage/db.ts).
-/// %APPDATA%\based on Windows, ~/Library/Application Support/based on macOS, unless overridden.
+/// %APPDATA%\based on Windows, ~/Library/Application Support/based on macOS,
+/// $XDG_DATA_HOME/based (default ~/.local/share/based) on Linux, unless overridden.
 /// Change this and the TypeScript side together — the shell reads pending-open.txt from the
 /// directory core writes it to, so a drift between them silently breaks file-open-at-launch.
 ///
-/// `cfg!` (not `#[cfg]`) so both branches type-check on every host; the dead one is optimized out.
+/// `cfg!` (not `#[cfg]`) so every branch type-checks on every host; the dead ones are optimized out.
 fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("BASED_DATA_DIR") {
         return PathBuf::from(d);
     }
+    let home = || PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
     if cfg!(target_os = "macos") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        Path::new(&home)
-            .join("Library")
-            .join("Application Support")
-            .join("based")
-    } else {
+        home().join("Library").join("Application Support").join("based")
+    } else if cfg!(target_os = "windows") {
         let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
         Path::new(&appdata).join("based")
+    } else {
+        // XDG requires a relative $XDG_DATA_HOME to be ignored; the filter also covers the empty
+        // string, which is how an unset variable often reaches a child process.
+        std::env::var("XDG_DATA_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home().join(".local").join("share"))
+            .join("based")
     }
 }
 
@@ -115,6 +122,126 @@ fn create_window(app: &AppHandle, existing_sid: Option<String>, open_path: Optio
     if std::env::var("BASED_DEVTOOLS").as_deref() == Ok("1") {
         win.open_devtools();
     }
+}
+
+// --- BASED-DIALOG-CHANNEL: the shell draws core's native pickers ---
+//
+// Core has no windowing system, so it cannot open a file picker; it used to shell out to PowerShell
+// WinForms, which was Windows-only. A background thread here long-polls core for dialog requests,
+// draws the picker with tauri-plugin-dialog, and posts the answer back. See core/src/dialogs.ts for
+// the other end and the wire format.
+//
+// Why HTTP rather than the BASED_EVENT stdout protocol: in dev, core is started by scripts/dev.ts
+// and this process is not its parent, so there is no stdout to read. Loopback HTTP is the only
+// channel that exists in both dev and packaged runs.
+//
+// The `blocking_*` picker calls are correct here *because* this is not the main thread — that is the
+// documented split in tauri-plugin-dialog, and calling them on the main thread deadlocks. Serving
+// requests one at a time on this thread is also what a modal picker wants.
+
+/// Must exceed core's 25 s poll hold, so an idle poll ends as core's own 204 rather than as a
+/// client-side timeout that would spin this loop.
+const DIALOG_POLL_TIMEOUT: Duration = Duration::from_secs(35);
+
+#[derive(serde::Deserialize)]
+struct DialogFilter {
+    name: String,
+    extensions: Vec<String>,
+}
+
+/// Flat rather than a tagged enum: the shell is a thin forwarder, and per-kind fields that arrive
+/// absent are simply unused.
+#[derive(serde::Deserialize)]
+struct DialogRequest {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    filters: Vec<DialogFilter>,
+    #[serde(default, rename = "defaultName")]
+    default_name: Option<String>,
+    #[serde(default, rename = "startingFolder")]
+    starting_folder: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Returns the chosen path, or None for a cancel or an unrecognized kind.
+fn run_dialog(app: &AppHandle, req: &DialogRequest) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut builder = app.dialog().file();
+    for f in &req.filters {
+        let exts: Vec<&str> = f.extensions.iter().map(String::as_str).collect();
+        builder = builder.add_filter(&f.name, &exts);
+    }
+    let picked = match req.kind.as_str() {
+        "open-file" => builder.blocking_pick_file(),
+        "save-file" => {
+            if let Some(name) = &req.default_name {
+                builder = builder.set_file_name(name.as_str());
+            }
+            builder.blocking_save_file()
+        }
+        "open-folder" => {
+            if let Some(dir) = &req.starting_folder {
+                builder = builder.set_directory(PathBuf::from(dir));
+            }
+            builder.blocking_pick_folder()
+        }
+        other => {
+            eprintln!("based shell: unknown dialog kind {other}");
+            None
+        }
+    };
+    picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+fn start_dialog_worker(app: AppHandle, base_url: String, token: String) {
+    std::thread::spawn(move || {
+        let next = format!("{base_url}/api/shell/dialog/next?token={token}");
+        let result = format!("{base_url}/api/shell/dialog/result?token={token}");
+        loop {
+            let resp = match ureq::get(&next).timeout(DIALOG_POLL_TIMEOUT).call() {
+                Ok(r) => r,
+                Err(_) => {
+                    // Core is restarting, gone, or the poll outlived its timeout. Back off enough
+                    // that a dead core can't spin this thread, briefly enough that a `bun --watch`
+                    // restart in dev is picked up without the user noticing.
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            };
+            if resp.status() == 204 {
+                continue; // nothing was requested within the hold window
+            }
+            let Ok(body) = resp.into_string() else { continue };
+            let req: DialogRequest = match serde_json::from_str(&body) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("based shell: bad dialog request ({e}): {body}");
+                    continue;
+                }
+            };
+            // Fire-and-forget: core registers no waiter for this kind, so there is nothing to post.
+            if req.kind == "open-path" {
+                if let Some(p) = &req.path {
+                    use tauri_plugin_opener::OpenerExt;
+                    if let Err(e) = app.opener().open_path(p.clone(), None::<&str>) {
+                        eprintln!("based shell: could not open {p}: {e}");
+                    }
+                }
+                continue;
+            }
+            let picked = run_dialog(&app, &req);
+            let payload = serde_json::json!({ "id": req.id, "path": picked }).to_string();
+            let _ = ureq::post(&result)
+                .timeout(HTTP_TIMEOUT)
+                .set("content-type", "application/json")
+                .send_string(&payload);
+        }
+    });
 }
 
 /// BASED-WINDOW-RESTORE: sids that were still open when the app last exited.
@@ -245,6 +372,10 @@ fn main() {
         .collect();
 
     tauri::Builder::default()
+        // BASED-DIALOG-CHANNEL. Rust-side use only; no capability grant, because the page never
+        // gets the Tauri API (windows load External URLs).
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         // Single-instance at the OS level: a second launch fires this callback in the primary with
         // the secondary's argv, then exits.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
@@ -288,6 +419,10 @@ fn main() {
                 windows_created: AtomicUsize::new(0),
             });
             app.manage(CoreChild(Mutex::new(child)));
+
+            // BASED-DIALOG-CHANNEL. Started before any window, so a picker requested by the very
+            // first thing the user does already has a poll parked to serve it.
+            start_dialog_worker(app.handle().clone(), base_url.clone(), token.clone());
 
             // Restore ordering: persisted sids first, then explicit file-open requests, and a bare
             // window only if neither produced one — so a launch never opens zero windows.

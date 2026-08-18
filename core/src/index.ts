@@ -144,6 +144,7 @@ export {
   sanitizeSaveFileName,
   isAllowedSaveExtension,
   resolveDownloadDir,
+  parseXdgDownloadDir,
   writeTextFileUnique,
   SAVE_FILE_EXTENSIONS,
   MAX_SAVE_FILE_BYTES,

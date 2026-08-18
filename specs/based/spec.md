@@ -21,13 +21,15 @@ Connections (name, server, initial database, auth type, options) shall persist i
 - The stored record contains no password/client-secret material
 - The two search-profile ids round-trip, can be cleared back to `null`, and read as absent on a config saved without them
 
-### BASED-SECRET-STORE: Secrets in Windows Credential Manager
+### BASED-SECRET-STORE: Secrets in the OS keychain
 **Applies to:** based (core)
 **Test category:** integration
 
-SQL-login passwords and service-principal client secrets shall be stored in Windows Credential Manager keyed by connection id, retrievable by the core process, and deleted when the connection is deleted.
+SQL-login passwords and service-principal client secrets shall be stored in the OS keychain — Windows Credential Manager on Windows, the login Keychain on macOS — keyed by connection id, retrievable by the core process, and deleted when the connection is deleted. Both platforms are reached through one `@napi-rs/keyring` API under the service name `based-db-client` (overridable with `BASED_KEYRING_SERVICE`); `core/src/secrets.ts` carries no per-platform branch.
 
-Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error. Blobs written by the earlier password path shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk.
+Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error.
+
+The cap and the byte encoding are **Credential Manager limits, not Keychain limits**. Both are nonetheless applied on every platform: a shared limit means a secret that saves on macOS also saves on Windows, and one keychain entry format reads back on either. Blobs written by the earlier password path shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk. That path only ever ran on Windows, so no such blob exists on a macOS install.
 
 **Acceptance criteria:**
 - `setSecret(id, s)` → `getSecret(id)` returns `s`
@@ -36,6 +38,8 @@ Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credent
 - A 1704-character (2048-bit PEM sized) secret round-trips; multi-byte characters survive and are charged by byte
 - A secret over the cap throws a message naming the limit, and stores nothing
 - A credential written by the legacy password path still reads back, and reads back correctly after being rewritten
+
+The integration tests exercise whichever keychain the test host provides, so running them on macOS verifies the Keychain path. The macOS round-trip has not yet been run on real hardware — it is on the Phase 7 checklist in [plans/macos-port.md](plans/macos-port.md), together with the 1704-character PEM case.
 
 **Implementation note (packaging, no spec impact):** `@napi-rs/keyring`'s loader reassigns `require = createRequire(__filename)` so it resolves its native `.node` binding relative to its own package when run unbundled (validated directly under Bun). Bun's bundler inlines `__filename` as the store path and lets that reassignment clobber the bundle-global `require` (`import.meta.require`), so the platform binary — which the bundler copies next to the output `index.js` — is resolved against the wrong directory and fails to load as a misleading "Cannot find native binding". Fixed in [shell-tauri/bundle-core.ts](../../shell-tauri/bundle-core.ts) with a `Bun.build` `onLoad` plugin that strips the reassignment for the packaged core bundle only (core's direct-Bun path and these tests are unaffected). Upstream this is a Bun bundler bug with napi-rs loaders that reassign `require`; the plugin is a rebuild-surviving workaround. If keyring loading breaks again after a Bun upgrade, re-check that plugin.
 
@@ -70,7 +74,7 @@ Auth type `entra-interactive` shall launch the system browser, capture the redir
 **Applies to:** based (core)
 **Test category:** manual
 
-Auth type `sql-login` shall connect with username + password (password from Credential Manager).
+Auth type `sql-login` shall connect with username + password (password from the OS keychain, BASED-SECRET-STORE).
 
 **Verification procedure:** create a connection with a SQL auth login on any reachable SQL Server, Test Connection → success; wrong password → readable failure.
 
@@ -78,7 +82,7 @@ Auth type `sql-login` shall connect with username + password (password from Cred
 **Applies to:** based (core)
 **Test category:** manual
 
-Auth type `service-principal` shall acquire a token via ClientSecretCredential (tenant id + client id + secret from Credential Manager) and connect.
+Auth type `service-principal` shall acquire a token via ClientSecretCredential (tenant id + client id + secret from the OS keychain, BASED-SECRET-STORE) and connect.
 
 **Verification procedure:** create a connection with a service principal that has DB access, Test Connection → success.
 
@@ -449,8 +453,20 @@ directory. `sanitizeSaveFileName(name, defaultExt?)` accepts only a bare file na
 is on `SAVE_FILE_EXTENSIONS` — `html, htm, md, markdown, txt, sql, json, csv, tsv, xml, yaml, yml,
 svg, log`. This is a whitelist, not a blacklist: the caller is the model, so the guard has to be
 "only these document types" rather than "not these bad ones". `defaultExt` fills a missing
-extension but never replaces a present valid one. `resolveDownloadDir(override?)` resolves to the
-user's Downloads folder, falling back to the temp dir. `writeTextFileUnique(dir, name, content)`
+extension but never replaces a present valid one.
+
+`resolveDownloadDir(override?)` resolves to the user's Downloads folder, falling back to the temp
+dir. On Linux it consults the freedesktop `user-dirs.dirs` config first (under `$XDG_CONFIG_HOME`,
+default `~/.config`), because **the folder is localized there** — a French desktop has
+`~/Téléchargements` and no `~/Downloads`, so the hardcoded name silently fell through to the temp
+directory. Windows and macOS use the literal `~/Downloads` path whatever the display language is,
+and shall not perform the lookup. `parseXdgDownloadDir(body, home)` is the pure parser: it expands
+`$HOME` and nothing else, ignores commented lines, takes the last assignment, and shall return null
+rather than a guess for any value that is empty, relative, or names another variable.
+`export_data` resolves its target directory through this same function; it shall not carry its own
+copy.
+
+`writeTextFileUnique(dir, name, content)`
 never overwrites — an existing name gets `-2`, `-3`, … — and returns the path actually written plus
 its UTF-8 byte length. (`exportData` may overwrite because its default names are timestamped; a
 model-chosen `report.html` is a plausible collision with a file the user already had.)
@@ -462,6 +478,13 @@ model-chosen `report.html` is a plausible collision with a file the user already
 - `("notes", "md")` → `notes.md`; `("notes.txt", "md")` → `notes.txt`; `("notes.exe", "md")` → throws
 - Writing `report.html` three times into one directory yields `report.html`, `report-2.html`, `report-3.html`, each with its own content
 - `bytes` is the UTF-8 byte length, not the character count (`"café — ok"`)
+- `resolveDownloadDir(dir)` returns `dir` unchanged
+- `XDG_DOWNLOAD_DIR="$HOME/Téléchargements"` with home `/home/ada` → `/home/ada/Téléchargements`
+- `"/mnt/bulk/dl"` → itself; `"$HOME"` → the home directory
+- `#XDG_DOWNLOAD_DIR=…` (with or without a leading space) → null
+- No `XDG_DOWNLOAD_DIR` line, an empty body, or `XDG_DOWNLOAD_DIR=""` → null
+- `"$XDG_DATA_HOME/dl"`, `"$HOME/$USER/dl"`, and the relative `"Downloads"` → null
+- Two `XDG_DOWNLOAD_DIR` lines → the second one; CRLF parses as LF
 
 ---
 
@@ -541,23 +564,69 @@ grid reloads.
 3. Unmapping a NOT NULL column shows a warning before run
 4. The button is absent on views, PK-less (read-only) tables, and LanceDB connections
 
+### BASED-DIALOG-CHANNEL: Native dialogs are drawn by the shell
+**Applies to:** based (core + shell-tauri)
+**Test category:** integration
+
+Core has no windowing system, so every native picker is drawn by the shell (`tauri-plugin-dialog`)
+and requested by core over the loopback HTTP server, behind the same token auth as every other route
+(BASED-API-AUTH):
+
+| Route | Direction | Contract |
+|---|---|---|
+| `GET /api/shell/dialog/next` | shell polls core | `200` with a pending request, or `204` when none arrived within the hold window. `holdMs` shortens the hold; it shall be clamped so a caller cannot pin a connection open |
+| `POST /api/shell/dialog/result` | shell answers core | `{ id, path }`; `path: null` is a cancel. A missing `id` is a 400. An unknown or already-answered `id` shall be ignored, not an error |
+
+A request carries `{ id, kind, … }` where `kind` is `open-file`, `save-file`, `open-folder`, or
+`open-path`, plus the fields that kind needs: `filters` (`{ name, extensions[] }`, mirroring
+`tauri-plugin-dialog`'s `add_filter`), `defaultName`, `startingFolder`, `path`.
+
+`open-path` — handing an exported file to the OS default application — is fire-and-forget: core
+registers no waiting caller and the shell posts no result. The agent's export tools call it after a
+successful write and shall not fail because the handoff did.
+
+**HTTP, not the `BASED_EVENT` stdout protocol**, because in dev the shell is not core's parent
+process (`scripts/dev.ts` starts core separately) and so has no stdout to read. Loopback HTTP is the
+only channel that exists in both dev and packaged runs.
+
+**A core with no shell attached has no dialogs.** A dialog request in that state shall fail with a
+named error that says so and points at the explicit-path alternative — never hang. This is what a
+`bun run dev:core` plus browser-tab session hits; every route that opens or saves a file also
+accepts an explicit `path` that skips the picker, so scripted and test flows are unaffected.
+
+This requirement replaces the PowerShell WinForms implementation, which was Windows-only and made a
+database client spawn a PowerShell process to choose a file.
+
+**Acceptance criteria:**
+- No shell attached → `/api/dialog/open-file` errors, and the message names both the missing shell and the explicit-path alternative
+- An idle poll returns `204`
+- `/api/dialog/open-file { kind: "csv" }` → the shell receives `kind: "open-file"` with CSV-then-all-files filters; answering with a path returns `{ path }`
+- Answering with `null` returns `{ path: null }` and is not an error
+- `/api/dialog/folder { startingFolder }` forwards `startingFolder`
+- `/api/file/save-sql` sends `kind: "save-file"` with `defaultName`, and writes the content to the answered path; a cancelled save writes nothing
+- `/api/export { openAfter: true }` dispatches `kind: "open-path"` carrying the file it just wrote, with no result posted back
+- A result with no `id` is a 400; an unknown or duplicate `id` is a 200 no-op
+- Both routes are 401 without a token
+
 ### BASED-DIALOG-OPEN-FILE: Native open-file dialog
 **Applies to:** based (core)
 **Test category:** manual
 
-`POST /api/dialog/open-file { kind }` opens a native OpenFileDialog (PowerShell WinForms, like the
-existing save/folder dialogs) filtered per kind and returns `{ path }` or `{ path: null }` on
-cancel.
+`POST /api/dialog/open-file { kind }` opens a native open-file picker filtered per kind
+(BASED-DIALOG-CHANNEL) and returns `{ path }` or `{ path: null }` on cancel.
 
 **Verification procedure:** the import stepper's "Choose file" opens the native dialog filtered to
-`*.csv`; cancel returns to the stepper without error.
+`*.csv`; cancel returns to the stepper without error. Manual because only the on-hardware run proves
+the picker widget itself appears — the request/answer round trip is covered by
+BASED-DIALOG-CHANNEL's integration test.
 
 ### BASED-FILE-OPEN-SQL: Open a .sql file into a query tab
 **Applies to:** based (core + ui)
 **Test category:** integration (endpoint) + manual (UI)
 
-`POST /api/file/open-sql { path? }` opens a native OpenFileDialog filtered to `*.sql` when no
-`path` is given (cancel → `{ path: null }`), reads the file, and returns `{ path, content }`; an
+`POST /api/file/open-sql { path? }` opens a native open-file picker filtered to `*.sql`
+(BASED-DIALOG-CHANNEL) when no `path` is given (cancel → `{ path: null }`), reads the file, and
+returns `{ path, content }`; an
 explicit `path` skips the dialog (mirrors `/api/file/save-sql`). A missing file is a 400 with an
 error message. In the UI, Ctrl+O and the query-tab toolbar's "Open…" button open the chosen file
 in a new query tab titled by the file name, with `filePath` set and not dirty; choosing a file
@@ -884,12 +953,12 @@ context menu. Read-only v1 — no diagram-driven DDL. Not exposed for LanceDB.
 **Applies to:** based (core)
 **Test category:** integration
 
-Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, base URL, default model, optional deployment) persists in the local store; the API key lives in Windows Credential Manager, never the store. A resolver turns the active config into an AI SDK `LanguageModel`. There is no built-in default — a fresh install has no configured provider until the user adds one.
+Provider config (kind ∈ {openai-compatible, openai, azure-openai, anthropic}, base URL, default model, optional deployment) persists in the local store; the API key lives in the OS keychain (BASED-SECRET-STORE), never the store. A resolver turns the active config into an AI SDK `LanguageModel`. There is no built-in default — a fresh install has no configured provider until the user adds one.
 
 **Acceptance criteria:**
 - Save config → read back identical fields; the stored record contains no key material
 - No config saved yet → the store's read returns `null`, not a hardcoded default
-- `setAiKey`/`getAiKey`/`deleteAiKey` round-trip through Credential Manager
+- `setAiKey`/`getAiKey`/`deleteAiKey` round-trip through the OS keychain
 - The `openai-compatible` resolver returns a model for a reachable base URL
 
 **Implementation note (no spec impact):** the `openai` / `azure-openai` / `anthropic` branches are wired natively — see BASED-AI-PROVIDER-WIRED. A single `zod@3.25.76` override reconciles the AI SDK's `zod/v4` subpath imports.
@@ -1936,7 +2005,7 @@ Settled tool calls (backend tools, which have no bespoke frontend renderer — o
 **Applies to:** based (core, ui)
 **Test category:** integration (CRUD + migration, `specs/based/tests/integration.agent.test.ts`); manual (active-profile switch actually changing which model the agent runs against, needs a live backend)
 
-Users configure one or more named AI provider profiles (`name`, `kind` — openai-compatible/openai/azure-openai/anthropic —, `baseUrl`, `model`, optional `deployment` for Azure, `instructionSetId`, optional API key) CRUD'd via `GET/POST /api/ai-profiles` and `DELETE /api/ai-profiles/:id`, persisted in `ai_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `ai:` prefix — same convention as `BASED-LANCE-EMBED-PROFILES`). Exactly one profile is active at a time, set via `POST /api/ai-profiles/active` and persisted as `activeAiProfileId` in `AppSettings`; the agent resolves and runs against whichever profile is active. Each profile carries an `instructionSetId` linking it to a reusable instruction set (`BASED-AGENT-INSTRUCTIONS`, default `"default"`); the running agent resolves its instructions from the **active profile's** linked set (via `AgentInstructionsStore.resolveById`), so selecting a profile selects both the model and its persona. A link to a set that no longer exists falls back to the `"default"` set at resolve time. A fresh install has zero profiles and no built-in default — the list stays genuinely empty until the user adds one, and invoking the agent with none configured fails cleanly with a "no agent profile configured" error rather than a raw connection error. If a *real* legacy single `ai_config` row exists (pre-profiles installs), it's migrated once on first use into a profile named "Default" (linked to `"default"`) and marked active, carrying over its Credential Manager key. Profiles read from the store without a stored `instructionSetId` (legacy rows) default it to `"default"`.
+Users configure one or more named AI provider profiles (`name`, `kind` — openai-compatible/openai/azure-openai/anthropic —, `baseUrl`, `model`, optional `deployment` for Azure, `instructionSetId`, optional API key) CRUD'd via `GET/POST /api/ai-profiles` and `DELETE /api/ai-profiles/:id`, persisted in `ai_profiles` (metadata) + the OS keychain (API key, keyed by profile id, `ai:` prefix — same convention as `BASED-LANCE-EMBED-PROFILES`). Exactly one profile is active at a time, set via `POST /api/ai-profiles/active` and persisted as `activeAiProfileId` in `AppSettings`; the agent resolves and runs against whichever profile is active. Each profile carries an `instructionSetId` linking it to a reusable instruction set (`BASED-AGENT-INSTRUCTIONS`, default `"default"`); the running agent resolves its instructions from the **active profile's** linked set (via `AgentInstructionsStore.resolveById`), so selecting a profile selects both the model and its persona. A link to a set that no longer exists falls back to the `"default"` set at resolve time. A fresh install has zero profiles and no built-in default — the list stays genuinely empty until the user adds one, and invoking the agent with none configured fails cleanly with a "no agent profile configured" error rather than a raw connection error. If a *real* legacy single `ai_config` row exists (pre-profiles installs), it's migrated once on first use into a profile named "Default" (linked to `"default"`) and marked active, carrying over its keychain key. Profiles read from the store without a stored `instructionSetId` (legacy rows) default it to `"default"`.
 
 **Acceptance criteria:**
 - A fresh install with no legacy `ai_config` row and no profiles → `GET /api/ai-profiles` returns `[]`
@@ -1948,7 +2017,7 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 **Verification procedure:**
 1. Settings (gear icon) → Agent tab → on a fresh install, see an empty list (or the migrated "Default" profile, for an install with pre-existing single-config data) → Add a profile (the form takes over the tab; see `BASED-AGENT-INSTRUCTIONS-UI`) pointing at a local model, choose its Instructions set → Save returns to the list
 2. Click a profile row to mark it active (✓ appears next to its name) → ask Capi something → the request runs against the newly active profile's endpoint using that profile's linked instruction set
-3. Editing a profile with a blank API key field keeps the previously stored key; deleting a non-active profile removes it from the list and Credential Manager; deleting the active profile clears the active selection
+3. Editing a profile with a blank API key field keeps the previously stored key; deleting a non-active profile removes it from the list and the OS keychain; deleting the active profile clears the active selection
 4. Point a profile's Instructions at a custom set, make it active → the agent's behavior reflects that persona; delete that set → the agent falls back to the Default persona instead of erroring
 5. With zero profiles configured, ask Capi something → a clear "No agent profile configured — add one in Settings → Agent." message appears in the chat rail instead of a raw error
 
@@ -2481,19 +2550,19 @@ The connection dialog gains an Engine selector (SQL Server / LanceDB); LanceDB s
 **Applies to:** based (core, ui)
 **Test category:** manual
 
-Users configure one or more named embedding profiles (`name`, `baseUrl`, `model`, optional API key) pointing at any OpenAI-compatible `/v1/embeddings` endpoint (LM Studio, OpenAI, etc.), CRUD'd via `GET/POST /api/embedding-profiles` and `DELETE /api/embedding-profiles/:id`, persisted in `embedding_profiles` (metadata) + Credential Manager (API key, keyed by profile id, `embed:` prefix). A search picks one via `embeddingProfileId`, or inherits the connection's (BASED-LANCE-CONN-DEFAULT-PROFILES). The Search settings tab is CRUD only — it has no "default" affordance, because the default belongs to a connection. Deleting a profile also clears it from every connection that named it.
+Users configure one or more named embedding profiles (`name`, `baseUrl`, `model`, optional API key) pointing at any OpenAI-compatible `/v1/embeddings` endpoint (LM Studio, OpenAI, etc.), CRUD'd via `GET/POST /api/embedding-profiles` and `DELETE /api/embedding-profiles/:id`, persisted in `embedding_profiles` (metadata) + the OS keychain (API key, keyed by profile id, `embed:` prefix). A search picks one via `embeddingProfileId`, or inherits the connection's (BASED-LANCE-CONN-DEFAULT-PROFILES). The Search settings tab is CRUD only — it has no "default" affordance, because the default belongs to a connection. Deleting a profile also clears it from every connection that named it.
 
 **Verification procedure:**
 1. Settings (gear icon) → Search tab → Embedding profiles → Add → name it, point `baseUrl` at a running LM Studio embeddings endpoint, set the model id → Save
 2. The profile appears in the Data tab's Search toolbar's embedding-profile dropdown for a LanceDB table, and in the connection dialog's "Embedding profile" picker
-3. Editing the profile with a blank API key field keeps the previously stored key; Delete removes it from both the list and Credential Manager
+3. Editing the profile with a blank API key field keeps the previously stored key; Delete removes it from both the list and the OS keychain
 4. Delete a profile that a connection used as its default → editing that connection shows "None" for it
 
 ### BASED-LANCE-RERANK-PROFILES: Named, user-configured reranker profiles
 **Applies to:** based (core, ui)
 **Test category:** manual
 
-Users configure one or more named reranker profiles (`name`, `baseUrl`, optional `model`, optional API key, optional `api`, optional `instruction`), CRUD'd via `GET/POST /api/reranker-profiles` and `DELETE /api/reranker-profiles/:id`, persisted the same way as embedding profiles (`reranker_profiles` table + Credential Manager `rerank:` prefix). `api` selects the endpoint shape: `"rerank"` (default, and what legacy api-less rows mean) is a generic Cohere/TEI-shape rerank endpoint (`POST {baseUrl}/rerank {query, documents, top_n?} -> [{index, relevance_score}]`); `"openai"` is an OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (BASED-LANCE-RERANK-OPENAI), for which the profile form requires `model` and offers the `instruction` override. A search picks a profile via `rerankerProfileId` plus optional `rerankerOptions` (`topN`, `temperature`). A connection may name a reranker as its default (BASED-LANCE-CONN-DEFAULT-PROFILES); that seeds the Data tab's picker but is never auto-applied to an agent search. Deleting a profile also clears it from every connection that named it.
+Users configure one or more named reranker profiles (`name`, `baseUrl`, optional `model`, optional API key, optional `api`, optional `instruction`), CRUD'd via `GET/POST /api/reranker-profiles` and `DELETE /api/reranker-profiles/:id`, persisted the same way as embedding profiles (`reranker_profiles` table + OS keychain, `rerank:` prefix). `api` selects the endpoint shape: `"rerank"` (default, and what legacy api-less rows mean) is a generic Cohere/TEI-shape rerank endpoint (`POST {baseUrl}/rerank {query, documents, top_n?} -> [{index, relevance_score}]`); `"openai"` is an OpenAI-compatible chat-completions endpoint scored via yes/no logprobs (BASED-LANCE-RERANK-OPENAI), for which the profile form requires `model` and offers the `instruction` override. A search picks a profile via `rerankerProfileId` plus optional `rerankerOptions` (`topN`, `temperature`). A connection may name a reranker as its default (BASED-LANCE-CONN-DEFAULT-PROFILES); that seeds the Data tab's picker but is never auto-applied to an agent search. Deleting a profile also clears it from every connection that named it.
 
 **Verification procedure:**
 1. Settings → Search tab → Reranker profiles → Add a profile pointing at a running rerank server → Save
@@ -2996,13 +3065,28 @@ Record: PASS/FAIL + date below.
 **Test category:** unit
 
 `appDataRoot(platform?, env?)` in `core/src/storage/db.ts` resolves the OS's per-user
-application-data root: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS (falling
-back to `homedir()` when `HOME` is unset). `dataDir()` appends `based` to it and creates the
-directory, unless `BASED_DATA_DIR` overrides the whole path — which `core/src/dev.ts` uses to point
-dev sessions at a `based-dev` sibling so they never pollute the real `app.db`/`agent.db`. There is
-no Linux branch; a Linux port would add XDG here.
+application-data root, one branch per platform:
 
-Both parameters are injectable specifically so each platform's branch is testable from either build
+| Platform | Root |
+|---|---|
+| Windows | `%APPDATA%`, or `"."` when unset |
+| macOS | `~/Library/Application Support` |
+| Linux and anything else | `$XDG_DATA_HOME`, or `~/.local/share` |
+
+`HOME` falls back to `homedir()` on the two POSIX branches. `dataDir()` appends `based` to the root
+and creates the directory, unless `BASED_DATA_DIR` overrides the whole path — which `core/src/dev.ts`
+uses to point dev sessions at a `based-dev` sibling so they never pollute the real
+`app.db`/`agent.db`.
+
+Linux resolves the **data** root, not the config root: what lands here is `app.db`, `agent.db`, and
+window-restore state, so `~/.local/share` is correct and `~/.config` is not. Per the XDG spec, a
+`$XDG_DATA_HOME` that is empty or not absolute shall be ignored in favour of the default.
+
+The Windows branch is explicit rather than a fallback. It was a fallback until the Linux branch
+existed, which meant a Linux process resolved the *relative* `"."` and wrote `app.db` into whatever
+its working directory happened to be — and core and the shell do not share one.
+
+Both parameters are injectable specifically so each platform's branch is testable from any build
 host — the packaged app only ever exercises one of them.
 
 `data_dir()` in `shell-tauri/src/main.rs` **mirrors this function in Rust** and must be changed with
@@ -3015,6 +3099,11 @@ than failing loudly.
 - `appDataRoot("win32", { APPDATA: "C:\\Users\\ada\\AppData\\Roaming" })` → that value verbatim
 - `appDataRoot("win32", {})` → `"."` (never a darwin path)
 - `appDataRoot("darwin", {})` → still ends in `Library/Application Support`
+- `appDataRoot("linux", { XDG_DATA_HOME: "/home/ada/.local/share", … })` → that value
+- `appDataRoot("linux", { HOME: "/home/ada" })` → segments `home/ada/.local/share`
+- `appDataRoot("linux", { XDG_DATA_HOME: "based-data" | "", HOME: "/home/ada" })` → the `~/.local/share`
+  default, since a relative or empty value is ignored
+- `appDataRoot("linux", {})` → still ends in `.local/share`, and is never `"."`
 - `BASED_DATA_DIR` set → `dataDir()` returns it exactly, and the directory exists afterwards
 
 ### BASED-PACKAGE-WIN: Packaged app bundle is self-contained

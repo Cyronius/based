@@ -9,9 +9,9 @@
 //  2. Writes never clobber. export_data's default names are timestamped, so a collision is
 //     essentially impossible; a model-chosen "report.html" collides with a file the user already
 //     had, and silently overwriting it is not recoverable.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** Document formats the agent may write. Text/markup only — nothing the shell will execute. */
 export const SAVE_FILE_EXTENSIONS = [
@@ -79,12 +79,58 @@ export function sanitizeSaveFileName(name: string, defaultExt?: SaveFileExtensio
   return trimmed;
 }
 
+/**
+ * Read `XDG_DOWNLOAD_DIR` out of a freedesktop `user-dirs.dirs` body. Returns an absolute path, or
+ * null when the file names no usable one.
+ *
+ * This exists because the Downloads folder is **localized on Linux**: a French desktop has
+ * `~/Téléchargements` and no `~/Downloads` at all, so the hardcoded name silently fell through to
+ * the temp directory. Windows and macOS use the literal `~/Downloads` path whatever the display
+ * language is, so neither needs this.
+ *
+ * The file is a shell-sourceable fragment — `XDG_DOWNLOAD_DIR="$HOME/Downloads"`, comments with
+ * `#`. `$HOME` is the only expansion performed: the generator writes nothing else, and a value
+ * naming some other variable is treated as unusable rather than half-expanded into a wrong path.
+ * Last assignment wins, matching shell semantics.
+ *
+ * Pure, and separate from the file read, so every branch is unit-testable from any build host.
+ */
+export function parseXdgDownloadDir(body: string, home: string): string | null {
+  let found: string | null = null;
+  for (const line of body.split(/\r?\n/)) {
+    // A commented-out line cannot match: `#` is not whitespace, so the anchor rejects it.
+    const match = /^\s*XDG_DOWNLOAD_DIR\s*=\s*"(.*)"\s*$/.exec(line);
+    if (!match) continue;
+    const raw = match[1]!;
+    const expanded = raw === "$HOME" ? home : raw.startsWith("$HOME/") ? join(home, raw.slice("$HOME/".length)) : raw;
+    found = expanded && !expanded.includes("$") && isAbsolute(expanded) ? expanded : null;
+  }
+  return found;
+}
+
+/** The Linux Downloads folder per the user's freedesktop config, or null when there is no usable
+ *  entry (file absent, unreadable, or naming a path we cannot expand). */
+function xdgDownloadDir(env: Record<string, string | undefined>, home: string): string | null {
+  const configured = env.XDG_CONFIG_HOME;
+  const configHome = configured && isAbsolute(configured) ? configured : join(home, ".config");
+  try {
+    return parseXdgDownloadDir(readFileSync(join(configHome, "user-dirs.dirs"), "utf8"), home);
+  } catch {
+    return null; // no user-dirs.dirs on this machine — fall back to the literal name
+  }
+}
+
 /** Where agent-written files land: the user's Downloads folder, falling back to the temp dir on a
  *  machine that has none. `override` is how tests keep runs out of the real Downloads. */
 export function resolveDownloadDir(override?: string): string {
   if (override) return override;
-  const downloads = join(homedir(), "Downloads");
-  return existsSync(downloads) ? downloads : tmpdir();
+  const home = homedir();
+  const candidates = process.platform === "linux" ? [xdgDownloadDir(process.env, home)] : [];
+  candidates.push(join(home, "Downloads"));
+  for (const dir of candidates) {
+    if (dir && existsSync(dir)) return dir;
+  }
+  return tmpdir();
 }
 
 /** Write `content` into `dir` under `fileName`, suffixing `-2`, `-3`… rather than overwriting an

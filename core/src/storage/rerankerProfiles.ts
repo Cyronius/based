@@ -21,7 +21,7 @@ export interface RerankerProfile {
 
 export interface RerankerProfileInput extends Omit<RerankerProfile, "id" | "hasKey" | "createdAt" | "updatedAt"> {
   id?: string;
-  /** Transient — never persisted in the JSON blob; goes to Credential Manager. */
+  /** Transient — never persisted in the JSON blob; goes to the OS keychain. */
   apiKey?: string;
   hasKey?: boolean;
 }

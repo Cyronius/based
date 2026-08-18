@@ -30,7 +30,7 @@ export interface AiProfileInput extends Omit<AiProfile, "id" | "instructionSetId
   id?: string;
   /** Defaults to "default" when omitted. */
   instructionSetId?: string;
-  /** Transient — never persisted in the JSON blob; goes to Credential Manager. */
+  /** Transient — never persisted in the JSON blob; goes to the OS keychain. */
   apiKey?: string;
   hasKey?: boolean;
 }

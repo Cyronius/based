@@ -17,7 +17,20 @@ based is a Bun workspace with four packages:
   near-instant. If you are only working on `core` or `ui`, the `dev:core` + `dev:ui` browser loop
   below needs no Rust at all.
 - **Windows 11 x64** for the shell and installer. `core` and `ui` are platform-agnostic enough to
-  develop on, but secrets go through Windows Credential Manager and packaging is Windows-only.
+  develop on, but packaging is Windows-only. Secrets are not a constraint — `core/src/secrets.ts`
+  talks to whatever keychain the host provides (Credential Manager on Windows, the login Keychain on
+  macOS) through one `@napi-rs/keyring` API.
+- **macOS arm64** builds in CI and produces a `.dmg`, but the port is incomplete — the app menu,
+  Cmd-key shortcuts, and distribution are outstanding. See
+  [specs/based/plans/macos-port.md](../specs/based/plans/macos-port.md) before working on it.
+- **Linux** is planned, not started. See
+  [specs/based/plans/linux-port.md](../specs/based/plans/linux-port.md).
+
+One consequence of dialogs moving into the shell (BASED-DIALOG-CHANNEL): the `dev:core` + `dev:ui`
+browser loop has **no native file pickers**, because there is no shell attached to draw them. Those
+endpoints answer with a named error rather than hanging, and every one of them also accepts an
+explicit `path` that skips the picker. Use `bun run dev` (which starts the shell) when working on a
+flow that opens or saves a file.
 - For the installer: **Inno Setup 6** (`winget install JRSoftware.InnoSetup`) and .NET Framework
   4.x (for `csc.exe`, which builds the `.sql` association stub).
 
@@ -118,9 +131,10 @@ Same first three steps as Windows (`build:ui` → `bundle-core.ts` → `tauri bu
 (`libduckdb.dylib` present, `bun/bun` present and executable) so a misbuild fails at the runner
 instead of on a user's machine.
 
-The app this produces **is not usable yet** — file dialogs still shell out to `powershell.exe`,
-there is no macOS menu (so Cmd+C/V do nothing in the webview), and shortcuts are Ctrl-based. That
-work, and the tag-triggered release pipeline that will replace the manual trigger, is
+The app this produces **is not usable yet** — there is no macOS menu (so Cmd+C/V do nothing in the
+webview) and shortcuts are Ctrl-based. File dialogs are no longer on that list: they are drawn by
+the shell now (BASED-DIALOG-CHANNEL), so they are native on every platform. The remaining work, and
+the tag-triggered release pipeline that will replace the manual trigger, is
 [specs/based/plans/macos-port.md](../specs/based/plans/macos-port.md).
 
 ## Cutting a release

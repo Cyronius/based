@@ -10,6 +10,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-single-instance = "2"
+# BASED-DIALOG-CHANNEL: the shell draws core's native pickers (dialog) and hands exported files to
+# the OS default application (opener). Both are called from Rust only, never from the page — windows
+# load External URLs, so no Tauri API is injected and no capability grant is involved.
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

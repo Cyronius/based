@@ -1,8 +1,9 @@
 # Phase 2 of specs/based/plans/macos-port.md — prove the macOS toolchain works end to end.
 #
-# This produces a .dmg. It does NOT yet produce a *usable* app: file dialogs still shell out to
-# powershell.exe, there is no macOS menu (so Cmd+C/V do not work in the webview), and shortcuts are
-# still Ctrl-based. Those are Phases 3 and 4. The point of this workflow is to surface toolchain
+# This produces a .dmg. It does NOT yet produce a *usable* app: there is no macOS menu (so Cmd+C/V
+# do not work in the webview) and shortcuts are still Ctrl-based. That is Phase 4. (File dialogs
+# were on this list until Phase 3 moved them into the shell — they are native now, on every
+# platform: BASED-DIALOG-CHANNEL.) The point of this workflow is to surface toolchain
 # failures — a missing darwin-arm64 native prebuild, the .bun store layout differing on a runner,
 # DMG bundling needing something the image lacks — before that work starts.
 #

@@ -13,7 +13,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 export type ProviderKind = "openai-compatible" | "openai" | "azure-openai" | "anthropic";
 
 export interface AiConfig {
-  /** Stable id used to key the API key in Credential Manager. */
+  /** Stable id used to key the API key in the OS keychain. */
   providerId: string;
   kind: ProviderKind;
   /** Base URL for openai-compatible / azure endpoints (e.g. LM Studio http://host:1234/v1). */
@@ -22,7 +22,7 @@ export interface AiConfig {
   model: string;
   /** Azure deployment name (azure-openai only). */
   deployment?: string;
-  /** Whether an API key is stored in Credential Manager for this provider. */
+  /** Whether an API key is stored in the OS keychain for this provider. */
   hasKey: boolean;
 }
 
@@ -54,7 +54,7 @@ export interface ResolvableAiConfig {
 }
 
 /**
- * Resolve the active config into an AI SDK model. `apiKey` comes from Credential Manager (may be
+ * Resolve the active config into an AI SDK model. `apiKey` comes from the OS keychain (may be
  * empty for a keyless local server — LM Studio ignores it, but the SDK wants a non-empty string).
  */
 export function resolveModel(config: ResolvableAiConfig, apiKey: string | null): LanguageModel {
@@ -87,7 +87,7 @@ export function resolveModel(config: ResolvableAiConfig, apiKey: string | null):
 }
 
 function requireKey(apiKey: string | null, kind: ProviderKind): string {
-  if (!apiKey) throw new Error(`Provider "${kind}" requires an API key — set one on the profile (stored in Credential Manager)`);
+  if (!apiKey) throw new Error(`Provider "${kind}" requires an API key — set one on the profile (stored in your OS keychain)`);
   return apiKey;
 }
 

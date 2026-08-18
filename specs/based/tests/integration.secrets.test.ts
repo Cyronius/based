@@ -16,7 +16,8 @@ const { Entry } = createRequire(import.meta.resolve("@based/core"))("@napi-rs/ke
  *  the bytes — 1704 chars is what `openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt` produces. */
 const PEM_SIZED = "-".repeat(1704);
 
-describe("BASED-SECRET-STORE: Windows Credential Manager round-trip", () => {
+// The keychain these hit is the host's — Credential Manager on Windows, the login Keychain on macOS.
+describe("BASED-SECRET-STORE: OS keychain round-trip", () => {
   test("set → get → delete → get null", () => {
     try {
       setSecret(TEST_ID, "s3cret-value");
@@ -71,7 +72,8 @@ describe("BASED-SECRET-STORE: Windows Credential Manager round-trip", () => {
   });
 
   // Secrets written before the byte-oriented format must keep working — they are UTF-16LE blobs
-  // with no marker, and there is no bulk rewrite, so the read path has to recognise both.
+  // with no marker, and there is no bulk rewrite, so the read path has to recognise both. Only
+  // Windows installs can hold one, but the read path is shared, so this runs on any host.
   test("a secret written by the legacy setPassword path still reads back", () => {
     const id = `${TEST_ID}-legacy`;
     try {

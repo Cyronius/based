@@ -37,7 +37,15 @@ import { resolveEmbeddingProfile, resolveRerankerProfile } from "./db/searchProf
 import { buildEditCommands, type TableChangeSet } from "./db/tableEdit";
 import { joinScripts, type ScriptAction } from "./db/scripter";
 import { scriptWithAdapter } from "./db/scriptDispatch";
-import { filterFor, openFileDialog, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
+import {
+  filterFor,
+  nextDialogRequest,
+  openFileDialog,
+  openFolderDialog,
+  openWithDefaultApp,
+  resolveDialogResult,
+  saveFileDialog,
+} from "./dialogs";
 import { parseCsv } from "./import/csvParse";
 import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
 import { toCsv } from "./export/csv";
@@ -813,6 +821,32 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
     const agentMatch = path.match(/^\/api\/agent\/([^/]+)$/);
     if (agentMatch && method === "POST") return agentStream(sid, agentMatch[1]!, req);
+
+    // --- shell dialog channel (BASED-DIALOG-CHANNEL) ---
+    // Not for the UI. The shell polls `next` in a background thread, draws the native picker, and
+    // posts the answer back to `result`; core/src/dialogs.ts is the other end. `next` holds the
+    // request open rather than returning empty immediately, so a picker opens on the first poll
+    // after the user asks for it instead of on the next tick of a busy loop.
+    if (path === "/api/shell/dialog/next" && method === "GET") {
+      // `holdMs` shortens the hold for a caller that wants a faster cadence than the shell's, and
+      // is what lets a test establish attachment without waiting out a full hold. Clamped so a
+      // caller cannot pin a connection open indefinitely.
+      //
+      // Parsed only when actually present: `Number(null)` is 0, so reading the param unconditionally
+      // turned the shell's own poll — which sends no holdMs — into a 0 ms hold, i.e. a spin loop
+      // that also missed any request raised a tick later.
+      const rawParam = url.searchParams.get("holdMs");
+      const raw = rawParam === null ? Number.NaN : Number(rawParam);
+      const holdMs = Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 60_000) : undefined;
+      const request = await nextDialogRequest(holdMs);
+      return request ? json(request) : new Response(null, { status: 204 });
+    }
+    if (path === "/api/shell/dialog/result" && method === "POST") {
+      const body = (await req.json()) as { id?: string; path?: string | null };
+      if (typeof body.id !== "string") return json({ error: "id is required" }, 400);
+      resolveDialogResult(body.id, body.path ?? null);
+      return json({ ok: true });
+    }
 
     // --- dialogs ---
     // Traces: BASED-LANCE-FOLDER-BROWSE

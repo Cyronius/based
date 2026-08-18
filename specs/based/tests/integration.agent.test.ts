@@ -61,7 +61,7 @@ describe("BASED-AI-PROVIDER: config store + key secrets", () => {
     expect(reopened.get()?.baseUrl).toBe("http://x/v1");
   });
 
-  test("AI key round-trips through Credential Manager", () => {
+  test("AI key round-trips through the OS keychain", () => {
     const id = `spec-ai-${Date.now()}`;
     setAiKey(id, "sk-test-123");
     expect(getAiKey(id)).toBe("sk-test-123");

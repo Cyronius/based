@@ -19,7 +19,8 @@ Settings (gear) → **Agent** → profiles. A profile carries:
 - **Response timeout** — defaults to **900 s**, sized for a slow local GPU rather than a hosted API.
 - **Instruction set** — switching profile switches the model *and* the persona together.
 
-API keys go to Windows Credential Manager, never to the local database.
+API keys go to the OS keychain — Windows Credential Manager, or the macOS login Keychain — never to
+the local database.
 
 > If based and the model server are on different hosts — a WSL/Windows split, or another machine on
 > your LAN — set the Base URL to that host rather than `localhost`.

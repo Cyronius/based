@@ -1,11 +1,14 @@
 // Traces: BASED-SECRET-STORE
-// Windows Credential Manager via @napi-rs/keyring (napi prebuild; Bun napi loading validated in spike 5).
+// The OS keychain via @napi-rs/keyring — Windows Credential Manager, macOS login Keychain — one API
+// for both, so nothing here branches on platform (napi prebuild; Bun napi loading validated in spike 5).
 import { Entry } from "@napi-rs/keyring";
 
 const SERVICE = process.env.BASED_KEYRING_SERVICE ?? "based-db-client";
 
 // Traces: BASED-SECRET-STORE — every secret goes through these three, byte-oriented rather than
-// string-oriented. Windows Credential Manager caps a credential blob at 2560 bytes; `setPassword`
+// string-oriented. Both the encoding and the cap are Windows constraints, applied on every platform
+// so one entry format reads back anywhere and a secret that saves on macOS also saves on Windows.
+// Windows Credential Manager caps a credential blob at 2560 bytes; `setPassword`
 // encodes the string as UTF-16 first, which halves the usable room to ~1280 characters. That is
 // under a 2048-bit PKCS8 PEM (1704 chars), so key-pair auth could not be saved at all on Windows —
 // it failed with "Value of 'password encoded as UTF-16' is longer than the platform limit of 2560
@@ -15,9 +18,10 @@ const SERVICE = process.env.BASED_KEYRING_SERVICE ?? "based-db-client";
 // verbatim, so reads must be able to tell the two apart. Hence the marker: it cannot collide,
 // because a legacy blob interleaves NULs (UTF-16LE "v2:" is 76 00 32 00 3a 00, never 76 32 3a).
 // Entries are upgraded in place the next time they are written; nothing is rewritten in bulk.
+// That legacy path only ever ran on Windows, so a macOS install has no such blob to upgrade.
 const V2_MARKER = new Uint8Array([0x76, 0x32, 0x3a]); // "v2:" in UTF-8
 
-/** 2560 bytes minus the marker — the most a secret can be on Windows. */
+/** 2560 bytes minus the marker — the Windows ceiling, enforced on every platform. */
 export const MAX_SECRET_BYTES = 2560 - V2_MARKER.length;
 
 function writeSecret(account: string, secret: string): void {
@@ -96,7 +100,7 @@ export function decodeKeyPairSecret(raw: string): KeyPairSecret {
   }
 }
 
-// Traces: BASED-AI-PROVIDER — the AI provider API key lives in Credential Manager, keyed by
+// Traces: BASED-AI-PROVIDER — the AI provider API key lives in the OS keychain, keyed by
 // provider id, never in the local store or the webview.
 const AI_ACCOUNT_PREFIX = "ai:";
 
