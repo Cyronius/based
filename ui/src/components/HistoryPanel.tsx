@@ -12,7 +12,7 @@ import { IconButton } from "./IconButton";
 type SubTab = "queries" | "agent";
 type StatusFilter = "all" | "ok" | "error" | "cancelled";
 
-function relativeTime(iso: string): string {
+export function relativeTime(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return "";
   const s = Math.floor(ms / 1000);

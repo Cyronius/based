@@ -6,6 +6,8 @@ export interface WindowStateRecord {
   connectionId: string | null;
   activeTabId: string | null;
   schemaFilter: string;
+  /** The window's active capi conversation for its current connection (BASED-CHAT-HISTORY-PICKER). */
+  capiThreadId: string | null;
   updatedAt: string;
 }
 
@@ -14,6 +16,7 @@ interface WindowStateRow {
   connection_id: string | null;
   active_tab_id: string | null;
   schema_filter: string;
+  capi_thread_id: string | null;
   updated_at: string;
 }
 
@@ -23,6 +26,7 @@ function toRecord(r: WindowStateRow): WindowStateRecord {
     connectionId: r.connection_id,
     activeTabId: r.active_tab_id,
     schemaFilter: r.schema_filter,
+    capiThreadId: r.capi_thread_id,
     updatedAt: r.updated_at,
   };
 }
@@ -49,7 +53,7 @@ export class WindowStateStore {
     if (sid === "default") {
       // Never persist the shared fallback sid — a sid-less request must not leave state behind
       // for a later real launch to pick up as if it were a genuine window.
-      return { sid, connectionId: null, activeTabId: null, schemaFilter: "", updatedAt: new Date().toISOString() };
+      return { sid, connectionId: null, activeTabId: null, schemaFilter: "", capiThreadId: null, updatedAt: new Date().toISOString() };
     }
     const current = this.get(sid);
     const next: Omit<WindowStateRecord, "updatedAt"> = {
@@ -57,15 +61,17 @@ export class WindowStateStore {
       connectionId: patch.connectionId !== undefined ? patch.connectionId : (current?.connectionId ?? null),
       activeTabId: patch.activeTabId !== undefined ? patch.activeTabId : (current?.activeTabId ?? null),
       schemaFilter: patch.schemaFilter !== undefined ? patch.schemaFilter : (current?.schemaFilter ?? ""),
+      capiThreadId: patch.capiThreadId !== undefined ? patch.capiThreadId : (current?.capiThreadId ?? null),
     };
     const updatedAt = new Date().toISOString();
     this.db.run(
-      `INSERT INTO window_state (sid, connection_id, active_tab_id, schema_filter, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO window_state (sid, connection_id, active_tab_id, schema_filter, capi_thread_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(sid) DO UPDATE SET
          connection_id = excluded.connection_id, active_tab_id = excluded.active_tab_id,
-         schema_filter = excluded.schema_filter, updated_at = excluded.updated_at`,
-      [next.sid, next.connectionId, next.activeTabId, next.schemaFilter, updatedAt],
+         schema_filter = excluded.schema_filter, capi_thread_id = excluded.capi_thread_id,
+         updated_at = excluded.updated_at`,
+      [next.sid, next.connectionId, next.activeTabId, next.schemaFilter, next.capiThreadId, updatedAt],
     );
     return { ...next, updatedAt };
   }

@@ -1,10 +1,10 @@
 // Traces: BASED-AGENT-TAB-CONTEXT (client half), BASED-AGENT-THREADS, BASED-AGENT-TAB-TOOLS
 // Pure UI-side pieces: the workspace snapshot builder + row serializer (tabContext) and the
-// thread-id derivation / owns-and-unaliased close rule (threadIds). Imported by relative path like
-// unit.sqlBlocks — both modules are deliberately free of window-bound runtime imports.
+// per-window thread-id derivation (threadIds). Imported by relative path like unit.sqlBlocks —
+// both modules are deliberately free of window-bound runtime imports.
 import { describe, expect, test } from "bun:test";
 import { buildTabContext, serializeResultRows } from "../../../ui/src/agent/tabContext";
-import { agentThreadId, resolveThreadId, threadsToDeleteOnClose } from "../../../ui/src/agent/threadIds";
+import { newChatThreadId } from "../../../ui/src/agent/threadIds";
 import type { AppState, QueryTabState, ResultSetData, TabState } from "../../../ui/src/store";
 
 function queryTab(over: Partial<QueryTabState> & { id: string }): QueryTabState {
@@ -93,30 +93,11 @@ describe("BASED-AGENT-TAB-TOOLS: serializeResultRows", () => {
   });
 });
 
-describe("BASED-AGENT-THREADS: thread ids + close rule", () => {
-  test("derivation: tab-owned vs connection fallback; alias wins in resolveThreadId", () => {
-    expect(agentThreadId("c1", "t1")).toBe("tab:c1:t1");
-    expect(agentThreadId("c1", null)).toBe("conn:c1");
-    const aliased = queryTab({ id: "t2", originThreadId: "tab:c1:t1" });
-    const tabs: TabState[] = [queryTab({ id: "t1" }), aliased];
-    expect(resolveThreadId("c1", tabs, "t1")).toBe("tab:c1:t1");
-    expect(resolveThreadId("c1", tabs, "t2")).toBe("tab:c1:t1"); // alias
-    expect(resolveThreadId("c1", tabs, null)).toBe("conn:c1");
-  });
-
-  test("close rule: owned threads delete unless a survivor aliases them; aliased tabs delete nothing", () => {
-    const origin = queryTab({ id: "t1" });
-    const aliased = queryTab({ id: "t2", originThreadId: "tab:c1:t1" });
-    const plain = queryTab({ id: "t3" });
-    const tabs: TabState[] = [origin, aliased, plain];
-
-    // Closing the aliased tab: its own (never-used) thread may go, but NOT the aliased target.
-    expect(threadsToDeleteOnClose("c1", tabs, ["t2"])).toEqual(["tab:c1:t2"]);
-    // Closing the origin while the alias survives: nothing deletes (the alias still shows it).
-    expect(threadsToDeleteOnClose("c1", tabs, ["t1"])).toEqual([]);
-    // Closing both origin and alias together: both threads go.
-    expect(threadsToDeleteOnClose("c1", tabs, ["t1", "t2"]).sort()).toEqual(["tab:c1:t1", "tab:c1:t2"]);
-    // A plain tab deletes its own thread.
-    expect(threadsToDeleteOnClose("c1", tabs, ["t3"])).toEqual(["tab:c1:t3"]);
+describe("BASED-AGENT-THREADS: conversation thread ids", () => {
+  test("mints unique per-conversation chat:{uuid} ids — no window or tab identity in the id", () => {
+    const a = newChatThreadId();
+    const b = newChatThreadId();
+    expect(a).toMatch(/^chat:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(a).not.toBe(b);
   });
 });
