@@ -8,7 +8,7 @@
 // reaches the gated /api/agent/mutation endpoint. `list_tabs`/`get_tab`: read the workspace (tab
 // list, a tab's SQL/results) from the store on demand. `show_results`: puts rows in front of the
 // user in a real grid rather than in chat — a query tab where SQL exists, the table's data grid
-// where it doesn't. Agent-opened tabs are aliased to the chat thread that created them
+// where it doesn't. Agent-opened tabs need no thread bookkeeping — the chat is per-window
 // (BASED-AGENT-THREADS).
 import { useEffect, useState } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
@@ -17,7 +17,6 @@ import type { EngineCapabilities, MutationResult, TableColumn } from "../api/typ
 import { capiToolDefs, filterToolsByCapabilities } from "./capiToolDefs";
 import { useStore, type QueryTabState } from "../store";
 import { buildTabContext, serializeResultRows } from "./tabContext";
-import { getActiveChatThreadId } from "./threads";
 
 let pendingResolve: ((v: string) => void) | null = null;
 
@@ -436,10 +435,6 @@ export const capiTools: Record<string, ToolDefinition> = {
           error: "This connection has no SQL editor — pass `table` (and optionally `where`) instead of `sql`.",
         });
       }
-      // Alias the new tab to the conversation that created it (BASED-AGENT-THREADS): clicking the
-      // tab shows this chat, and closing it never deletes the shared thread.
-      const threadId = getActiveChatThreadId();
-      if (threadId) useStore.getState().setTabOriginThread(tabId, threadId);
       if (args.run === false) {
         return JSON.stringify({ tabId, title: args.title ?? useStore.getState().tabs.find((t) => t.id === tabId)?.title, status: "not_run" });
       }

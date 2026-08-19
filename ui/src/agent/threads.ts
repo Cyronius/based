@@ -1,16 +1,15 @@
 // Traces: BASED-AGENT-THREADS, BASED-AGENT-TAB-TOOLS
-// Per-tab chat threads: the in-session message cache that makes tab switches instant, server
-// history restore, deletion, and the mounted-thread handshake with the frontend tools. The pure
-// id/close-rule logic lives in ./threadIds.ts (re-exported here) so specs can unit-test it
-// without this module's window-bound api client.
+// Per-window chat threads: the in-session message cache that makes connection switches instant,
+// server history restore, and deletion. The pure id derivation lives in ./threadIds.ts
+// (re-exported here) so specs can unit-test it without this module's window-bound api client.
 import type { Message } from "@ag-ui/client";
 import { api } from "../api/client";
 import { beginHistoryFetch, historyIsStale, markThreadReset } from "./threadReset";
 
-export { agentThreadId, resolveThreadId, threadsToDeleteOnClose } from "./threadIds";
+export { windowThreadId } from "./threadIds";
 
-/** In-session cache: threadId → rendered messages, so switching back to a tab is instant and needs
- *  no server round-trip. Module-level like the store's connectionCache. */
+/** In-session cache: threadId → rendered messages, so switching back to a connection's thread is
+ *  instant and needs no server round-trip. Module-level like the store's connectionCache. */
 export const threadMessageCache = new Map<string, Message[]>();
 
 /** Ids of messages restored from server history (synthetic `hist_*` tool results and their turn's
@@ -42,19 +41,9 @@ export async function fetchThreadHistory(threadId: string, connectionId: string)
   }
 }
 
-/** Fire-and-forget server-side thread deletion (tab close / New chat). */
+/** Fire-and-forget server-side thread deletion ("New chat"). */
 export function deleteThread(threadId: string): void {
   markThreadReset(threadId);
   threadMessageCache.delete(threadId);
   void api(`/api/agent/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" }).catch(() => {});
-}
-
-/** The thread id the rail currently has mounted — set by ChatSession, read by the show_results
- *  frontend tool so an agent-opened tab can be aliased to the conversation that created it. */
-let activeChatThreadId: string | null = null;
-export function setActiveChatThreadId(id: string | null): void {
-  activeChatThreadId = id;
-}
-export function getActiveChatThreadId(): string | null {
-  return activeChatThreadId;
 }

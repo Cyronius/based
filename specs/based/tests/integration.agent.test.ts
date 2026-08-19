@@ -553,9 +553,9 @@ d("agent tools over the live adapter", () => {
   }, 120_000);
 });
 
-// Traces: BASED-AGENT-THREADS — per-tab thread history restore + deletion endpoints. Memory-only:
-// no DB connection is required. Seeds the server's own agent.db through a second Memory client
-// (same LibSQL file; sequential access).
+// Traces: BASED-AGENT-THREADS — thread history restore + deletion endpoints (id-agnostic; the
+// seeded ids here are arbitrary). Memory-only: no DB connection is required. Seeds the server's
+// own agent.db through a second Memory client (same LibSQL file; sequential access).
 describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
   const threadId = "tab:conn-1:tab-abc";
   const resourceId = "conn-1";
@@ -612,6 +612,58 @@ describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
     expect(del.status).toBe(200);
     const after = (await (await api(`/api/agent/threads/${encodeURIComponent(threadId)}/messages?resourceId=${resourceId}`)).json()) as unknown[];
     expect(after).toEqual([]);
+  }, 60_000);
+
+  // A cleanly closed window takes its chat threads with it (the per-window analog of the old
+  // delete-on-tab-close); other windows' threads survive. Restorable windows never post close.
+  test("session close deletes the closing window's win:{sid}:* threads and no others", async () => {
+    const { createAgentMemory } = await import("@based/core");
+    const memory = createAgentMemory(join(dir, "agent.db"));
+    const created = (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "thread-sweep",
+          server: "unused.example",
+          database: "db",
+          authType: "sql-login",
+          username: "u",
+          encrypt: true,
+          trustServerCertificate: true,
+        }),
+      })
+    ).json()) as ConnectionConfig;
+
+    const seed = async (tid: string) => {
+      const now = new Date();
+      await memory.saveThread({ thread: { id: tid, resourceId: created.id, title: "t", createdAt: now, updatedAt: now } });
+      await memory.saveMessages({
+        messages: [
+          {
+            id: `${tid}-m1`,
+            role: "user",
+            createdAt: now,
+            threadId: tid,
+            resourceId: created.id,
+            content: { format: 2, parts: [{ type: "text", text: "hello" }] },
+          },
+        ] as never,
+      });
+    };
+    const closing = `win:w-closing:${created.id}`;
+    const surviving = `win:w-surviving:${created.id}`;
+    await seed(closing);
+    await seed(surviving);
+
+    const messagesOf = async (tid: string) =>
+      (await (await api(`/api/agent/threads/${encodeURIComponent(tid)}/messages?resourceId=${created.id}`)).json()) as unknown[];
+    expect((await messagesOf(closing)).length).toBe(1);
+
+    const close = await api("/api/session/close?sid=w-closing", { method: "POST" });
+    expect(close.status).toBe(200);
+
+    expect(await messagesOf(closing)).toEqual([]);
+    expect((await messagesOf(surviving)).length).toBe(1);
   }, 60_000);
 });
 

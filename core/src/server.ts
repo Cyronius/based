@@ -381,6 +381,17 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (session?.adapter) await session.adapter.disconnect().catch(() => {});
       sessions.delete(sid);
       windowState.delete(sid);
+      // Traces: BASED-AGENT-THREADS — a cleanly closed window takes its chat threads with it (the
+      // per-window analog of the old delete-on-tab-close). App exit never posts close, so windows
+      // restored next launch (BASED-WINDOW-RESTORE) keep their history. A window can hold one
+      // thread per connection it visited, so sweep the candidate id for every stored connection;
+      // deleting a thread that never existed is a no-op. "default" is the shared sid-less bucket
+      // (dev browser), not a real window — never sweep it.
+      if (sid !== "default") {
+        await Promise.all(
+          connections.list().map((c) => agentMemory.deleteThread(`win:${sid}:${c.id}`).catch(() => {})),
+        );
+      }
       for (const client of sseClients) {
         if (client.sid !== sid) continue;
         try {
@@ -783,8 +794,9 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/agent/audit" && method === "GET") {
       return json(audit.list(url.searchParams.get("connectionId") ?? ""));
     }
-    // Traces: BASED-AGENT-THREADS — per-tab thread history restore + deletion. Memory-only: neither
-    // route needs a live DB connection (restore must work before/independent of connect ordering).
+    // Traces: BASED-AGENT-THREADS — per-window thread history restore + deletion. Memory-only:
+    // neither route needs a live DB connection (restore must work before/independent of connect
+    // ordering).
     const threadMessagesMatch = path.match(/^\/api\/agent\/threads\/([^/]+)\/messages$/);
     if (threadMessagesMatch && method === "GET") {
       const threadId = decodeURIComponent(threadMessagesMatch[1]!);

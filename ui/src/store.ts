@@ -30,7 +30,6 @@ import {
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
-import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
@@ -103,10 +102,6 @@ export interface QueryTabState {
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
-  /** Set when the AGENT opened this tab (show_results): the chat thread it was created from.
-   *  The rail resolves a tab's thread as `originThreadId ?? derived`, so the agent-opened tab
-   *  shows the conversation that produced it (BASED-AGENT-THREADS aliasing). Persisted in meta. */
-  originThreadId?: string;
 }
 
 export interface TableTabState {
@@ -275,7 +270,7 @@ export interface AppState {
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
   insertSqlIntoEditor(sql: string): void;
-  /** Returns the new tab's id (so the agent's show_results can report/alias it). */
+  /** Returns the new tab's id (so the agent's show_results can report it). */
   runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
   /** Open a fresh query tab with the given content WITHOUT running it (history "Open in new tab",
    *  Script-as output). `title` null → next "Query N". Returns the new tab's id, or null when the
@@ -286,9 +281,6 @@ export interface AppState {
    *  editor: without it, a Cloud session loses the "rows land in a real grid" norm exactly where it
    *  also can't aggregate, and every answer degrades to rows pasted into chat. Returns the tab id. */
   openTableTabWithQuery(schema: string, table: string, where?: string): Promise<string>;
-  /** Stamp an agent-opened tab with the chat thread that created it (BASED-AGENT-THREADS aliasing);
-   *  null detaches the alias ("New chat" on an aliased tab starts the tab's own thread). */
-  setTabOriginThread(tabId: string, threadId: string | null): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
   /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
@@ -324,17 +316,10 @@ interface DiagramTabMeta {
   schemaScope: string;
 }
 
-/** Kind-specific fields persisted alongside a query tab — only the thread alias for agent-opened
- *  tabs (BASED-AGENT-THREADS); ordinary query tabs keep a null meta. */
-interface QueryTabMeta {
-  originThreadId: string;
-}
-
-function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
+function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | null {
   if (t.kind === "table") return { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
   if (t.kind === "routine") return { schema: t.schema, name: t.name, routineType: t.routineType };
   if (t.kind === "diagram") return { schemaScope: t.schemaScope };
-  if (t.kind === "query" && t.originThreadId) return { originThreadId: t.originThreadId };
   return null;
 }
 
@@ -589,13 +574,12 @@ export const useStore = create<AppState>((set, get) => {
       }
       // No meta and no detail fetch — the help tab restores whole (BASED-HELP-DOCS).
       if (r.kind === "docs") return { kind: "docs", id: r.id, title: r.title } satisfies DocsTabState;
-      const queryMeta = r.meta as QueryTabMeta | null;
+      // (A legacy originThreadId in old rows' meta is ignored — per-tab thread aliasing is gone.)
       return {
         ...freshQueryTab(r.title),
         id: r.id,
         content: r.content,
         filePath: r.filePath,
-        ...(queryMeta?.originThreadId ? { originThreadId: queryMeta.originThreadId } : {}),
       };
     });
     if (tabs.length === 0) tabs.push(freshQueryTab("Query 1"));
@@ -1034,7 +1018,7 @@ export const useStore = create<AppState>((set, get) => {
 
     closeTabs(ids) {
       if (ids.length === 0) return;
-      const { tabs, activeTabId, activeConnectionId } = get();
+      const { tabs, activeTabId } = get();
       const idSet = new Set(ids);
       for (const t of tabs) {
         if (t.kind === "query" && t.parentTabId && idSet.has(t.parentTabId)) idSet.add(t.id);
@@ -1049,11 +1033,6 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: remaining, activeTabId: nextActive });
       for (const t of tabs) {
         if (idSet.has(t.id) && t.kind === "query") disposeModel(t.id);
-      }
-      // Traces: BASED-AGENT-THREADS — a closed tab's OWNED chat thread dies with it, unless another
-      // open tab still aliases it (agent-opened tabs never delete their aliased target).
-      if (activeConnectionId) {
-        for (const threadId of threadsToDeleteOnClose(activeConnectionId, tabs, [...idSet])) deleteThread(threadId);
       }
       // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
       // query), so restore no longer accumulates every table ever opened.
@@ -1368,16 +1347,6 @@ export const useStore = create<AppState>((set, get) => {
       return tab.id;
     },
 
-    // Traces: BASED-AGENT-THREADS — alias an agent-opened tab to the conversation that created it
-    // (or detach with null).
-    setTabOriginThread(tabId, threadId) {
-      set({
-        tabs: get().tabs.map((t) =>
-          t.id === tabId && t.kind === "query" ? { ...t, originThreadId: threadId ?? undefined } : t,
-        ),
-      });
-      persistTabsSoon();
-    },
 
     async restoreWindow() {
       try {

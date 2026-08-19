@@ -262,11 +262,11 @@ describe.skip("BASED-DIAGRAM-UI: manual verification", () => {
 });
 
 // Traces: BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS (canonical spec: specs/based/spec.md)
-// Verification: manual — per-tab chat threads (switching tabs flips the conversation; restart
-// restores each tab's history; close deletes owned-and-unaliased threads; New chat clears only the
-// current tab's thread, detaching on an agent-opened alias); workspace context in every send;
-// list_tabs/get_tab read other tabs; open_query_tab lands user-facing results in a real grid tab
-// aliased to the conversation that created it; a mid-run tab switch defers with a banner.
+// Verification: manual — per-window chat thread (win:{sid}:{connectionId}: tab switches never
+// change the conversation; restart restores the window's history; closing a window deletes its
+// threads; New chat clears the window's conversation for the current connection); workspace
+// context in every send; list_tabs/get_tab read other tabs; show_results lands user-facing
+// results in a real grid tab; a mid-run connection switch defers with a banner.
 describe.skip("BASED-AGENT-TAB-TOOLS: manual verification", () => {
   it.todo("see spec.md procedure");
 });

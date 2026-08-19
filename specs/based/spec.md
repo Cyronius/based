@@ -1317,29 +1317,31 @@ A subagent is built without memory, so nothing it does is written to the tab's t
 - Every audit row a subagent's tools produce begins `-- subagent: <task name>` and carries the parent's connection id
 - One `delegate(…)` audit row is written per `delegate` call, status `error` only when every task failed
 
-### BASED-AGENT-THREADS: Per-tab thread persistence
+### BASED-AGENT-THREADS: Per-window thread persistence
 **Applies to:** based (core, ui)
 **Test category:** integration + unit
 
-Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), **one thread per tab**:
-the client derives `threadId` as `tab:{connectionId}:{tabId}` (the connectionId prefix scopes the
-key to a connection and keeps tab-owned threads from colliding with `conn:` ones; threads persisted
-under this format are live, so the format is not safe to change), or
-`conn:{connectionId}` when no tab is active; `resourceId` stays the connection id. Switching tabs
-switches the visible conversation (BASED-AGENT-TAB-TOOLS).
+Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), **one thread per
+(window, connection)**: the client derives `threadId` as `win:{sid}:{connectionId}`, where `sid`
+is the shell's per-window session id — window restore reuses it across app restarts
+(BASED-WINDOW-RESTORE), so a restored window keeps its conversation; the sid-less dev-browser
+fallback `default` is a stable shared bucket, mirroring window state. `resourceId` stays the
+connection id. Threads persisted under this format are live, so the format is not safe to change.
+Switching tabs never changes the visible conversation; switching connections switches to that
+connection's thread and back losslessly. Tab awareness comes from the per-send workspace snapshot
+and the tab tools, not from thread identity (BASED-AGENT-TAB-CONTEXT, BASED-AGENT-TAB-TOOLS).
 
-**Ownership & aliasing:** a user-opened tab *owns* its derived thread. A tab the agent opens
-(`show_results`) instead *aliases* the thread that created it — the tab stores `originThreadId`
-(round-tripped through the persisted tab's `meta`), and thread resolution everywhere is
-`originThreadId ?? derived`. Closing a tab deletes a thread only when the tab owns it and no other
-open tab aliases it; "New chat" on an aliased tab detaches it (clears `originThreadId`) rather
-than clearing the shared conversation.
+**Lifecycle:** a cleanly closed window (`POST /api/session/close` — posted by the shell on window
+close, never at app exit) deletes its `win:{sid}:*` threads for every stored connection alongside
+its persisted window state; restorable windows keep their history. The `default` bucket is never
+swept. Legacy `tab:`/`conn:` threads from the per-tab era remain in `agent.db` unreferenced (no
+migration — per-tab history was deliberately abandoned).
 
-**Reset wins over restore:** discarding a conversation ("New chat", tab close) bumps that thread's
+**Reset wins over restore:** discarding a conversation ("New chat") bumps that thread's
 reset generation (`threadReset`). A history fetch carries the generation it started in, so one
-already in flight — the common case right after launch or a switch to a cold tab, where the DELETE
-and the GET race server-side — is dropped instead of restoring the cleared conversation into the
-view and back into the message cache.
+already in flight — the common case right after launch or a switch to a cold thread, where the
+DELETE and the GET race server-side — is dropped instead of restoring the cleared conversation
+into the view and back into the message cache.
 
 **Endpoints:** `GET /api/agent/threads/:threadId/messages?resourceId=…` returns the thread's
 history as AG-UI messages via `Memory.recall` + a defensive mapper (`mapDbMessagesToAgui`:
@@ -1354,7 +1356,8 @@ does not require a live DB connection. `DELETE /api/agent/threads/:threadId` rem
 - A run with a stable `threadId`/`resourceId` accumulates history in memory
 - The messages GET returns mapped history for a seeded thread and `[]` for an unknown one; after a DELETE, a subsequent GET returns `[]`
 - `mapDbMessagesToAgui` pairs a resolved tool invocation with a synthetic `hist_`-prefixed tool message and skips unknown part types (unit)
-- The client-side thread resolution (`originThreadId ?? derived`) and the owns-and-unaliased close rule are pure and unit-tested
+- The client-side derivation `win:{sid}:{connectionId}` is pure and unit-tested
+- `POST /api/session/close` for a sid empties that window's threads (messages GET → `[]`) and leaves other windows' threads intact
 - A history fetch that began before a thread reset is stale (dropped); one begun after it is fresh, and a reset of one thread never marks another's fetch stale (unit)
 
 ### BASED-SKILL-REGISTRY: Skill registry & prompt catalog
@@ -1831,7 +1834,7 @@ The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-ren
 1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
 2. Ask for SQL → a highlighted SQL block appears with Insert / Run, labeled with the agent's purpose comment and the first statement line → Run opens a results tab
 3. Ask for an update → approval card renders; Reject = nothing runs; Approve = runs via the endpoint and an audit row appears
-4. Kill the app mid-thread, reopen, same connection → the same tab's prior turns are restored from server memory (per-tab restore — BASED-AGENT-THREADS)
+4. Kill the app mid-thread, reopen, same connection → the window's prior turns are restored from server memory (per-window restore — BASED-AGENT-THREADS)
 5. Capi's avatar renders to the left of the prompt textarea at the textarea's full height; clicking the send icon inside the textarea (or pressing Enter) sends the message; the icon dims while streaming
 6. After an answer settles, a subtle wall-clock readout of that turn (send→answer, e.g. `3.1s`) shows at the bottom of the thread; it clears when the next message is sent and is not persisted across reload (front-end only, `performance.now()` bracket around `runAgent`)
 7. Ask something that takes several rounds of tool calls ("exercise every query tool and report what breaks") → with the browser console open, no `Encountered two children with the same key` warning and no `Maximum update depth exceeded`; each narration paragraph and each tool card appears exactly once in the transcript. Message ids are not unique — the Mastra bridge pins every post-tool text segment of a run to one `-agui-text` continuation id — so the rail numbers repeated ids into distinct React keys; without that the reconciler mismatches fibers and replays whole blocks on screen
@@ -1872,21 +1875,22 @@ reply Mastra has not yet flushed to `agent.db`, which the agent-side tool struct
 4. Cancel → no file is written and no error appears in the rail
 5. Click it again and save → the `.md` contains every turn **including the most recent reply**, with the tab's title as the heading and no tool-call JSON
 
-### BASED-AGENT-TAB-TOOLS: Tab-aware chat — per-tab threads, workspace tools, results in tabs
+### BASED-AGENT-TAB-TOOLS: Tab-aware chat — per-window thread, workspace tools, results in tabs
 **Applies to:** based (ui)
 **Test category:** manual (pure builders: unit)
 
-The chat is tab-scoped and tab-aware:
+The chat is window-scoped and tab-aware:
 
-- **Per-tab conversations** (BASED-AGENT-THREADS): the rail's chat session is keyed on the active
-  tab's resolved thread id (`originThreadId ?? tab:{connectionId}:{tabId}`, fallback
-  `conn:{connectionId}`). The `useAgent` mount is remounted via a React `key` + `initialThreadId`
-  (the client's thread id is fixed at construction); a module-level per-thread message cache makes
-  in-session switches instant, and a cache miss seeds from the thread-history endpoint via
-  `setMessages`. Restored synthetic tool messages (`hist_` ids) are excluded from outbound sends
-  via `pruneOutboundMessages`. "New chat" deletes the thread server-side and clears messages — it
-  never calls `endSession()` (that would randomize the thread id). A tab switch during a streaming
-  run defers the remount until the run finishes, with a banner naming the tab the chat will follow.
+- **Per-window conversation** (BASED-AGENT-THREADS): the rail's chat session is keyed on the
+  window's per-connection thread id (`win:{sid}:{connectionId}`). The `useAgent` mount is
+  remounted via a React `key` + `initialThreadId` (the client's thread id is fixed at
+  construction), so a remount happens only on a connection switch — never on a tab switch; a
+  module-level per-thread message cache makes in-session switches instant, and a cache miss seeds
+  from the thread-history endpoint via `setMessages`. Restored synthetic tool messages (`hist_`
+  ids) are excluded from outbound sends via `pruneOutboundMessages`. "New chat" deletes the thread
+  server-side and clears messages — it never calls `endSession()` (that would randomize the
+  thread id). A connection switch during a streaming run defers the remount until the run
+  finishes, with a banner naming the connection the run belongs to.
 - **Workspace snapshot**: every send carries `forwardedProps.tabContext` built by a pure
   `buildTabContext(state)` — active tab identity/SQL/result summaries + the open-tab list — which
   the server renders into the instructions (BASED-AGENT-TAB-CONTEXT).
@@ -1898,19 +1902,19 @@ The chat is tab-scoped and tab-aware:
   opens a real query tab via the store, `run !== false` awaits completion (15 s race; on timeout
   reports `status: "running"` while the tab keeps streaming) and returns
   `{ tabId, title, status, durationMs, resultSets, preview }` (10-row preview); with `table` it
-  opens that table's pre-filtered Data tab instead. The agent-opened tab records `originThreadId`
-  so its rail shows the conversation that created it (aliasing — BASED-AGENT-THREADS).
+  opens that table's pre-filtered Data tab instead. Agent-opened tabs need no thread bookkeeping —
+  the window has one conversation per connection regardless of which tab is active.
   Their schemas and the capability policy live in `capiToolDefs` (React-, store- and monaco-free,
   so they are directly assertable); handlers and approval cards compose onto them in `capiTools`.
   The map is filtered per connection by `capiToolsFor` — see BASED-AGENT-SURFACE-VARIANT.
 
 **Verification procedure (requires a healthy model backend):**
-1. Open two tabs; chat in each → each tab shows its own conversation; switching flips the thread
-2. Restart the app, reconnect → each tab's history is restored; a brand-new tab starts empty
-3. Close a tab → its thread is deleted (reopening the same table starts fresh); New chat clears only the current tab's thread
-4. Ask "show me the customers table" → the agent calls `show_results`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows
-5. Click the agent-opened tab → the rail still shows the conversation that created it; closing that tab leaves the origin tab's chat intact; New chat on it starts a fresh thread for that tab only
-6. Switch tabs while a run is streaming → a banner names the busy tab; when the run ends the rail follows to the new tab's thread
+1. Chat, then switch tabs (and open/close tabs) → the conversation stays put; there is one chat per window
+2. Restart the app, reconnect → the window's history is restored; a second window (Ctrl+N) starts its own independent conversation on the same connection
+3. Close a window (not app exit) → its threads are deleted (a fresh window on that connection starts empty); New chat clears the window's conversation for the current connection only
+4. Ask "show me the customers table" → the agent calls `show_results`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows; switching to/from that tab leaves the chat unchanged
+5. Switch connections and back → each connection shows its own conversation, restored intact
+6. Switch connections while a run is streaming → a banner names the busy connection; when the run ends the rail follows to the new connection's thread
 7. Ask "what's in my other tab?" → the agent calls `list_tabs`/`get_tab` and answers from the other tab's SQL/results
 
 ### BASED-CHAT-ACTIVITY: Live agent activity feed

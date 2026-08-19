@@ -1,12 +1,12 @@
 // Traces: BASED-UI-LAYOUT, BASED-CHAT-UI, BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS
-// The right-hand rail hosts Ask Capi. Chat is PER-TAB: each tab resolves to its own thread
-// (originThreadId ?? tab:{connectionId}:{tabId}, fallback conn:{connectionId}), and the chat
-// session remounts keyed on that thread id — the AgentClient's threadId is fixed at construction
-// (initialThreadId), so a keyed remount IS the thread switch. In-session switches restore from a
-// module-level message cache; cold starts seed from the server's thread-history endpoint. A switch
-// during a streaming run is deferred (banner) until the run finishes — never kill an in-flight run.
-// AI provider setup and agent instructions live in the gear-icon settings popover
-// (BASED-AI-PROVIDER-PROFILES).
+// The right-hand rail hosts Ask Capi. Chat is PER-WINDOW: one thread per (window, connection)
+// (win:{sid}:{connectionId}), so switching tabs never touches the conversation. The chat session
+// remounts keyed on that thread id — the AgentClient's threadId is fixed at construction
+// (initialThreadId), so a keyed remount IS the thread switch, and it only happens on a connection
+// switch. In-session switches restore from a module-level message cache; cold starts seed from the
+// server's thread-history endpoint. A switch during a streaming run is deferred (banner) until the
+// run finishes — never kill an in-flight run. AI provider setup and agent instructions live in the
+// gear-icon settings popover (BASED-AI-PROVIDER-PROFILES).
 import { useEffect, useRef, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
@@ -15,15 +15,7 @@ import { token, sessionId, AGENT_BASE_URL } from "../api/client";
 import { capiToolsFor } from "../agent/capiTools";
 import { WATCHDOG_BACKSTOP_MS } from "../agent/aiTimeouts";
 import { buildTabContext } from "../agent/tabContext";
-import {
-  agentThreadId,
-  deleteThread,
-  fetchThreadHistory,
-  pruneRestored,
-  resolveThreadId,
-  setActiveChatThreadId,
-  threadMessageCache,
-} from "../agent/threads";
+import { deleteThread, fetchThreadHistory, pruneRestored, threadMessageCache, windowThreadId } from "../agent/threads";
 import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar } from "./CapiAvatar";
 import { CapiChat } from "./CapiChat";
@@ -110,13 +102,13 @@ function ChatSession({
   threadId,
   connectionId,
   onStreamingChange,
-  deferredTabTitle,
+  deferredFromConnection,
 }: {
   toggle: () => void;
   threadId: string;
   connectionId: string;
   onStreamingChange: (streaming: boolean) => void;
-  deferredTabTitle: string | null;
+  deferredFromConnection: string | null;
 }) {
   const [err, setErr] = useState<string | null>(null);
   const capabilities = useStore((s) => s.capabilities);
@@ -151,7 +143,6 @@ function ChatSession({
   const liveMessages = useRef(agent.messages);
   liveMessages.current = agent.messages;
   useEffect(() => {
-    setActiveChatThreadId(threadId);
     const cached = threadMessageCache.get(threadId);
     if (cached?.length) {
       agent.setMessages(cached);
@@ -164,11 +155,10 @@ function ChatSession({
         seededRef.current = true;
       });
     }
-    return () => setActiveChatThreadId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: the component is keyed by threadId
   }, []);
 
-  // Mirror the live conversation into the cache so switching back to this tab is instant.
+  // Mirror the live conversation into the cache so switching back to this thread is instant.
   useEffect(() => {
     if (agent.messages.length > 0) threadMessageCache.set(threadId, agent.messages);
   }, [agent.messages, threadId]);
@@ -178,16 +168,8 @@ function ChatSession({
   }, [agent.isStreaming, onStreamingChange]);
 
   const newChat = () => {
-    const state = useStore.getState();
-    const { activeTabId } = state;
     useActivity.getState().clear();
-    if (activeTabId && threadId !== agentThreadId(connectionId, activeTabId)) {
-      // Aliased (agent-opened) tab: detach to its own fresh thread instead of wiping the shared
-      // conversation out from under the origin tab. The alias change remounts the session.
-      state.setTabOriginThread(activeTabId, null);
-      return;
-    }
-    // NOTE: never endSession() here — it would randomize the threadId; the tab's thread id is
+    // NOTE: never endSession() here — it would randomize the threadId; the window's thread id is
     // stable, so "New chat" = delete the server-side thread + clear the local view.
     deleteThread(threadId);
     agent.clearMessages();
@@ -212,9 +194,9 @@ function ChatSession({
           onDownload={downloadChat}
           downloadDisabled={agent.messages.length === 0 || agent.isStreaming}
         />
-        {deferredTabTitle && (
+        {deferredFromConnection && (
           <div className="border-b border-brass/30 bg-brass/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-brass">
-            Capi is finishing in <span className="font-semibold">{deferredTabTitle}</span> — the chat will follow when it's done.
+            Capi is finishing a run on <span className="font-semibold">{deferredFromConnection}</span> — the chat will follow when it's done.
           </div>
         )}
         {err && (
@@ -232,29 +214,34 @@ function ChatSession({
 }
 
 function CapiRail({ toggle, connectionId }: { toggle: () => void; connectionId: string }) {
-  const tabs = useStore((s) => s.tabs);
-  const activeTabId = useStore((s) => s.activeTabId);
-  const desiredThreadId = resolveThreadId(connectionId, tabs, activeTabId);
+  const connections = useStore((s) => s.connections);
+  const desiredThreadId = windowThreadId(sessionId, connectionId);
   const [mountedThreadId, setMountedThreadId] = useState(desiredThreadId);
   const [streaming, setStreaming] = useState(false);
 
-  // Follow the active tab's thread — but never mid-run: remounting would kill the stream, so a
-  // switch while streaming is deferred until the run settles (the banner names the busy tab).
+  // Follow the window's per-connection thread — but never mid-run: remounting would kill the
+  // stream, so a connection switch while streaming is deferred until the run settles (the banner
+  // names the busy connection). Tab switches never change the thread.
   useEffect(() => {
     if (!streaming && mountedThreadId !== desiredThreadId) setMountedThreadId(desiredThreadId);
   }, [streaming, desiredThreadId, mountedThreadId]);
 
-  const mountedTab = tabs.find((t) => resolveThreadId(connectionId, tabs, t.id) === mountedThreadId);
-  const deferredTabTitle = mountedThreadId !== desiredThreadId ? (mountedTab?.title ?? "another tab") : null;
+  // win:{sid}:{connectionId} — sids and connection ids are uuids (or "default"), never containing
+  // ":", so the third segment is the mounted thread's connection.
+  const mountedConnectionId = mountedThreadId.split(":")[2];
+  const deferredFromConnection =
+    mountedThreadId !== desiredThreadId
+      ? (connections.find((c) => c.id === mountedConnectionId)?.name ?? "the previous connection")
+      : null;
 
   return (
     <ChatSession
       key={mountedThreadId}
       threadId={mountedThreadId}
-      connectionId={connectionId}
+      connectionId={mountedConnectionId ?? connectionId}
       toggle={toggle}
       onStreamingChange={setStreaming}
-      deferredTabTitle={deferredTabTitle}
+      deferredFromConnection={deferredFromConnection}
     />
   );
 }
