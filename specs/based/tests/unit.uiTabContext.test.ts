@@ -4,7 +4,7 @@
 // both modules are deliberately free of window-bound runtime imports.
 import { describe, expect, test } from "bun:test";
 import { buildTabContext, serializeResultRows } from "../../../ui/src/agent/tabContext";
-import { windowThreadId } from "../../../ui/src/agent/threadIds";
+import { newChatThreadId } from "../../../ui/src/agent/threadIds";
 import type { AppState, QueryTabState, ResultSetData, TabState } from "../../../ui/src/store";
 
 function queryTab(over: Partial<QueryTabState> & { id: string }): QueryTabState {
@@ -93,14 +93,11 @@ describe("BASED-AGENT-TAB-TOOLS: serializeResultRows", () => {
   });
 });
 
-describe("BASED-AGENT-THREADS: per-window thread id derivation", () => {
-  test("one thread per (window, connection); tab identity plays no part", () => {
-    expect(windowThreadId("sid-1", "c1")).toBe("win:sid-1:c1");
-    // Same window, different connection → a different conversation.
-    expect(windowThreadId("sid-1", "c2")).toBe("win:sid-1:c2");
-    // Same connection, different window → independent conversations.
-    expect(windowThreadId("sid-2", "c1")).toBe("win:sid-2:c1");
-    // The dev-browser fallback sid is a stable shared bucket, same as window state.
-    expect(windowThreadId("default", "c1")).toBe("win:default:c1");
+describe("BASED-AGENT-THREADS: conversation thread ids", () => {
+  test("mints unique per-conversation chat:{uuid} ids — no window or tab identity in the id", () => {
+    const a = newChatThreadId();
+    const b = newChatThreadId();
+    expect(a).toMatch(/^chat:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(a).not.toBe(b);
   });
 });

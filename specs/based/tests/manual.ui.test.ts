@@ -262,12 +262,22 @@ describe.skip("BASED-DIAGRAM-UI: manual verification", () => {
 });
 
 // Traces: BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS (canonical spec: specs/based/spec.md)
-// Verification: manual — per-window chat thread (win:{sid}:{connectionId}: tab switches never
-// change the conversation; restart restores the window's history; closing a window deletes its
-// threads; New chat clears the window's conversation for the current connection); workspace
-// context in every send; list_tabs/get_tab read other tabs; show_results lands user-facing
-// results in a real grid tab; a mid-run connection switch defers with a banner.
+// Verification: manual — one active conversation per (window, connection) via the capiThreads
+// pointer: tab switches never change the conversation; restart restores the window's active
+// conversation; New chat mints a fresh thread and the old one becomes history (nothing deleted);
+// workspace context in every send; list_tabs/get_tab read other tabs; show_results lands
+// user-facing results in a real grid tab; a mid-run pointer move defers with a banner.
 describe.skip("BASED-AGENT-TAB-TOOLS: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
+
+// Traces: BASED-CHAT-HISTORY-PICKER (canonical spec: specs/based/spec.md)
+// Verification: manual — the clock IconButton in the Capi header (disabled while streaming) opens
+// a popover with the connection's last 15 conversations, newest first, deterministically titled
+// from each one's first user message, active row highlighted; clicking a row reactivates that
+// conversation and a follow-up message moves it to the top; Esc/outside-click close; empty state
+// reads "No previous chats on this connection." Full steps in the spec's verification procedure.
+describe.skip("BASED-CHAT-HISTORY-PICKER: manual verification", () => {
   it.todo("see spec.md procedure");
 });
 

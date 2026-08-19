@@ -203,7 +203,7 @@ export function fetchWindowState(): Promise<WindowState> {
   return api<WindowState>("/api/window-state");
 }
 
-export function saveWindowState(patch: Partial<Pick<WindowState, "activeTabId" | "schemaFilter">>): Promise<WindowState> {
+export function saveWindowState(patch: Partial<Pick<WindowState, "activeTabId" | "schemaFilter" | "capiThreadId">>): Promise<WindowState> {
   return api<WindowState>("/api/window-state", { method: "POST", body: JSON.stringify(patch) });
 }
 

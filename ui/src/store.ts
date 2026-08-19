@@ -30,6 +30,7 @@ import {
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
+import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
@@ -193,6 +194,9 @@ export interface AppState {
   objects: DbObject[];
   tabs: TabState[];
   activeTabId: string | null;
+  /** This window's active capi conversation per connection (BASED-CHAT-HISTORY-PICKER). The
+   *  current connection's entry is mirrored into window state so a restart reopens the same one. */
+  capiThreads: Record<string, string>;
   dialog: DialogState;
   rightRailOpen: boolean;
   banner: string | null;
@@ -281,6 +285,9 @@ export interface AppState {
    *  editor: without it, a Cloud session loses the "rows land in a real grid" norm exactly where it
    *  also can't aggregate, and every answer degrades to rows pasted into chat. Returns the tab id. */
   openTableTabWithQuery(schema: string, table: string, where?: string): Promise<string>;
+  /** Move this window's active conversation for a connection — "New chat" mints a fresh id, the
+   *  history picker reactivates a past one (BASED-CHAT-HISTORY-PICKER). */
+  setCapiThread(connectionId: string, threadId: string): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
   /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
@@ -406,6 +413,17 @@ export const useStore = create<AppState>((set, get) => {
   function persistTabsSoon(): void {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(flushPendingTabs, 700);
+  }
+
+  // Traces: BASED-CHAT-HISTORY-PICKER — every connect leaves the window with an active
+  // conversation for that connection (minting one if it has none) and mirrors it into window
+  // state, so a restart reopens the same conversation and a connection switch never leaves the
+  // persisted pointer pointing at another connection's thread.
+  function ensureCapiThread(connectionId: string): void {
+    const existing = get().capiThreads[connectionId];
+    const threadId = existing ?? newChatThreadId();
+    if (!existing) set({ capiThreads: { ...get().capiThreads, [connectionId]: threadId } });
+    void saveWindowState({ capiThreadId: threadId }).catch(() => {});
   }
 
   function freshQueryTab(title: string): QueryTabState {
@@ -623,6 +641,7 @@ export const useStore = create<AppState>((set, get) => {
     objects: [],
     tabs: [],
     activeTabId: null,
+    capiThreads: {},
     dialog: { mode: "closed" },
     rightRailOpen: false,
     banner: null,
@@ -819,6 +838,7 @@ export const useStore = create<AppState>((set, get) => {
             capabilities: res.capabilities,
           });
           if (tabs !== cached.tabs) persistTabsSoon();
+          ensureCapiThread(connectionId);
           return;
         }
         const hydrated = await hydrateTabsForConnection(connectionId);
@@ -836,6 +856,7 @@ export const useStore = create<AppState>((set, get) => {
           capabilities: res.capabilities,
         });
         if (tabs !== hydrated.tabs) persistTabsSoon();
+        ensureCapiThread(connectionId);
         hydrateTabDetails(tabs);
       } catch (err) {
         set({ status: "disconnected", banner: err instanceof Error ? err.message : String(err) });
@@ -1348,10 +1369,20 @@ export const useStore = create<AppState>((set, get) => {
     },
 
 
+    // Traces: BASED-CHAT-HISTORY-PICKER — move this window's active conversation for a connection.
+    // Persisted when it's the current connection, so restart restores it.
+    setCapiThread(connectionId, threadId) {
+      set({ capiThreads: { ...get().capiThreads, [connectionId]: threadId } });
+      if (connectionId === get().activeConnectionId) void saveWindowState({ capiThreadId: threadId }).catch(() => {});
+    },
+
     async restoreWindow() {
       try {
         const ws = await fetchWindowState();
         if (!ws.connectionId || !get().connections.some((c) => c.id === ws.connectionId)) return;
+        // Seed the conversation pointer BEFORE connecting — connect's ensureCapiThread would
+        // otherwise mint a fresh one and the restored window would open on an empty chat.
+        if (ws.capiThreadId) set({ capiThreads: { ...get().capiThreads, [ws.connectionId]: ws.capiThreadId } });
         await get().connect(ws.connectionId);
         const patch: Partial<Pick<AppState, "activeTabId" | "schemaFilter">> = {};
         if (ws.activeTabId && get().tabs.some((t) => t.id === ws.activeTabId)) patch.activeTabId = ws.activeTabId;

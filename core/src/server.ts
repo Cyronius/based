@@ -45,6 +45,7 @@ import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
+import { threadTitle, isDerivableTitle } from "./agent/threadTitle";
 import { isContextOverflowError } from "./agent/contextRecovery";
 import { buildAgent, AGENT_ID } from "./agent/agent";
 import { createSubagentRunner } from "./agent/subagent";
@@ -328,9 +329,19 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     }
     const connMatch = path.match(/^\/api\/connections\/([^/]+)$/);
     if (connMatch && method === "DELETE") {
-      connections.delete(connMatch[1]!);
-      deleteSecret(connMatch[1]!);
-      windowState.deleteByConnection(connMatch[1]!);
+      const id = connMatch[1]!;
+      connections.delete(id);
+      deleteSecret(id);
+      windowState.deleteByConnection(id);
+      // Traces: BASED-CHAT-HISTORY-PICKER — chat history is per-connection, so the connection's
+      // deletion is what finally sweeps its conversations (previously they leaked in agent.db
+      // forever). Best-effort: an agent.db hiccup must not block deleting the connection.
+      try {
+        const { threads } = await agentMemory.listThreads({ filter: { resourceId: id }, perPage: false });
+        await Promise.all(threads.map((t) => agentMemory.deleteThread(t.id).catch(() => {})));
+      } catch {
+        // leave orphans rather than fail the delete
+      }
       return json({ ok: true });
     }
 
@@ -381,17 +392,8 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (session?.adapter) await session.adapter.disconnect().catch(() => {});
       sessions.delete(sid);
       windowState.delete(sid);
-      // Traces: BASED-AGENT-THREADS — a cleanly closed window takes its chat threads with it (the
-      // per-window analog of the old delete-on-tab-close). App exit never posts close, so windows
-      // restored next launch (BASED-WINDOW-RESTORE) keep their history. A window can hold one
-      // thread per connection it visited, so sweep the candidate id for every stored connection;
-      // deleting a thread that never existed is a no-op. "default" is the shared sid-less bucket
-      // (dev browser), not a real window — never sweep it.
-      if (sid !== "default") {
-        await Promise.all(
-          connections.list().map((c) => agentMemory.deleteThread(`win:${sid}:${c.id}`).catch(() => {})),
-        );
-      }
+      // Chat threads deliberately survive window close: conversations are durable per-connection
+      // history (BASED-CHAT-HISTORY-PICKER); only deleting the connection sweeps them.
       for (const client of sseClients) {
         if (client.sid !== sid) continue;
         try {
@@ -664,7 +666,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json(windowState.get(sid) ?? { sid, connectionId: null, activeTabId: null, schemaFilter: "" });
     }
     if (path === "/api/window-state" && method === "POST") {
-      const body = (await req.json()) as Partial<{ activeTabId: string | null; schemaFilter: string }>;
+      const body = (await req.json()) as Partial<{ activeTabId: string | null; schemaFilter: string; capiThreadId: string | null }>;
       return json(windowState.save(sid, body));
     }
     if (path === "/api/window/new" && method === "POST") {
@@ -794,9 +796,37 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/agent/audit" && method === "GET") {
       return json(audit.list(url.searchParams.get("connectionId") ?? ""));
     }
-    // Traces: BASED-AGENT-THREADS — per-window thread history restore + deletion. Memory-only:
-    // neither route needs a live DB connection (restore must work before/independent of connect
-    // ordering).
+    // Traces: BASED-CHAT-HISTORY-PICKER — the history picker's list: the connection's newest
+    // conversations, deterministically titled. A thread still wearing the unset/Mastra-default
+    // title gets one derived from its first user message and cached back, so derivation happens
+    // once per thread and pre-existing threads self-heal. threadTitle() is the ONE titling seam —
+    // a tiny local titling model is planned to slot in there later (config option).
+    if (path === "/api/agent/threads" && method === "GET") {
+      const resourceId = url.searchParams.get("resourceId") ?? "";
+      const limit = Math.max(1, Math.min(50, Math.floor(Number(url.searchParams.get("limit")) || 15)));
+      const { threads } = await agentMemory.listThreads({
+        filter: { resourceId },
+        perPage: limit,
+        orderBy: { field: "updatedAt", direction: "DESC" },
+      });
+      const out = await Promise.all(
+        threads.map(async (t) => {
+          let title = t.title ?? "";
+          if (isDerivableTitle(title)) {
+            const messages = await recallThreadMessages(t.id, resourceId);
+            const firstUser = messages.find((m) => m.role === "user");
+            title = threadTitle(typeof firstUser?.content === "string" ? firstUser.content : "");
+            // saveThread, not updateThread: updateThread stamps a fresh updatedAt, which would
+            // re-sort the whole history by backfill time instead of conversation recency.
+            await agentMemory.saveThread({ thread: { ...t, title } }).catch(() => {});
+          }
+          return { id: t.id, title, updatedAt: t.updatedAt };
+        }),
+      );
+      return json(out);
+    }
+    // Traces: BASED-AGENT-THREADS — thread history restore + deletion. Memory-only: neither route
+    // needs a live DB connection (restore must work before/independent of connect ordering).
     const threadMessagesMatch = path.match(/^\/api\/agent\/threads\/([^/]+)\/messages$/);
     if (threadMessagesMatch && method === "GET") {
       const threadId = decodeURIComponent(threadMessagesMatch[1]!);

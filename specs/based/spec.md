@@ -288,7 +288,7 @@ Tabs of every kind — query (content, optional file path), table/view (schema, 
 On launch, the app shall reopen one native window per window that was still open when it last exited (cleanly or via kill), each reconnecting to its last connection and restoring its active tab and schema filter. A window that was closed cleanly before the app exited shall not be reopened. Each window's state (connection id, active tab id, schema filter) is keyed by the same per-window session id (`sid`) the backend already uses to give each window an independent DB session — the shell reuses a window's prior `sid` across restarts instead of minting a fresh one, so window state and DB session share one durable key.
 
 **Acceptance criteria (`WindowStateStore`, integration-tested):**
-- Save connection/active-tab/schema-filter for a sid → get returns it; `list()` returns all rows; survives store reopen
+- Save connection/active-tab/schema-filter/capi-thread (BASED-CHAT-HISTORY-PICKER) for a sid → get returns it; `list()` returns all rows; survives store reopen
 - Deleting a sid's row removes it from `list()`; deleting a connection cascades to remove every window_state row referencing it
 
 **Manual verification (multi-window relaunch):**
@@ -1317,31 +1317,31 @@ A subagent is built without memory, so nothing it does is written to the tab's t
 - Every audit row a subagent's tools produce begins `-- subagent: <task name>` and carries the parent's connection id
 - One `delegate(…)` audit row is written per `delegate` call, status `error` only when every task failed
 
-### BASED-AGENT-THREADS: Per-window thread persistence
+### BASED-AGENT-THREADS: Durable per-connection conversations, one active per window
 **Applies to:** based (core, ui)
 **Test category:** integration + unit
 
-Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`), **one thread per
-(window, connection)**: the client derives `threadId` as `win:{sid}:{connectionId}`, where `sid`
-is the shell's per-window session id — window restore reuses it across app restarts
-(BASED-WINDOW-RESTORE), so a restored window keeps its conversation; the sid-less dev-browser
-fallback `default` is a stable shared bucket, mirroring window state. `resourceId` stays the
-connection id. Threads persisted under this format are live, so the format is not safe to change.
-Switching tabs never changes the visible conversation; switching connections switches to that
-connection's thread and back losslessly. Tab awareness comes from the per-send workspace snapshot
-and the tab tools, not from thread identity (BASED-AGENT-TAB-CONTEXT, BASED-AGENT-TAB-TOOLS).
+Chat threads persist via Mastra Memory (LibSQLStore, its own `agent.db`) as **durable
+per-connection conversation records**: each conversation gets a client-minted `chat:{uuid}`
+thread id (`newChatThreadId()`), and `resourceId` stays the connection id. Threads persisted
+under this format are live, so the format is not safe to change. Legacy `tab:`/`conn:` threads
+from the per-tab era remain in `agent.db` unreferenced (no migration).
 
-**Lifecycle:** a cleanly closed window (`POST /api/session/close` — posted by the shell on window
-close, never at app exit) deletes its `win:{sid}:*` threads for every stored connection alongside
-its persisted window state; restorable windows keep their history. The `default` bucket is never
-swept. Legacy `tab:`/`conn:` threads from the per-tab era remain in `agent.db` unreferenced (no
-migration — per-tab history was deliberately abandoned).
+**The window shows one active conversation per connection** via a pointer map
+(`store.capiThreads`): switching tabs never changes the visible conversation; switching
+connections switches to that connection's active thread and back losslessly. Every successful
+connect ensures a pointer exists (minting a fresh id when there is none) and mirrors the current
+connection's pointer into `window_state.capi_thread_id`, so a restored window (same sid,
+BASED-WINDOW-RESTORE) reopens the same conversation and a connection switch never leaves the
+persisted pointer aimed at another connection's thread. Tab awareness comes from the per-send
+workspace snapshot and the tab tools, not from thread identity (BASED-AGENT-TAB-CONTEXT,
+BASED-AGENT-TAB-TOOLS).
 
-**Reset wins over restore:** discarding a conversation ("New chat") bumps that thread's
-reset generation (`threadReset`). A history fetch carries the generation it started in, so one
-already in flight — the common case right after launch or a switch to a cold thread, where the
-DELETE and the GET race server-side — is dropped instead of restoring the cleared conversation
-into the view and back into the message cache.
+**Lifecycle:** "New chat" mints a fresh id and moves the pointer — nothing is deleted; the old
+conversation becomes history (BASED-CHAT-HISTORY-PICKER). A thread only materializes server-side
+on its first message, so abandoned New chats leave no empty threads. Window close keeps threads
+(history outlives the window); **deleting a connection sweeps its threads** (list by resourceId →
+delete each, best-effort).
 
 **Endpoints:** `GET /api/agent/threads/:threadId/messages?resourceId=…` returns the thread's
 history as AG-UI messages via `Memory.recall` + a defensive mapper (`mapDbMessagesToAgui`:
@@ -1349,18 +1349,51 @@ user/assistant text, assistant `tool-invocation` parts as `toolCalls` plus one s
 `role:"tool"` message per resolved invocation, id-prefixed `hist_` so the client can exclude them
 from outbound sends; unknown parts/roles are skipped). Unknown thread → `[]`, never an error. It
 does not require a live DB connection. `DELETE /api/agent/threads/:threadId` removes the thread
-(`Memory.deleteThread`).
+(`Memory.deleteThread`) — kept for explicit deletion even though "New chat" no longer calls it.
 
 **Acceptance criteria:**
 - Memory tables live in `agent.db`, not the bun:sqlite `app.db`
 - A run with a stable `threadId`/`resourceId` accumulates history in memory
 - The messages GET returns mapped history for a seeded thread and `[]` for an unknown one; after a DELETE, a subsequent GET returns `[]`
 - `mapDbMessagesToAgui` pairs a resolved tool invocation with a synthetic `hist_`-prefixed tool message and skips unknown part types (unit)
-- The client-side derivation `win:{sid}:{connectionId}` is pure and unit-tested
-- `POST /api/session/close` for a sid empties that window's threads (messages GET → `[]`) and leaves other windows' threads intact
-- A history fetch that began before a thread reset is stale (dropped); one begun after it is fresh, and a reset of one thread never marks another's fetch stale (unit)
+- `newChatThreadId()` mints unique `chat:{uuid}` ids (unit)
+- `POST /api/session/close` leaves threads intact; `DELETE /api/connections/:id` empties that connection's threads and leaves other connections' threads alone
 
-### BASED-SKILL-REGISTRY: Skill registry & prompt catalog
+### BASED-CHAT-HISTORY-PICKER: Chat history list & reactivation
+**Applies to:** based (core, ui)
+**Test category:** integration + unit (endpoint, titles); manual (picker UI)
+
+A **Chat history** `IconButton` (`HistoryIcon`, a clock) in the Capi header — leftmost of the
+trailing group, disabled while streaming — toggles a popover anchored under the header listing the
+current connection's **last 15 conversations**, newest first: title plus relative time, the active
+conversation tinted brass. Clicking a row moves the window's pointer (`setCapiThread`) to that
+thread — the keyed remount plus the message cache / thread-history fetch restore it — and closes
+the popover. The popover closes on outside click (excluding the toggle button, marked
+`data-history-toggle`) and Escape. An empty history shows "No previous chats on this connection."
+
+**Endpoint:** `GET /api/agent/threads?resourceId=…&limit=15` → `[{ id, title, updatedAt }]` via
+`Memory.listThreads`, ordered `updatedAt DESC`, limit clamped to 1–50 (default 15). Memory-only —
+no live DB connection required.
+
+**Deterministic titles:** `threadTitle(firstUserMessageText)` (`core/src/agent/threadTitle.ts`) —
+whitespace-collapsed first 6 words, hard-capped at 48 chars, `…` marking any dropped tail; blank →
+"Untitled chat". At list time, a thread still wearing an unset/Mastra-default title
+(`isDerivableTitle`) gets its first user message recalled, the title derived, and cached back via
+`saveThread` — **not** `updateThread`, which stamps a fresh `updatedAt` and would re-sort history
+by backfill time instead of conversation recency. Titling is deliberately confined to this ONE
+seam: a tiny CPU-only titling model is planned as a future (likely config-optional) replacement
+and must slot in there without touching anything else.
+
+**Acceptance criteria:**
+- `threadTitle`: 6-word cut with ellipsis, 48-char hard cap, whitespace collapse, blank → "Untitled chat"; `isDerivableTitle` true for unset/blank/`New Thread …`, false for real titles (unit)
+- The list endpoint returns at most `limit` threads for the resource, newest `updatedAt` first, with derived titles; a second call returns the same titles (cached back onto the thread, order unchanged)
+
+**Manual verification (requires a healthy model backend):**
+1. Chat, New chat, chat again → the history button opens a popover listing both conversations, newest first, titled by the first words of each one's first user message; the active one is highlighted
+2. Click the older conversation → the rail shows it (reactivated); send a follow-up → it lands in that conversation and it moves to the top of the list
+3. Restart the app → the reactivated conversation is the one restored; the picker still lists both
+4. While a run is streaming, the history button is disabled
+5. On a connection with no prior chats, the popover shows the empty message; Esc and outside-click both close it
 **Applies to:** based (core)
 **Test category:** unit
 
@@ -1884,13 +1917,14 @@ The chat is window-scoped and tab-aware:
 - **Per-window conversation** (BASED-AGENT-THREADS): the rail's chat session is keyed on the
   window's per-connection thread id (`win:{sid}:{connectionId}`). The `useAgent` mount is
   remounted via a React `key` + `initialThreadId` (the client's thread id is fixed at
-  construction), so a remount happens only on a connection switch — never on a tab switch; a
-  module-level per-thread message cache makes in-session switches instant, and a cache miss seeds
-  from the thread-history endpoint via `setMessages`. Restored synthetic tool messages (`hist_`
-  ids) are excluded from outbound sends via `pruneOutboundMessages`. "New chat" deletes the thread
-  server-side and clears messages — it never calls `endSession()` (that would randomize the
-  thread id). A connection switch during a streaming run defers the remount until the run
-  finishes, with a banner naming the connection the run belongs to.
+  construction), so a remount happens only when the pointer moves — a connection switch, "New
+  chat", or a history-picker reactivation — never on a tab switch; a module-level per-thread
+  message cache makes in-session switches instant, and a cache miss seeds from the thread-history
+  endpoint via `setMessages`. Restored synthetic tool messages (`hist_` ids) are excluded from
+  outbound sends via `pruneOutboundMessages`. "New chat" mints a fresh thread and moves the
+  pointer — the old conversation becomes history (BASED-CHAT-HISTORY-PICKER), nothing is deleted
+  and `endSession()` is never called. A pointer move during a streaming run defers the remount
+  until the run finishes, with a banner naming what Capi is finishing.
 - **Workspace snapshot**: every send carries `forwardedProps.tabContext` built by a pure
   `buildTabContext(state)` — active tab identity/SQL/result summaries + the open-tab list — which
   the server renders into the instructions (BASED-AGENT-TAB-CONTEXT).
@@ -1909,9 +1943,9 @@ The chat is window-scoped and tab-aware:
   The map is filtered per connection by `capiToolsFor` — see BASED-AGENT-SURFACE-VARIANT.
 
 **Verification procedure (requires a healthy model backend):**
-1. Chat, then switch tabs (and open/close tabs) → the conversation stays put; there is one chat per window
-2. Restart the app, reconnect → the window's history is restored; a second window (Ctrl+N) starts its own independent conversation on the same connection
-3. Close a window (not app exit) → its threads are deleted (a fresh window on that connection starts empty); New chat clears the window's conversation for the current connection only
+1. Chat, then switch tabs (and open/close tabs) → the conversation stays put; the window shows one chat at a time
+2. Restart the app, reconnect → the window's active conversation is restored; a second window (Ctrl+N) starts its own fresh conversation on the same connection (its history picker still lists the shared past conversations)
+3. New chat → an empty conversation; the previous one is reachable via the history picker (BASED-CHAT-HISTORY-PICKER), not deleted
 4. Ask "show me the customers table" → the agent calls `show_results`; a results tab opens with the grid populated; the chat narrates a short summary instead of dumping rows; switching to/from that tab leaves the chat unchanged
 5. Switch connections and back → each connection shows its own conversation, restored intact
 6. Switch connections while a run is streaming → a banner names the busy connection; when the run ends the rail follows to the new connection's thread
