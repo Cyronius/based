@@ -234,10 +234,13 @@ function SearchProfilesTab() {
 
   const [editingEmbedId, setEditingEmbedId] = useState<string | null>(null);
   const [embedForm, setEmbedForm] = useState<EmbeddingProfileInput>(emptyEmbeddingForm);
+  const [embedError, setEmbedError] = useState<string | null>(null);
   const [editingRerankId, setEditingRerankId] = useState<string | null>(null);
   const [rerankForm, setRerankForm] = useState<RerankerProfileInput>(emptyRerankerForm);
+  const [rerankError, setRerankError] = useState<string | null>(null);
 
   function startEditEmbed(id: string | "new") {
+    setEmbedError(null);
     if (id === "new") {
       setEmbedForm(emptyEmbeddingForm);
       setEditingEmbedId("new");
@@ -250,6 +253,7 @@ function SearchProfilesTab() {
   }
 
   function startEditRerank(id: string | "new") {
+    setRerankError(null);
     if (id === "new") {
       setRerankForm(emptyRerankerForm);
       setEditingRerankId("new");
@@ -264,8 +268,12 @@ function SearchProfilesTab() {
   async function onSaveEmbed() {
     const input = { ...embedForm };
     if (!input.apiKey) delete input.apiKey; // blank on edit = keep the stored key
-    await saveEmbeddingProfile(input);
-    setEditingEmbedId(null);
+    try {
+      await saveEmbeddingProfile(input);
+      setEditingEmbedId(null);
+    } catch (err) {
+      setEmbedError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function onSaveRerank() {
@@ -273,8 +281,12 @@ function SearchProfilesTab() {
     if (!input.apiKey) delete input.apiKey;
     // instruction only means something on the openai api; keep legacy-shaped blobs clean otherwise.
     if (input.api !== "openai" || !input.instruction?.trim()) delete input.instruction;
-    await saveRerankerProfile(input);
-    setEditingRerankId(null);
+    try {
+      await saveRerankerProfile(input);
+      setEditingRerankId(null);
+    } catch (err) {
+      setRerankError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Traces: BASED-LANCE-RERANK-OPENAI — per-profile API choice; openai mode scores yes/no logprobs
@@ -321,6 +333,7 @@ function SearchProfilesTab() {
                 form={embedForm}
                 setForm={setEmbedForm}
                 modelRequired
+                error={embedError}
                 onSave={() => void onSaveEmbed()}
                 onCancel={() => setEditingEmbedId(null)}
                 onDelete={() => void deleteEmbeddingProfile(p.id).then(() => setEditingEmbedId(null))}
@@ -334,6 +347,7 @@ function SearchProfilesTab() {
               form={embedForm}
               setForm={setEmbedForm}
               modelRequired
+              error={embedError}
               onSave={() => void onSaveEmbed()}
               onCancel={() => setEditingEmbedId(null)}
             />
@@ -358,6 +372,7 @@ function SearchProfilesTab() {
                 setForm={setRerankForm}
                 modelRequired={rerankApi === "openai"}
                 extra={rerankExtra}
+                error={rerankError}
                 onSave={() => void onSaveRerank()}
                 onCancel={() => setEditingRerankId(null)}
                 onDelete={() => void deleteRerankerProfile(p.id).then(() => setEditingRerankId(null))}
@@ -372,6 +387,7 @@ function SearchProfilesTab() {
               setForm={setRerankForm}
               modelRequired={rerankApi === "openai"}
               extra={rerankExtra}
+              error={rerankError}
               onSave={() => void onSaveRerank()}
               onCancel={() => setEditingRerankId(null)}
             />
@@ -390,6 +406,7 @@ function ProfileForm<T extends EmbeddingProfileInput | RerankerProfileInput>({
   setForm,
   modelRequired,
   extra,
+  error,
   onSave,
   onCancel,
   onDelete,
@@ -399,6 +416,8 @@ function ProfileForm<T extends EmbeddingProfileInput | RerankerProfileInput>({
   modelRequired?: boolean;
   /** Caller-specific fields (e.g. the reranker API select) rendered between model and API key. */
   extra?: ReactNode;
+  /** A failed save, surfaced next to the buttons — without it a rejected save looks like a dead button. */
+  error?: string | null;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
@@ -428,6 +447,7 @@ function ProfileForm<T extends EmbeddingProfileInput | RerankerProfileInput>({
         value={form.apiKey ?? ""}
         onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
       />
+      {error && <div className="text-err text-[length:var(--fs-sm)]">Save failed: {error}</div>}
       <div className="flex items-center gap-2 pt-0.5">
         {onDelete && (
           <button className={btnDanger} onClick={onDelete}>
@@ -471,6 +491,7 @@ function AiProfileForm({
   form,
   setForm,
   sets,
+  error,
   onSave,
   onCancel,
   onDelete,
@@ -478,6 +499,8 @@ function AiProfileForm({
   form: AiProfileInput;
   setForm: (f: AiProfileInput) => void;
   sets: Array<{ id: string; name: string }>;
+  /** A failed save, surfaced next to the buttons — without it a rejected save looks like a dead button. */
+  error?: string | null;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
@@ -627,6 +650,7 @@ function AiProfileForm({
           spellCheck={false}
         />
       </label>
+      {error && <div className="text-err text-[length:var(--fs-sm)]">Save failed: {error}</div>}
       <div className="flex items-center gap-2 pt-0.5">
         {onDelete && (
           <button className={btnDanger} onClick={onDelete}>
@@ -694,13 +718,18 @@ function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => v
     return p ? { ...p, apiKey: "" } : emptyAiForm;
   });
   const [sets, setSets] = useState<Array<{ id: string; name: string }>>([{ id: "default", name: "Default" }]);
+  const [saveError, setSaveError] = useState<string | null>(null);
   useEffect(() => void getAgentInstructions().then((c) => setSets(c.sets.map((s) => ({ id: s.id, name: s.name })))), []);
 
   async function onSave() {
     const input = { ...form };
     if (!input.apiKey) delete input.apiKey; // blank on edit = keep the stored key
-    await saveAiProfile(input);
-    onClose();
+    try {
+      await saveAiProfile(input);
+      onClose();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (
@@ -710,6 +739,7 @@ function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => v
         form={form}
         setForm={setForm}
         sets={sets}
+        error={saveError}
         onSave={() => void onSave()}
         onCancel={onClose}
         onDelete={id === "new" ? undefined : () => void deleteAiProfile(id).then(onClose)}

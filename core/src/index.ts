@@ -21,6 +21,7 @@ export { HistoryStore, type HistoryEntry } from "./storage/history";
 export { SettingsStore, DEFAULT_SETTINGS, type AppSettings } from "./storage/settings";
 export {
   MAX_SECRET_BYTES,
+  keyringUnavailableReason,
   setSecret,
   getSecret,
   deleteSecret,

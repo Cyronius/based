@@ -1,9 +1,44 @@
 // Traces: BASED-SECRET-STORE
-// The OS keychain via @napi-rs/keyring — Windows Credential Manager, macOS login Keychain — one API
-// for both, so nothing here branches on platform (napi prebuild; Bun napi loading validated in spike 5).
+// The OS keychain via @napi-rs/keyring — Windows Credential Manager, macOS login Keychain, the
+// Secret Service on Linux — one API for all three (napi prebuild; Bun napi loading validated in
+// spike 5). The only platform branch is the Linux availability guard below.
 import { Entry } from "@napi-rs/keyring";
+import { existsSync } from "node:fs";
 
 const SERVICE = process.env.BASED_KEYRING_SERVICE ?? "based-db-client";
+
+/** Linux only: is there a keyring to talk to at all? The Secret Service lives on the session
+ *  D-Bus, and with no session bus (WSL2, headless CI, a bare TTY login) @napi-rs/keyring does not
+ *  throw — it segfaults the Bun process (observed Bun 1.3.14 on WSL2 Ubuntu 24.04). Availability
+ *  therefore has to be decided *before* the native call; no try/catch can contain a SIGSEGV.
+ *  Returns null when the keyring is reachable, else a reason naming what is missing. Pure
+ *  (platform/env/fs injected) so every branch is unit-testable from any host. */
+export function keyringUnavailableReason(
+  platform: string = process.platform,
+  env: Record<string, string | undefined> = process.env,
+  socketExists: (path: string) => boolean = existsSync,
+): string | null {
+  if (platform !== "linux") return null; // Credential Manager / login Keychain are always present
+  if (env.DBUS_SESSION_BUS_ADDRESS) return null;
+  if (env.XDG_RUNTIME_DIR && socketExists(`${env.XDG_RUNTIME_DIR}/bus`)) return null;
+  return (
+    "the keyring service is unavailable — no session D-Bus (DBUS_SESSION_BUS_ADDRESS is unset and " +
+    "there is no $XDG_RUNTIME_DIR/bus socket), so the Secret Service cannot be reached"
+  );
+}
+
+let warnedKeyringUnavailable = false;
+
+/** Reads and deletes degrade to "nothing stored" when the keyring is unreachable; only writes
+ *  refuse loudly (a save that silently drops the secret would read back as data loss). */
+function keyringUnavailable(): string | null {
+  const reason = keyringUnavailableReason();
+  if (reason && !warnedKeyringUnavailable) {
+    warnedKeyringUnavailable = true;
+    console.warn(`based: ${reason}; secrets cannot be stored or read in this session`);
+  }
+  return reason;
+}
 
 // Traces: BASED-SECRET-STORE — every secret goes through these three, byte-oriented rather than
 // string-oriented. Both the encoding and the cap are Windows constraints, applied on every platform
@@ -25,6 +60,8 @@ const V2_MARKER = new Uint8Array([0x76, 0x32, 0x3a]); // "v2:" in UTF-8
 export const MAX_SECRET_BYTES = 2560 - V2_MARKER.length;
 
 function writeSecret(account: string, secret: string): void {
+  const reason = keyringUnavailable();
+  if (reason) throw new Error(`Cannot store the secret: ${reason}.`);
   const body = new TextEncoder().encode(secret);
   if (body.length > MAX_SECRET_BYTES) {
     throw new Error(
@@ -39,6 +76,7 @@ function writeSecret(account: string, secret: string): void {
 }
 
 function readSecret(account: string): string | null {
+  if (keyringUnavailable()) return null;
   let bytes: Array<number> | null;
   try {
     bytes = new Entry(SERVICE, account).getSecret();
@@ -54,6 +92,7 @@ function readSecret(account: string): string | null {
 }
 
 function removeSecret(account: string): void {
+  if (keyringUnavailable()) return; // nothing can be stored there to delete
   try {
     new Entry(SERVICE, account).deletePassword();
   } catch {

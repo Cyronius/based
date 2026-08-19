@@ -25,7 +25,9 @@ Connections (name, server, initial database, auth type, options) shall persist i
 **Applies to:** based (core)
 **Test category:** integration
 
-SQL-login passwords and service-principal client secrets shall be stored in the OS keychain — Windows Credential Manager on Windows, the login Keychain on macOS — keyed by connection id, retrievable by the core process, and deleted when the connection is deleted. Both platforms are reached through one `@napi-rs/keyring` API under the service name `based-db-client` (overridable with `BASED_KEYRING_SERVICE`); `core/src/secrets.ts` carries no per-platform branch.
+SQL-login passwords and service-principal client secrets shall be stored in the OS keychain — Windows Credential Manager on Windows, the login Keychain on macOS, the Secret Service on Linux — keyed by connection id, retrievable by the core process, and deleted when the connection is deleted. All platforms are reached through one `@napi-rs/keyring` API under the service name `based-db-client` (overridable with `BASED_KEYRING_SERVICE`); the only per-platform branch in `core/src/secrets.ts` is the Linux availability guard below.
+
+**Linux keyring availability.** The Secret Service is reached over the session D-Bus, which is not guaranteed to exist (WSL2, headless CI, a bare TTY login). Availability shall be decided **before** any native keyring call: when `DBUS_SESSION_BUS_ADDRESS` is unset (or empty) and there is no `$XDG_RUNTIME_DIR/bus` socket, reads return null, deletes are no-ops, and writes are refused with an error naming the missing keyring service. A pre-check rather than a catch, because `@napi-rs/keyring` does not throw in this state — it **segfaults the Bun process** (observed Bun 1.3.14 on WSL2 Ubuntu 24.04; found when saving an AI profile crashed core mid-request), and no try/catch contains a SIGSEGV. The decision function `keyringUnavailableReason(platform, env, socketExists)` is pure so every branch is unit-testable from any host.
 
 Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error.
 
@@ -38,6 +40,7 @@ The cap and the byte encoding are **Credential Manager limits, not Keychain limi
 - A 1704-character (2048-bit PEM sized) secret round-trips; multi-byte characters survive and are charged by byte
 - A secret over the cap throws a message naming the limit, and stores nothing
 - A credential written by the legacy password path still reads back, and reads back correctly after being rewritten
+- `keyringUnavailableReason` on win32/darwin → null; on linux with `DBUS_SESSION_BUS_ADDRESS` set or a `$XDG_RUNTIME_DIR/bus` socket → null; on linux with neither (or an empty bus address) → a reason naming D-Bus (covered by `unit.keyringGuard.test.ts`)
 
 The integration tests exercise whichever keychain the test host provides, so running them on macOS verifies the Keychain path. The macOS round-trip has not yet been run on real hardware — it is on the Phase 7 checklist in [plans/macos-port.md](plans/macos-port.md), together with the 1704-character PEM case.
 

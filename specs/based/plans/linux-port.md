@@ -168,14 +168,15 @@ a checkout targets a single host.
 # --- one-time setup, inside WSL ---
 sudo apt update && sudo apt install -y \
     libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
-    libjavascriptcoregtk-4.1-dev librsvg2-dev libssl-dev \
+    libjavascriptcoregtk-4.1-dev librsvg2-dev libssl-dev libdbus-1-dev \
     build-essential curl wget file pkg-config
 
 curl -fsSL https://bun.sh/install | bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
-git clone https://github.com/Cyronius/based.git ~/based   # SEPARATE checkout; not /mnt/c/code/based
+git clone -b linux_port https://github.com/Cyronius/based.git ~/based   # SEPARATE checkout; not /mnt/c/code/based
+                                                                        # -b linux_port: main still has the PowerShell dialogs
 cd ~/based
 
 # --- build ---
@@ -212,12 +213,18 @@ in the dev script works, and a GTK file picker draws (Phase 3).
 | rpm `Requires:` names | Ubuntu, not Fedora — see 2b |
 | Blank window / DMABUF (7a) | WSLg runs Mesa on a virtualized D3D12 GPU, nothing like a bare-metal driver |
 | deck.gl WebGL2 (7b) | Weak signal. A **pass** proves little; a **fail** is real and worth chasing |
-| Secret Service (7d) | No session D-Bus and no gnome-keyring. Secrets *will* appear broken — that is environmental, not the code |
+| Secret Service (7d) | No session D-Bus and no gnome-keyring. Secrets are unavailable — environmental, not the code. Found live in 2a: worse than "appear broken", the keyring call **segfaulted core** until the guard below landed |
 | `.desktop` association | No real desktop session |
 
-The keyring one deserves naming because it looks exactly like a bug: `@napi-rs/keyring` throws,
-[`readSecret`](../../../core/src/secrets.ts#L41-L54) swallows it and returns `null`, and every saved
-connection password reads as absent. That silent-null is the very thing 7d proposes to change.
+The keyring finding from running 2a was worse than predicted. The prediction was: `@napi-rs/keyring`
+throws, `readSecret` swallows it, passwords read as absent. The reality: with no session D-Bus the
+native call **segfaults the Bun process** (Bun 1.3.14, WSL2 Ubuntu 24.04) — saving an AI profile
+killed core mid-request, because the save handler reads the key back unconditionally. No try/catch
+contains a SIGSEGV, so the fix is a pre-check, not a catch: `keyringUnavailableReason()` in
+`secrets.ts` (no `DBUS_SESSION_BUS_ADDRESS`, no `$XDG_RUNTIME_DIR/bus` socket → keyring
+unavailable), reads return null, deletes no-op, writes fail with a named error. **Landed, with the
+`BASED-SECRET-STORE` spec change and `unit.keyringGuard.test.ts`** — this pulls part of 7d forward;
+what remains for 7d is verifying the happy path on a real keyring.
 
 **glibc floor:** 2.39 on Ubuntu 24.04. A `.deb` from here will not run on Ubuntu 22.04 or Debian 12.
 Fine for a toolchain proof, wrong for a shipped artifact — see 5d.
@@ -236,13 +243,17 @@ Inside:
 
 ```sh
 dnf install -y webkit2gtk4.1-devel gtk3-devel libsoup3-devel \
-    javascriptcoregtk4.1-devel librsvg2-devel openssl-devel \
+    javascriptcoregtk4.1-devel librsvg2-devel openssl-devel dbus-devel \
     rpm-build file git
 dnf group install -y "C Development Tools and Libraries"
 ```
 
 Check that list against the current Tauri prerequisites page rather than trusting it — package names
 drift, and `webkit2gtk4.1` vs `webkit2gtk4.0` in particular has changed with Tauri versions.
+
+`dbus-devel` / `libdbus-1-dev` is a **Phase 2a finding**, not part of Tauri's stock list: it is
+pulled in by `tauri-plugin-single-instance`, whose Linux implementation is D-Bus. Without it,
+`cargo` fails in `libdbus-sys` with a pkg-config panic.
 
 Then the same build sequence as 2a. Build in a container-local directory rather than the bind mount
 if `target/` churn is slow.
@@ -426,13 +437,15 @@ the font stack, and `streamdown` / `mermaid` rendering.
 
 **7d. Secret Service.** `@napi-rs/keyring` on Linux talks to the Secret Service over D-Bus —
 `gnome-keyring` on Fedora Workstation, `kwallet` under KDE. A normal desktop session has an unlocked
-collection and this works. A headless session, a minimal window manager, or a locked keyring does not,
-and the current [`readSecret`](../../../core/src/secrets.ts#L41-L54) swallows the failure and returns
-`null`, which the UI reads as "no secret stored" rather than "the keyring is unavailable".
+collection and this works.
 
-That silent-null is defensible on Windows and macOS, where the store is always present. It is not on
-Linux. Expect a `BASED-SECRET-STORE` change: distinguish "no entry" from "no keyring service", and
-name the latter.
+**Partially done, pulled forward by a 2a crash.** With no session bus the native call segfaults the
+Bun process rather than throwing (see the 2a findings above), so the "no keyring service" case is now
+a pre-check in `secrets.ts` (`keyringUnavailableReason`): reads null, deletes no-op, writes fail with
+a named error. The `BASED-SECRET-STORE` spec change landed with it. Remaining for this phase, on the
+box: the happy path against a real gnome-keyring (round-trip, the 2560-byte cap, the 1704-char PEM),
+and the **locked-keyring** case — a bus exists there, so the guard passes and the library is on its
+own; verify it throws cleanly rather than crashing, and name the failure if it doesn't.
 
 Also verify the 2560-byte cap still reads back correctly. That cap is a Credential Manager limit
 applied everywhere so one entry format is portable; libsecret has no such limit, so this is a
@@ -478,9 +491,11 @@ to land.
   non-absolute value ignored per the XDG spec. The requirement now records that the pre-Linux
   behavior resolved to a relative path, so this was a defect fix and not only an extension. The
   acceptance-criteria list gained 4 Linux cases, all covered by `unit.platformPaths.test.ts`.
-- **`BASED-SECRET-STORE`** — third backing store, the Secret Service via libsecret, still behind the
-  one `@napi-rs/keyring` API with no per-platform branch in `secrets.ts`. Adds the "keyring service
-  unavailable" failure mode, which has no Windows or macOS counterpart.
+- ✅ **`BASED-SECRET-STORE`** — **merged into `spec.md`.** Third backing store, the Secret Service,
+  still behind the one `@napi-rs/keyring` API. Adds the "keyring service unavailable" failure mode
+  (no Windows or macOS counterpart) as a pre-check, `keyringUnavailableReason` — a pre-check because
+  the no-bus case segfaults Bun rather than throwing, so it cannot be caught. Unit-covered by
+  `unit.keyringGuard.test.ts`; the real-keyring happy path stays on the 7d checklist.
 - ✅ **`BASED-DIALOG-OPEN-FILE`**, **`BASED-FILE-OPEN-SQL`** — **merged into `spec.md`** by Phase 3.
   Both point at the new `BASED-DIALOG-CHANNEL` instead of naming PowerShell WinForms. Endpoint
   contracts unchanged.
