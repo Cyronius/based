@@ -121,6 +121,10 @@ export function openDb(path?: string): Database {
       error TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_audit_connection ON agent_audit(connection_id, id DESC);
+    CREATE TABLE IF NOT EXISTS secrets_fallback (
+      account TEXT PRIMARY KEY,
+      secret TEXT NOT NULL
+    );
   `);
   ensureColumn(db, "tabs", "kind", "kind TEXT NOT NULL DEFAULT 'query'");
   ensureColumn(db, "tabs", "meta", "meta TEXT");

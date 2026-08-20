@@ -21,6 +21,7 @@ import {
 import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
+import { SecretStoreWarning } from "./SecretStoreWarning";
 
 function Swatch({ t }: { t: ThemeDef }) {
   const k = t.tokens;
@@ -440,6 +441,7 @@ function ProfileForm<T extends EmbeddingProfileInput | RerankerProfileInput>({
         onChange={(e) => setForm({ ...form, model: e.target.value })}
       />
       {extra}
+      <SecretStoreWarning />
       <input
         type="password"
         className={field}
@@ -587,6 +589,7 @@ function AiProfileForm({
           onChange={(e) => setForm({ ...form, deployment: e.target.value })}
         />
       )}
+      <SecretStoreWarning />
       <input
         type="password"
         className={field}

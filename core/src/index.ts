@@ -22,6 +22,8 @@ export { SettingsStore, DEFAULT_SETTINGS, type AppSettings } from "./storage/set
 export {
   MAX_SECRET_BYTES,
   keyringUnavailableReason,
+  registerSecretsFallback,
+  secretStoreStatus,
   setSecret,
   getSecret,
   deleteSecret,
@@ -35,6 +37,7 @@ export {
   getRerankerKey,
   deleteRerankerKey,
 } from "./secrets";
+export { SecretsFallbackStore } from "./storage/secretsFallback";
 export { EmbeddingProfileStore, type EmbeddingProfile, type EmbeddingProfileInput } from "./storage/embeddingProfiles";
 export { RerankerProfileStore, type RerankerProfile, type RerankerProfileInput } from "./storage/rerankerProfiles";
 export { AiProfileStore, type AiProfile, type AiProfileInput } from "./storage/aiProfiles";

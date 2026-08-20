@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { browseFolder } from "../api/client";
+import { SecretStoreWarning } from "./SecretStoreWarning";
 import { IconButton } from "./IconButton";
 import type { ConnectionInput, EngineProfile, FieldSpec, TestResult } from "../api/types";
 
@@ -327,6 +328,9 @@ export function ConnectionDialog() {
                 {authMode.secretLabel}
                 {editing && <span className="normal-case tracking-normal"> (blank = keep stored)</span>}
               </label>
+              <div className="mb-1">
+                <SecretStoreWarning />
+              </div>
               {/* A PEM spans lines and an <input> cannot hold one — the browser strips newlines on
                   paste, which silently mangles the key rather than rejecting it. Multi-line secrets
                   therefore get a textarea; it forfeits the masking, which a pasted PEM never had

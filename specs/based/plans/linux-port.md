@@ -441,11 +441,24 @@ collection and this works.
 
 **Partially done, pulled forward by a 2a crash.** With no session bus the native call segfaults the
 Bun process rather than throwing (see the 2a findings above), so the "no keyring service" case is now
-a pre-check in `secrets.ts` (`keyringUnavailableReason`): reads null, deletes no-op, writes fail with
-a named error. The `BASED-SECRET-STORE` spec change landed with it. Remaining for this phase, on the
+a pre-check in `secrets.ts` (`keyringUnavailableReason`). Unavailable sessions now fall back to a
+**plaintext `secrets_fallback` table in app.db, loudly** (UI warns before the key is typed; see
+[archive/plaintext-secret-fallback.md](../archive/plaintext-secret-fallback.md)), with write-time
+upgrade back to the keyring. The `BASED-SECRET-STORE` spec changes landed with it. Remaining for this phase, on the
 box: the happy path against a real gnome-keyring (round-trip, the 2560-byte cap, the 1704-char PEM),
 and the **locked-keyring** case — a bus exists there, so the guard passes and the library is on its
 own; verify it throws cleanly rather than crashing, and name the failure if it doesn't.
+
+**Open question — test FIRST on the box (or, cheaper, in WSL with
+`apt install gnome-keyring` + `eval "$(echo -n test | gnome-keyring-daemon --unlock --replace --components=secrets)"`):
+does `@napi-rs/keyring` work under Bun on Linux at all when a Secret Service IS present?** The 2a
+finding only proved the no-service case crashes (silently — the process dies without even Bun's
+panic banner when run via `bun -e`). If it crashes even with a live service, no detection helps —
+secrets need an out-of-process keyring helper or a different backend, and that redesign should be
+decided before the box, not on it. One-liner:
+`bun -e 'const {Entry}=require("@napi-rs/keyring"); const e=new Entry("t","t"); e.setPassword("x"); console.log(e.getPassword()); e.deletePassword()'; echo exit=$?`.
+WSL2 itself is NOT a secrets target — run it with `BASED_KEYRING=off`, which keeps the crashing
+library untouched and routes secrets to the loud plaintext fallback in app.db.
 
 Also verify the 2560-byte cap still reads back correctly. That cap is a Credential Manager limit
 applied everywhere so one entry format is portable; libsecret has no such limit, so this is a
@@ -494,8 +507,10 @@ to land.
 - ✅ **`BASED-SECRET-STORE`** — **merged into `spec.md`.** Third backing store, the Secret Service,
   still behind the one `@napi-rs/keyring` API. Adds the "keyring service unavailable" failure mode
   (no Windows or macOS counterpart) as a pre-check, `keyringUnavailableReason` — a pre-check because
-  the no-bus case segfaults Bun rather than throwing, so it cannot be caught. Unit-covered by
-  `unit.keyringGuard.test.ts`; the real-keyring happy path stays on the 7d checklist.
+  the no-bus case segfaults Bun rather than throwing, so it cannot be caught. Unavailable sessions
+  fall back to loud plaintext storage in app.db ([archive/plaintext-secret-fallback.md](../archive/plaintext-secret-fallback.md)).
+  Unit-covered by `unit.keyringGuard.test.ts` + `integration.secretsFallback.test.ts`; the
+  real-keyring happy path stays on the 7d checklist.
 - ✅ **`BASED-DIALOG-OPEN-FILE`**, **`BASED-FILE-OPEN-SQL`** — **merged into `spec.md`** by Phase 3.
   Both point at the new `BASED-DIALOG-CHANNEL` instead of naming PowerShell WinForms. Endpoint
   contracts unchanged.

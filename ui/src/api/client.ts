@@ -420,6 +420,12 @@ export function listEngines(): Promise<EngineProfile[]> {
   return api<{ engines: EngineProfile[] }>("/api/engines").then((r) => r.engines);
 }
 
+/** Traces: BASED-SECRET-STORE — which secret store is live. "plaintext" means the OS keyring is
+ *  unavailable and saved keys land unencrypted in app.db; the editors warn before the user types. */
+export function getSecretStore(): Promise<{ backend: "keyring" | "plaintext"; reason?: string }> {
+  return api<{ backend: "keyring" | "plaintext"; reason?: string }>("/api/secret-store");
+}
+
 /** Native folder picker for the LanceDB directory-path field (BASED-LANCE-FOLDER-BROWSE). */
 export function browseFolder(startingFolder?: string): Promise<{ path: string | null }> {
   return api<{ path: string | null }>("/api/dialog/folder", {

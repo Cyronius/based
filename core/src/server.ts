@@ -27,7 +27,11 @@ import {
   getRerankerKey,
   setRerankerKey,
   deleteRerankerKey,
+  registerSecretsFallback,
+  unregisterSecretsFallback,
+  secretStoreStatus,
 } from "./secrets";
+import { SecretsFallbackStore } from "./storage/secretsFallback";
 import { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
 import { ENGINE_IDS, defaultCapabilitiesFor, descriptorFor, engineProfiles } from "./engines/registry";
 import { encodeVectorSample } from "./db/vectorWire";
@@ -137,6 +141,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const embeddingProfiles = new EmbeddingProfileStore(db);
   const rerankerProfiles = new RerankerProfileStore(db);
   const aiProfiles = new AiProfileStore(db);
+  // Traces: BASED-SECRET-STORE — plaintext fallback for keyring-less sessions
+  // (archive/plaintext-secret-fallback.md). The registration is module-global (one server per
+  // process in real runs), so stop() must detach it before closing the db — a second startServer in
+  // the same process (tests) would otherwise inherit a handle to a closed database.
+  const secretsFallback = new SecretsFallbackStore(db);
+  registerSecretsFallback(secretsFallback);
 
   // Traces: BASED-AI-PROVIDER-PROFILES — migrate a real legacy single ai_config row into a
   // "Default" profile the first time profiles are read, whether that's the settings popover
@@ -682,6 +692,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/settings" && method === "POST") {
       const body = (await req.json()) as Partial<AppSettings>;
       return json(settings.save(body));
+    }
+
+    // Traces: BASED-SECRET-STORE — which secret store is live, so the UI can warn BEFORE a key is
+    // typed when the session has no keyring and saves will land unencrypted in app.db.
+    if (path === "/api/secret-store" && method === "GET") {
+      return json(secretStoreStatus());
     }
 
     // --- AI provider profiles (BASED-AI-PROVIDER-PROFILES) ---
@@ -1320,6 +1336,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       // (observed on Windows, Bun 1.3.14 — even with the LSP settle delay). Every stop() caller
       // exits the process right after, so a bounded wait beats hanging shutdown/test runs.
       await Promise.race([server.stop(true), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+      unregisterSecretsFallback(secretsFallback);
       db.close();
     },
   };

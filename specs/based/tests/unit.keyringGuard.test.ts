@@ -42,4 +42,17 @@ describe("BASED-SECRET-STORE: keyringUnavailableReason", () => {
   test("an empty DBUS_SESSION_BUS_ADDRESS does not count as a bus", () => {
     expect(keyringUnavailableReason("linux", { DBUS_SESSION_BUS_ADDRESS: "" }, noSocket)).not.toBeNull();
   });
+
+  test("BASED_KEYRING=off disables the keyring on every platform, even with a bus present", () => {
+    // The bus check can pass while no Secret Service exists behind it (WSL2 with systemd) — the
+    // kill-switch is the operator's way out when detection is wrong.
+    expect(
+      keyringUnavailableReason(
+        "linux",
+        { BASED_KEYRING: "off", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" },
+        () => true,
+      ),
+    ).toMatch(/BASED_KEYRING=off/);
+    expect(keyringUnavailableReason("win32", { BASED_KEYRING: "off" }, noSocket)).toMatch(/BASED_KEYRING=off/);
+  });
 });
