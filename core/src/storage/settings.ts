@@ -18,6 +18,9 @@ export interface AppSettings {
   explorerRoutineAction: "details" | "script-create";
   /** Query-editor keymap (BASED-EDITOR-VIM): stock Monaco bindings, or modal vim. */
   editorKeymap: "default" | "vim";
+  /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET): a tab in the last-focused window,
+   *  or a new window. Multi-selected files always share one window either way. */
+  sqlFileOpenTarget: "current-window" | "new-window";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -28,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   explorerTableAction: "details",
   explorerRoutineAction: "details",
   editorKeymap: "default",
+  sqlFileOpenTarget: "current-window",
 };
 
 export class SettingsStore {

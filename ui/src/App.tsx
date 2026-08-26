@@ -15,19 +15,50 @@ import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { IconButton } from "./components/IconButton";
 
-// BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries `open=<path>` in the hash.
-// Captured (and stripped) once at module load — surviving in the hash would re-open the file on
-// every reload, and StrictMode's double-mounted effects couldn't tell first run from second.
-const bootOpenPath = (() => {
+// BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries one `open=<path>` hash param
+// per file. Captured (and stripped) once at module load — surviving in the hash would re-open the
+// files on every reload, and StrictMode's double-mounted effects couldn't tell first run from
+// second.
+const bootOpenPaths = (() => {
   const params = new URLSearchParams(window.location.hash.slice(1));
-  const p = params.get("open");
-  if (p) {
+  const paths = params.getAll("open");
+  if (paths.length > 0) {
     params.delete("open");
     window.location.hash = params.toString();
   }
-  return p;
+  return paths;
 })();
 let bootOpenConsumed = false;
+
+// BASED-SQL-OPEN-TARGET: file-open paths queued until this window has a connected session (query
+// tabs live under a connection). Fed by the boot hash and by `open-files` SSE events; openSqlFile
+// dedupes per window by filePath, so re-deliveries are harmless.
+const pendingFileOpens: string[] = [];
+let drainingFileOpens = false;
+
+async function drainFileOpens(): Promise<void> {
+  if (drainingFileOpens) return;
+  drainingFileOpens = true;
+  try {
+    while (pendingFileOpens.length > 0) {
+      const s = useStore.getState();
+      if (!s.activeConnectionId || s.status !== "connected") return; // re-armed by the App subscription
+      const path = pendingFileOpens.shift()!;
+      try {
+        await s.openSqlFile(path);
+      } catch (err) {
+        useStore.getState().setBanner(err instanceof Error ? err.message : String(err));
+      }
+    }
+  } finally {
+    drainingFileOpens = false;
+  }
+}
+
+function queueFileOpens(paths: string[]): void {
+  for (const p of paths) if (p && !pendingFileOpens.includes(p)) pendingFileOpens.push(p);
+  void drainFileOpens();
+}
 
 // BASED-UI-FONT-ZOOM: accumulated wheel distance for one font-size step. One mouse notch is
 // ~100–120px, so a notch is a step; a trackpad's finer deltas add up to the same thing.
@@ -87,7 +118,10 @@ export function App() {
     // BASED-WINDOW-RESTORE: reconnect to whatever this window last showed, once connections are loaded.
     void loadConnections().then(() => void restoreWindow());
     const es = openEvents((event) => {
-      if (event.type === "connection-status") {
+      if (event.type === "open-files") {
+        // BASED-SQL-OPEN-TARGET: the shell routed a file-open batch to this window via core.
+        queueFileOpens(Array.isArray(event.paths) ? (event.paths as string[]) : []);
+      } else if (event.type === "connection-status") {
         const { activeConnectionId: current, status } = useStore.getState();
         // Only mirror push-status for the live session; connect() manages its own transitions.
         if (current && event.connectionId === current && status !== "connecting") {
@@ -103,24 +137,17 @@ export function App() {
     return () => es.close();
   }, [loadConnections, loadEngines, loadSettings, loadEmbeddingProfiles, loadRerankerProfiles, loadAiProfiles, restoreWindow, setStatus, resumeSession]);
 
-  // BASED-OPEN-SQL-ARGV: open the OS-requested file once this window has a connection to attach
-  // the tab to (query tabs live under a connection). Fresh windows have no restored connection,
-  // so the open waits for the user's first connect; restored windows fire right after restore.
+  // BASED-OPEN-SQL-ARGV / BASED-SQL-OPEN-TARGET: queue the OS-requested files, and drain the queue
+  // whenever the window (re)gains a connected session. Fresh windows have no restored connection,
+  // so the opens wait for the user's first connect; restored windows fire right after restore.
   useEffect(() => {
-    if (!bootOpenPath || bootOpenConsumed) return;
-    const openIfConnected = (s: ReturnType<typeof useStore.getState>): boolean => {
-      if (bootOpenConsumed || !s.activeConnectionId || s.status !== "connected") return false;
+    if (!bootOpenConsumed) {
       bootOpenConsumed = true;
-      void s.openSqlFile(bootOpenPath).catch((err) => {
-        useStore.getState().setBanner(err instanceof Error ? err.message : String(err));
-      });
-      return true;
-    };
-    if (openIfConnected(useStore.getState())) return;
-    const unsub = useStore.subscribe((s) => {
-      if (openIfConnected(s)) unsub();
+      if (bootOpenPaths.length > 0) queueFileOpens(bootOpenPaths);
+    }
+    return useStore.subscribe((s) => {
+      if (pendingFileOpens.length > 0 && s.activeConnectionId && s.status === "connected") void drainFileOpens();
     });
-    return unsub;
   }, []);
 
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.

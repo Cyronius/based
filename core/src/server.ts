@@ -181,6 +181,10 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const sessions = new Map<string, SessionState>();
   const executions = new Map<string, QueryExecution>();
   const sseClients = new Set<{ sid: string; controller: ReadableStreamDefaultController<Uint8Array> }>();
+  // Traces: BASED-SQL-OPEN-TARGET — file-open batches addressed to a window whose SSE stream has
+  // not attached yet (a restored window's page may still be booting when the shell dispatches).
+  // Flushed exactly once when that sid's stream attaches.
+  const pendingOpens = new Map<string, string[]>();
   // Traces: BASED-LSP-TRANSPORT — one LSP backend per connected session, over /api/lsp WebSocket.
   const lsp = createLspSubsystem({
     getSession: (sid) => getSession(sid),
@@ -658,6 +662,26 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       return json({ ok: true });
     }
 
+    // Traces: BASED-SQL-OPEN-TARGET — the shell posts a file-open batch for a target window;
+    // relayed over that window's SSE stream, or buffered until it attaches.
+    if (path === "/api/open-files" && method === "POST") {
+      const body = (await req.json()) as { sid?: string; paths?: unknown };
+      const targetSid = body.sid || sid;
+      const paths = (Array.isArray(body.paths) ? body.paths : []).filter(
+        (p): p is string => typeof p === "string" && p.length > 0,
+      );
+      if (paths.length === 0) return json({ error: "paths required" }, 400);
+      const hasClient = [...sseClients].some((c) => c.sid === targetSid);
+      if (hasClient) {
+        broadcast(targetSid, { type: "open-files", paths });
+      } else {
+        const pending = pendingOpens.get(targetSid) ?? [];
+        for (const p of paths) if (!pending.includes(p)) pending.push(p);
+        pendingOpens.set(targetSid, pending);
+      }
+      return json({ ok: true, delivered: hasClient });
+    }
+
     // --- window state (per-window restore across restarts, BASED-WINDOW-RESTORE) ---
     if (path === "/api/windows" && method === "GET") {
       return json(windowState.list());
@@ -1006,6 +1030,13 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
               `data: ${JSON.stringify({ type: "connection-status", status: session.status, connectionId: session.connectionId, database: session.database, detail: null })}\n\n`,
             ),
           );
+          // Traces: BASED-SQL-OPEN-TARGET — deliver file-open batches that arrived before this
+          // window's stream attached. Deleted first so a second attach gets nothing.
+          const bufferedOpens = pendingOpens.get(sid);
+          if (bufferedOpens?.length) {
+            pendingOpens.delete(sid);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "open-files", paths: bufferedOpens })}\n\n`));
+          }
         },
         cancel() {
           sseClients.delete(clientRef);
