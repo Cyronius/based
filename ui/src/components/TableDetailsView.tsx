@@ -5,6 +5,7 @@ import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from
 import type { TableTabState, TableViewId } from "../store";
 import { useStore } from "../store";
 import { EmbeddingsView } from "./embeddings/EmbeddingsView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import type { TableColumn, TableDetails, TableIndex } from "../api/types";
 import { TableDataGrid } from "./TableDataGrid";
 import { QueryTabView } from "./QueryTabView";
@@ -383,7 +384,23 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
       {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
       {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
       {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
-      {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
+      {tab.view === "embeddings" && embedCapable && (
+        // The Atlas needs a WebGL2 context; if the webview can't provide one (see BASED-WEBKIT-DMABUF),
+        // deck.gl throws mid-render. Contain it here so only this pane degrades, not the whole window.
+        <ErrorBoundary
+          key={tab.id}
+          fallback={
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+              <div className="text-[length:var(--fs-md)] font-bold text-muted">Visualization unavailable</div>
+              <div className="max-w-md text-[length:var(--fs-sm)] text-faint">
+                The embeddings atlas needs WebGL, which this system's graphics stack couldn't start.
+              </div>
+            </div>
+          }
+        >
+          <EmbeddingsView tab={tab} />
+        </ErrorBoundary>
+      )}
     </div>
   );
 }

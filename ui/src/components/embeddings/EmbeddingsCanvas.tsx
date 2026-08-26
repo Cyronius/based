@@ -3,7 +3,7 @@
 // @deck.gl/react: UMAP epochs stream ~12×/s and imperative setProps({layers}) re-uploads binary
 // attributes without a React render per frame. React only re-runs the small effects below when a
 // version counter ticks.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Deck, OrbitView, OrthographicView, type PickingInfo } from "@deck.gl/core";
 import { PointCloudLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Rgb } from "../../embeddings/colors";
@@ -62,6 +62,11 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
   const propsRef = useRef(props);
   propsRef.current = props;
   const rafPending = useRef(false);
+  // WebGL2 context creation is async inside luma.gl, so its failures surface as unhandled rejections
+  // that would crash the whole window rather than as errors an ancestor boundary can catch. Capture
+  // them here and re-throw during render so the boundary around this view (TableDetailsView) can show
+  // its fallback instead. See BASED-WEBKIT-DMABUF.
+  const [fatal, setFatal] = useState<Error | null>(null);
 
   const buildLayers = () => {
     const p = propsRef.current;
@@ -111,12 +116,25 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
 
   // Mount once.
   useEffect(() => {
+    // Probe for WebGL2 before handing the canvas to deck.gl: on hosts that can't provide a context
+    // (some WebKitGTK/GPU combos), this fails fast into the fallback instead of luma.gl aborting
+    // mid-init. A throwaway canvas keeps the real one's single context free for deck.gl.
+    const probe = document.createElement("canvas").getContext("webgl2");
+    if (!probe) {
+      setFatal(new Error("WebGL2 is not available in this webview"));
+      return;
+    }
+    probe.getExtension("WEBGL_lose_context")?.loseContext();
+
     const deck: EmbedDeck = new Deck<OrthographicView | OrbitView>({
       canvas: canvasRef.current!,
       views: makeView(propsRef.current.mode),
       initialViewState: propsRef.current.mode === "2d" ? VIEW_2D : VIEW_3D,
       controller: propsRef.current.controllerEnabled ? CONTROLLER : false,
       layers: buildLayers(),
+      // Escalate any deck/luma error (context loss, failed device init) to the boundary rather than
+      // letting it become an uncaught rejection.
+      onError: (err: Error) => setFatal(err instanceof Error ? err : new Error(String(err))),
       onHover: (info: PickingInfo) => {
         const i = info.index != null && info.index >= 0 ? info.index : null;
         propsRef.current.onHover(i, info.x ?? 0, info.y ?? 0);
@@ -163,6 +181,10 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
     deckRef.current?.setProps({ layers: buildLayers() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.positionsVersion, props.colorsVersion, props.mode, props.n, props.highlight]);
+
+  // Re-throw a captured WebGL failure during render (not from the async effect) so the surrounding
+  // ErrorBoundary catches it and swaps in the fallback pane.
+  if (fatal) throw fatal;
 
   // Traces: BASED-UI-FONT-ZOOM — deck.gl's controller owns the wheel here (and a trackpad pinch
   // reaches the page as Ctrl+wheel), so this canvas opts out of the app-wide Ctrl+wheel text zoom.

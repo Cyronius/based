@@ -362,6 +362,18 @@ fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
 }
 
 fn main() {
+    // BASED-WEBKIT-DMABUF: on Linux the webview is WebKitGTK, and its DMABUF renderer fails to create
+    // a WebGL2 context on several GPU/compositor combos (seen on Wayland + Mesa/AMD, and the NVIDIA
+    // proprietary driver flagged in specs/based/plans/linux-port.md Phase 7a). deck.gl then aborts
+    // with a bare "assertion failed" and takes the Embeddings Atlas down with it. Disabling DMABUF
+    // here — before tauri::Builder starts the webview — restores WebGL2. Set from a terminal launch
+    // and a launcher launch alike, and left overridable so a machine that does not need it (or that
+    // needs the heavier WEBKIT_DISABLE_COMPOSITING_MODE=1 fallback) can set its own value.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // BASED-OPEN-SQL-ARGV: files this launch was asked to open. The exe receives argv directly, so
     // the association points at it; the pending-opens file is kept only for compatibility with the
     // legacy based-open.exe stub registration.
