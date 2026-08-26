@@ -1,4 +1,4 @@
-// Traces: BASED-AGENT-THREADS — Mastra DB messages → AG-UI messages for per-tab history restore.
+// Traces: BASED-AGENT-THREADS — Mastra DB messages → AG-UI messages for thread history restore.
 import { describe, expect, test } from "bun:test";
 import { mapDbMessagesToAgui } from "@based/core";
 import type { DbMessageLike } from "@based/core";

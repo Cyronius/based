@@ -1,12 +1,14 @@
-// Traces: BASED-UI-LAYOUT, BASED-CHAT-UI, BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS
-// The right-hand rail hosts Ask Capi. Chat is PER-TAB: each tab resolves to its own thread
-// (originThreadId ?? tab:{connectionId}:{tabId}, fallback conn:{connectionId}), and the chat
-// session remounts keyed on that thread id — the AgentClient's threadId is fixed at construction
-// (initialThreadId), so a keyed remount IS the thread switch. In-session switches restore from a
-// module-level message cache; cold starts seed from the server's thread-history endpoint. A switch
-// during a streaming run is deferred (banner) until the run finishes — never kill an in-flight run.
-// AI provider setup and agent instructions live in the gear-icon settings popover
-// (BASED-AI-PROVIDER-PROFILES).
+// Traces: BASED-UI-LAYOUT, BASED-CHAT-UI, BASED-AGENT-TAB-TOOLS, BASED-AGENT-THREADS,
+//         BASED-CHAT-HISTORY-PICKER
+// The right-hand rail hosts Ask Capi. Chat is PER-WINDOW: the window holds an active-conversation
+// pointer per connection (store.capiThreads), so switching tabs never touches the conversation.
+// The chat session remounts keyed on the pointed-at thread id — the AgentClient's threadId is
+// fixed at construction (initialThreadId), so a keyed remount IS the thread switch; it happens on
+// a connection switch, "New chat" (fresh id, old conversation becomes history) or a history-picker
+// reactivation. In-session switches restore from a module-level message cache; cold starts seed
+// from the server's thread-history endpoint. A switch during a streaming run is deferred (banner)
+// until the run finishes — never kill an in-flight run. AI provider setup and agent instructions
+// live in the gear-icon settings popover (BASED-AI-PROVIDER-PROFILES).
 import { useEffect, useRef, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
@@ -16,19 +18,19 @@ import { capiToolsFor } from "../agent/capiTools";
 import { WATCHDOG_BACKSTOP_MS } from "../agent/aiTimeouts";
 import { buildTabContext } from "../agent/tabContext";
 import {
-  agentThreadId,
-  deleteThread,
   fetchThreadHistory,
+  fetchThreadList,
+  newChatThreadId,
   pruneRestored,
-  resolveThreadId,
-  setActiveChatThreadId,
   threadMessageCache,
+  type ChatThreadSummary,
 } from "../agent/threads";
 import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar } from "./CapiAvatar";
 import { CapiChat } from "./CapiChat";
+import { relativeTime } from "./HistoryPanel";
 import { IconButton } from "./IconButton";
-import { DownloadIcon } from "./icons";
+import { DownloadIcon, HistoryIcon } from "./icons";
 
 const WIDTH_KEY = "based:rightRailWidth";
 const MIN_WIDTH = 280;
@@ -55,12 +57,16 @@ function CapiHeader({
   newChatDisabled,
   onDownload,
   downloadDisabled,
+  onHistory,
+  historyDisabled,
 }: {
   toggle: () => void;
   onNewChat?: () => void;
   newChatDisabled?: boolean;
   onDownload?: () => void;
   downloadDisabled?: boolean;
+  onHistory?: () => void;
+  historyDisabled?: boolean;
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
@@ -75,6 +81,22 @@ function CapiHeader({
       {/* One trailing group with the auto margin on the wrapper: `ml-auto` on each button would put
           an auto gap BETWEEN them and push them apart instead of grouping them at the right edge. */}
       <div className="ml-auto flex items-center gap-1">
+        {/* Traces: BASED-CHAT-HISTORY-PICKER — browse this connection's recent conversations. The
+            marker span lets the popover's outside-mousedown handler skip the toggle button, so
+            clicking it while open closes rather than close-and-reopen. */}
+        {onHistory && (
+          <span data-history-toggle>
+            <IconButton
+              className="text-faint hover:text-brass"
+              title="Chat history"
+              aria-label="Chat history"
+              onClick={onHistory}
+              disabled={historyDisabled}
+            >
+              <HistoryIcon />
+            </IconButton>
+          </span>
+        )}
         {/* Traces: BASED-CHAT-TRANSCRIPT-UI — the user shouldn't have to ask the agent to save their
             own conversation, and this path also catches the reply the agent-side tool can't see yet. */}
         {onDownload && (
@@ -104,21 +126,85 @@ function CapiHeader({
   );
 }
 
+// Traces: BASED-CHAT-HISTORY-PICKER — the connection's last 15 conversations, newest first,
+// server-titled (deterministic first-words titles). Clicking a row moves the window's pointer;
+// the keyed remount plus the message cache / history fetch do the rest.
+function ChatHistoryPopover({
+  connectionId,
+  activeThreadId,
+  onClose,
+}: {
+  connectionId: string;
+  activeThreadId: string;
+  onClose: () => void;
+}) {
+  const [threads, setThreads] = useState<ChatThreadSummary[] | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void fetchThreadList(connectionId).then(setThreads);
+  }, [connectionId]);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (ref.current && !ref.current.contains(e.target as Node) && !t?.closest?.("[data-history-toggle]")) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-2 top-14 z-30 w-72 max-h-80 overflow-y-auto rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up py-1"
+    >
+      {threads === null ? (
+        <div className="px-3 py-2 text-[length:var(--fs-sm)] text-muted pulse-soft">Loading…</div>
+      ) : threads.length === 0 ? (
+        <div className="px-3 py-2 text-[length:var(--fs-sm)] text-muted">No previous chats on this connection.</div>
+      ) : (
+        threads.map((t) => (
+          <button
+            key={t.id}
+            className={`block w-full text-left px-3 py-1.5 hover:bg-ink-900 ${t.id === activeThreadId ? "text-brass" : "text-paper-dim"}`}
+            onClick={() => {
+              useStore.getState().setCapiThread(connectionId, t.id);
+              onClose();
+            }}
+          >
+            <div className="truncate text-[length:var(--fs-base)]">{t.title}</div>
+            <div className="text-[length:var(--fs-sm)] text-faint">{relativeTime(t.updatedAt)}</div>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
 // One mounted chat session, pinned to a single thread id. Remounted (via key) to switch threads.
 function ChatSession({
   toggle,
   threadId,
   connectionId,
   onStreamingChange,
-  deferredTabTitle,
+  deferredNotice,
 }: {
   toggle: () => void;
   threadId: string;
   connectionId: string;
   onStreamingChange: (streaming: boolean) => void;
-  deferredTabTitle: string | null;
+  deferredNotice: string | null;
 }) {
   const [err, setErr] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const capabilities = useStore((s) => s.capabilities);
   const agent = useAgent({
     baseUrl: AGENT_BASE_URL,
@@ -151,7 +237,6 @@ function ChatSession({
   const liveMessages = useRef(agent.messages);
   liveMessages.current = agent.messages;
   useEffect(() => {
-    setActiveChatThreadId(threadId);
     const cached = threadMessageCache.get(threadId);
     if (cached?.length) {
       agent.setMessages(cached);
@@ -164,11 +249,10 @@ function ChatSession({
         seededRef.current = true;
       });
     }
-    return () => setActiveChatThreadId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: the component is keyed by threadId
   }, []);
 
-  // Mirror the live conversation into the cache so switching back to this tab is instant.
+  // Mirror the live conversation into the cache so switching back to this thread is instant.
   useEffect(() => {
     if (agent.messages.length > 0) threadMessageCache.set(threadId, agent.messages);
   }, [agent.messages, threadId]);
@@ -178,19 +262,10 @@ function ChatSession({
   }, [agent.isStreaming, onStreamingChange]);
 
   const newChat = () => {
-    const state = useStore.getState();
-    const { activeTabId } = state;
     useActivity.getState().clear();
-    if (activeTabId && threadId !== agentThreadId(connectionId, activeTabId)) {
-      // Aliased (agent-opened) tab: detach to its own fresh thread instead of wiping the shared
-      // conversation out from under the origin tab. The alias change remounts the session.
-      state.setTabOriginThread(activeTabId, null);
-      return;
-    }
-    // NOTE: never endSession() here — it would randomize the threadId; the tab's thread id is
-    // stable, so "New chat" = delete the server-side thread + clear the local view.
-    deleteThread(threadId);
-    agent.clearMessages();
+    // The old conversation becomes history (BASED-CHAT-HISTORY-PICKER): mint a fresh thread and
+    // move the window's pointer — nothing is deleted. The pointer change remounts this session.
+    useStore.getState().setCapiThread(connectionId, newChatThreadId());
   };
 
   // Traces: BASED-CHAT-TRANSCRIPT-UI — `agent.messages` is the transcript source, not the server's
@@ -204,17 +279,22 @@ function ChatSession({
 
   return (
     <AgentProvider value={agent}>
-      <div className="flex flex-1 min-h-0 min-w-0 flex-col">
+      <div className="relative flex flex-1 min-h-0 min-w-0 flex-col">
         <CapiHeader
           toggle={toggle}
           onNewChat={newChat}
           newChatDisabled={agent.isStreaming}
           onDownload={downloadChat}
           downloadDisabled={agent.messages.length === 0 || agent.isStreaming}
+          onHistory={() => setHistoryOpen((o) => !o)}
+          historyDisabled={agent.isStreaming}
         />
-        {deferredTabTitle && (
+        {historyOpen && (
+          <ChatHistoryPopover connectionId={connectionId} activeThreadId={threadId} onClose={() => setHistoryOpen(false)} />
+        )}
+        {deferredNotice && (
           <div className="border-b border-brass/30 bg-brass/10 pl-3 pr-4 py-2 text-[length:var(--fs-sm)] text-brass">
-            Capi is finishing in <span className="font-semibold">{deferredTabTitle}</span> — the chat will follow when it's done.
+            Capi is finishing {deferredNotice} — the chat will follow when it's done.
           </div>
         )}
         {err && (
@@ -232,29 +312,37 @@ function ChatSession({
 }
 
 function CapiRail({ toggle, connectionId }: { toggle: () => void; connectionId: string }) {
-  const tabs = useStore((s) => s.tabs);
-  const activeTabId = useStore((s) => s.activeTabId);
-  const desiredThreadId = resolveThreadId(connectionId, tabs, activeTabId);
-  const [mountedThreadId, setMountedThreadId] = useState(desiredThreadId);
+  const connections = useStore((s) => s.connections);
+  // The window's active conversation for this connection — minted by connect()'s ensureCapiThread,
+  // moved by "New chat" and the history picker (BASED-CHAT-HISTORY-PICKER).
+  const desiredThreadId = useStore((s) => s.capiThreads[connectionId]);
+  const [mounted, setMounted] = useState(() => ({ threadId: desiredThreadId, connectionId }));
   const [streaming, setStreaming] = useState(false);
 
-  // Follow the active tab's thread — but never mid-run: remounting would kill the stream, so a
-  // switch while streaming is deferred until the run settles (the banner names the busy tab).
+  // Follow the pointer — but never mid-run: remounting would kill the stream, so a switch while
+  // streaming (connection change, New chat, or a picker reactivation) is deferred until the run
+  // settles. Tab switches never change the thread.
   useEffect(() => {
-    if (!streaming && mountedThreadId !== desiredThreadId) setMountedThreadId(desiredThreadId);
-  }, [streaming, desiredThreadId, mountedThreadId]);
+    if (!streaming && desiredThreadId && mounted.threadId !== desiredThreadId) setMounted({ threadId: desiredThreadId, connectionId });
+  }, [streaming, desiredThreadId, connectionId, mounted.threadId]);
 
-  const mountedTab = tabs.find((t) => resolveThreadId(connectionId, tabs, t.id) === mountedThreadId);
-  const deferredTabTitle = mountedThreadId !== desiredThreadId ? (mountedTab?.title ?? "another tab") : null;
+  if (!mounted.threadId) return null; // pointer is minted during connect; at most a frame away
+
+  const deferredNotice =
+    desiredThreadId && mounted.threadId !== desiredThreadId
+      ? mounted.connectionId !== connectionId
+        ? `a run on ${connections.find((c) => c.id === mounted.connectionId)?.name ?? "another connection"}`
+        : "the current run"
+      : null;
 
   return (
     <ChatSession
-      key={mountedThreadId}
-      threadId={mountedThreadId}
-      connectionId={connectionId}
+      key={mounted.threadId}
+      threadId={mounted.threadId}
+      connectionId={mounted.connectionId}
       toggle={toggle}
       onStreamingChange={setStreaming}
-      deferredTabTitle={deferredTabTitle}
+      deferredNotice={deferredNotice}
     />
   );
 }

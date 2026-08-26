@@ -71,6 +71,7 @@ export function openDb(path?: string): Database {
       connection_id TEXT,
       active_tab_id TEXT,
       schema_filter TEXT NOT NULL DEFAULT '',
+      capi_thread_id TEXT,
       updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS history (
@@ -128,5 +129,8 @@ export function openDb(path?: string): Database {
   `);
   ensureColumn(db, "tabs", "kind", "kind TEXT NOT NULL DEFAULT 'query'");
   ensureColumn(db, "tabs", "meta", "meta TEXT");
+  // Traces: BASED-CHAT-HISTORY-PICKER — the window's active capi conversation for its current
+  // connection, restored with the rest of the window state.
+  ensureColumn(db, "window_state", "capi_thread_id", "capi_thread_id TEXT");
   return db;
 }

@@ -553,9 +553,9 @@ d("agent tools over the live adapter", () => {
   }, 120_000);
 });
 
-// Traces: BASED-AGENT-THREADS — per-tab thread history restore + deletion endpoints. Memory-only:
-// no DB connection is required. Seeds the server's own agent.db through a second Memory client
-// (same LibSQL file; sequential access).
+// Traces: BASED-AGENT-THREADS — thread history restore + deletion endpoints (id-agnostic; the
+// seeded ids here are arbitrary). Memory-only: no DB connection is required. Seeds the server's
+// own agent.db through a second Memory client (same LibSQL file; sequential access).
 describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
   const threadId = "tab:conn-1:tab-abc";
   const resourceId = "conn-1";
@@ -612,6 +612,97 @@ describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
     expect(del.status).toBe(200);
     const after = (await (await api(`/api/agent/threads/${encodeURIComponent(threadId)}/messages?resourceId=${resourceId}`)).json()) as unknown[];
     expect(after).toEqual([]);
+  }, 60_000);
+
+});
+
+// Traces: BASED-CHAT-HISTORY-PICKER, BASED-AGENT-THREADS — conversations are durable per-connection
+// records: window close keeps them (they must outlive the window for the history picker), the list
+// endpoint serves the picker with deterministically derived titles, and deleting a connection is
+// what finally sweeps its threads.
+describe("BASED-CHAT-HISTORY-PICKER: thread list + lifecycle", () => {
+  async function makeConnection(name: string): Promise<ConnectionConfig> {
+    return (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          server: "unused.example",
+          database: "db",
+          authType: "sql-login",
+          username: "u",
+          encrypt: true,
+          trustServerCertificate: true,
+        }),
+      })
+    ).json()) as ConnectionConfig;
+  }
+
+  async function seedThread(memory: Awaited<ReturnType<typeof seededMemory>>, resourceId: string, tid: string, text: string, at: Date) {
+    await memory.saveThread({ thread: { id: tid, resourceId, title: `New Thread ${at.toISOString()}`, createdAt: at, updatedAt: at } });
+    await memory.saveMessages({
+      messages: [
+        { id: `${tid}-m1`, role: "user", createdAt: at, threadId: tid, resourceId, content: { format: 2, parts: [{ type: "text", text }] } },
+      ] as never,
+    });
+  }
+
+  async function seededMemory() {
+    const { createAgentMemory } = await import("@based/core");
+    return createAgentMemory(join(dir, "agent.db"));
+  }
+
+  const messagesOf = async (tid: string, resourceId: string) =>
+    (await (await api(`/api/agent/threads/${encodeURIComponent(tid)}/messages?resourceId=${resourceId}`)).json()) as unknown[];
+
+  test("window close keeps conversations (history must outlive the window)", async () => {
+    const memory = await seededMemory();
+    const conn = await makeConnection("history-keep");
+    const tid = "chat:00000000-0000-4000-8000-00000000keep";
+    await seedThread(memory, conn.id, tid, "hello there", new Date());
+
+    const close = await api("/api/session/close?sid=w-history-keep", { method: "POST" });
+    expect(close.status).toBe(200);
+    expect((await messagesOf(tid, conn.id)).length).toBe(1);
+  }, 60_000);
+
+  test("GET /api/agent/threads returns the newest 15 with deterministic derived titles, cached back", async () => {
+    const memory = await seededMemory();
+    const conn = await makeConnection("history-list");
+    const base = Date.now() - 100_000;
+    for (let i = 1; i <= 17; i++) {
+      await seedThread(memory, conn.id, `chat:list-${String(i).padStart(2, "0")}`, `question number ${i} about the customers table rows`, new Date(base + i * 1000));
+    }
+
+    const res = await api(`/api/agent/threads?resourceId=${conn.id}&limit=15`);
+    expect(res.status).toBe(200);
+    const threads = (await res.json()) as Array<{ id: string; title: string; updatedAt: string }>;
+    expect(threads.length).toBe(15);
+    // Newest first: 17 down to 3; the two oldest fall off.
+    expect(threads[0]!.id).toBe("chat:list-17");
+    expect(threads[14]!.id).toBe("chat:list-03");
+    // Deterministic: first 6 words of the first user message, ellipsis for the dropped tail.
+    expect(threads[0]!.title).toBe("question number 17 about the customers…");
+    // Derived once and cached back onto the thread (no Mastra-default title remains).
+    const again = (await (await api(`/api/agent/threads?resourceId=${conn.id}&limit=15`)).json()) as Array<{ title: string }>;
+    expect(again[0]!.title).toBe("question number 17 about the customers…");
+    const stored = await memory.getThreadById({ threadId: "chat:list-17" });
+    expect(stored?.title).toBe("question number 17 about the customers…");
+  }, 120_000);
+
+  test("deleting a connection sweeps its threads; other connections' threads survive", async () => {
+    const memory = await seededMemory();
+    const doomed = await makeConnection("history-doomed");
+    const bystander = await makeConnection("history-bystander");
+    const doomedTid = "chat:00000000-0000-4000-8000-0000000doomed";
+    const bystanderTid = "chat:00000000-0000-4000-8000-000bystander";
+    await seedThread(memory, doomed.id, doomedTid, "delete me", new Date());
+    await seedThread(memory, bystander.id, bystanderTid, "keep me", new Date());
+
+    const del = await api(`/api/connections/${doomed.id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    expect(await messagesOf(doomedTid, doomed.id)).toEqual([]);
+    expect((await messagesOf(bystanderTid, bystander.id)).length).toBe(1);
   }, 60_000);
 });
 

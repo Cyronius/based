@@ -288,19 +288,19 @@ describe("BASED-WINDOW-RESTORE: window state persistence", () => {
     let db = openDb(path);
     let windows = new WindowStateStore(db);
 
-    windows.save("sid1", { connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo" });
+    windows.save("sid1", { connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo", capiThreadId: "chat:abc" });
     windows.save("sid2", { connectionId: "c2" });
 
     db.close();
     db = openDb(path);
     windows = new WindowStateStore(db);
 
-    expect(windows.get("sid1")).toMatchObject({ sid: "sid1", connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo" });
+    expect(windows.get("sid1")).toMatchObject({ sid: "sid1", connectionId: "c1", activeTabId: "t1", schemaFilter: "dbo", capiThreadId: "chat:abc" });
     expect(windows.list().map((w) => w.sid).sort()).toEqual(["sid1", "sid2"]);
 
-    // partial patch merges over the existing row
+    // partial patch merges over the existing row (capiThreadId untouched — BASED-CHAT-HISTORY-PICKER)
     windows.save("sid1", { activeTabId: "t2" });
-    expect(windows.get("sid1")).toMatchObject({ connectionId: "c1", activeTabId: "t2", schemaFilter: "dbo" });
+    expect(windows.get("sid1")).toMatchObject({ connectionId: "c1", activeTabId: "t2", schemaFilter: "dbo", capiThreadId: "chat:abc" });
 
     windows.delete("sid2");
     expect(windows.get("sid2")).toBeNull();

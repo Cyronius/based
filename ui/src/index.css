@@ -5,6 +5,16 @@
 @source "../node_modules/@streamdown/code/dist/*.js";
 @source "../node_modules/@streamdown/mermaid/dist/*.js";
 
+/* Streamdown's inline `code` span pairs bg-muted (--muted, mapped to the theme's bg3 — a raised
+   surface that runs light-to-mid grey in several midtone themes) with inherited foreground text,
+   which is always near-white/near-black regardless of bg3. That combo can land white-on-light-grey.
+   Tint the pill's background from the foreground color itself instead of using --muted, so contrast
+   is locked to whatever ratio the theme already tuned for body text against its own background. */
+[data-streamdown="inline-code"] {
+  background-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+  color: var(--foreground);
+}
+
 /* shadcn-style tokens Streamdown's components read — tuned to the dark Ledger palette. */
 :root {
   --background: #15181d;

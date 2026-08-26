@@ -30,7 +30,7 @@ import {
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
 import { disposeModel, getModel } from "./editorModels";
-import { deleteThread, threadsToDeleteOnClose } from "./agent/threads";
+import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
@@ -103,10 +103,6 @@ export interface QueryTabState {
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
-  /** Set when the AGENT opened this tab (show_results): the chat thread it was created from.
-   *  The rail resolves a tab's thread as `originThreadId ?? derived`, so the agent-opened tab
-   *  shows the conversation that produced it (BASED-AGENT-THREADS aliasing). Persisted in meta. */
-  originThreadId?: string;
 }
 
 export interface TableTabState {
@@ -198,6 +194,9 @@ export interface AppState {
   objects: DbObject[];
   tabs: TabState[];
   activeTabId: string | null;
+  /** This window's active capi conversation per connection (BASED-CHAT-HISTORY-PICKER). The
+   *  current connection's entry is mirrored into window state so a restart reopens the same one. */
+  capiThreads: Record<string, string>;
   dialog: DialogState;
   rightRailOpen: boolean;
   banner: string | null;
@@ -275,7 +274,7 @@ export interface AppState {
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
   insertSqlIntoEditor(sql: string): void;
-  /** Returns the new tab's id (so the agent's show_results can report/alias it). */
+  /** Returns the new tab's id (so the agent's show_results can report it). */
   runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
   /** Open a fresh query tab with the given content WITHOUT running it (history "Open in new tab",
    *  Script-as output). `title` null → next "Query N". Returns the new tab's id, or null when the
@@ -286,9 +285,9 @@ export interface AppState {
    *  editor: without it, a Cloud session loses the "rows land in a real grid" norm exactly where it
    *  also can't aggregate, and every answer degrades to rows pasted into chat. Returns the tab id. */
   openTableTabWithQuery(schema: string, table: string, where?: string): Promise<string>;
-  /** Stamp an agent-opened tab with the chat thread that created it (BASED-AGENT-THREADS aliasing);
-   *  null detaches the alias ("New chat" on an aliased tab starts the tab's own thread). */
-  setTabOriginThread(tabId: string, threadId: string | null): void;
+  /** Move this window's active conversation for a connection — "New chat" mints a fresh id, the
+   *  history picker reactivates a past one (BASED-CHAT-HISTORY-PICKER). */
+  setCapiThread(connectionId: string, threadId: string): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
   /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
@@ -324,17 +323,10 @@ interface DiagramTabMeta {
   schemaScope: string;
 }
 
-/** Kind-specific fields persisted alongside a query tab — only the thread alias for agent-opened
- *  tabs (BASED-AGENT-THREADS); ordinary query tabs keep a null meta. */
-interface QueryTabMeta {
-  originThreadId: string;
-}
-
-function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
+function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | null {
   if (t.kind === "table") return { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
   if (t.kind === "routine") return { schema: t.schema, name: t.name, routineType: t.routineType };
   if (t.kind === "diagram") return { schemaScope: t.schemaScope };
-  if (t.kind === "query" && t.originThreadId) return { originThreadId: t.originThreadId };
   return null;
 }
 
@@ -421,6 +413,17 @@ export const useStore = create<AppState>((set, get) => {
   function persistTabsSoon(): void {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(flushPendingTabs, 700);
+  }
+
+  // Traces: BASED-CHAT-HISTORY-PICKER — every connect leaves the window with an active
+  // conversation for that connection (minting one if it has none) and mirrors it into window
+  // state, so a restart reopens the same conversation and a connection switch never leaves the
+  // persisted pointer pointing at another connection's thread.
+  function ensureCapiThread(connectionId: string): void {
+    const existing = get().capiThreads[connectionId];
+    const threadId = existing ?? newChatThreadId();
+    if (!existing) set({ capiThreads: { ...get().capiThreads, [connectionId]: threadId } });
+    void saveWindowState({ capiThreadId: threadId }).catch(() => {});
   }
 
   function freshQueryTab(title: string): QueryTabState {
@@ -589,13 +592,12 @@ export const useStore = create<AppState>((set, get) => {
       }
       // No meta and no detail fetch — the help tab restores whole (BASED-HELP-DOCS).
       if (r.kind === "docs") return { kind: "docs", id: r.id, title: r.title } satisfies DocsTabState;
-      const queryMeta = r.meta as QueryTabMeta | null;
+      // (A legacy originThreadId in old rows' meta is ignored — per-tab thread aliasing is gone.)
       return {
         ...freshQueryTab(r.title),
         id: r.id,
         content: r.content,
         filePath: r.filePath,
-        ...(queryMeta?.originThreadId ? { originThreadId: queryMeta.originThreadId } : {}),
       };
     });
     if (tabs.length === 0) tabs.push(freshQueryTab("Query 1"));
@@ -639,6 +641,7 @@ export const useStore = create<AppState>((set, get) => {
     objects: [],
     tabs: [],
     activeTabId: null,
+    capiThreads: {},
     dialog: { mode: "closed" },
     rightRailOpen: false,
     banner: null,
@@ -835,6 +838,7 @@ export const useStore = create<AppState>((set, get) => {
             capabilities: res.capabilities,
           });
           if (tabs !== cached.tabs) persistTabsSoon();
+          ensureCapiThread(connectionId);
           return;
         }
         const hydrated = await hydrateTabsForConnection(connectionId);
@@ -852,6 +856,7 @@ export const useStore = create<AppState>((set, get) => {
           capabilities: res.capabilities,
         });
         if (tabs !== hydrated.tabs) persistTabsSoon();
+        ensureCapiThread(connectionId);
         hydrateTabDetails(tabs);
       } catch (err) {
         set({ status: "disconnected", banner: err instanceof Error ? err.message : String(err) });
@@ -1034,7 +1039,7 @@ export const useStore = create<AppState>((set, get) => {
 
     closeTabs(ids) {
       if (ids.length === 0) return;
-      const { tabs, activeTabId, activeConnectionId } = get();
+      const { tabs, activeTabId } = get();
       const idSet = new Set(ids);
       for (const t of tabs) {
         if (t.kind === "query" && t.parentTabId && idSet.has(t.parentTabId)) idSet.add(t.id);
@@ -1049,11 +1054,6 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: remaining, activeTabId: nextActive });
       for (const t of tabs) {
         if (idSet.has(t.id) && t.kind === "query") disposeModel(t.id);
-      }
-      // Traces: BASED-AGENT-THREADS — a closed tab's OWNED chat thread dies with it, unless another
-      // open tab still aliases it (agent-opened tabs never delete their aliased target).
-      if (activeConnectionId) {
-        for (const threadId of threadsToDeleteOnClose(activeConnectionId, tabs, [...idSet])) deleteThread(threadId);
       }
       // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
       // query), so restore no longer accumulates every table ever opened.
@@ -1368,21 +1368,21 @@ export const useStore = create<AppState>((set, get) => {
       return tab.id;
     },
 
-    // Traces: BASED-AGENT-THREADS — alias an agent-opened tab to the conversation that created it
-    // (or detach with null).
-    setTabOriginThread(tabId, threadId) {
-      set({
-        tabs: get().tabs.map((t) =>
-          t.id === tabId && t.kind === "query" ? { ...t, originThreadId: threadId ?? undefined } : t,
-        ),
-      });
-      persistTabsSoon();
+
+    // Traces: BASED-CHAT-HISTORY-PICKER — move this window's active conversation for a connection.
+    // Persisted when it's the current connection, so restart restores it.
+    setCapiThread(connectionId, threadId) {
+      set({ capiThreads: { ...get().capiThreads, [connectionId]: threadId } });
+      if (connectionId === get().activeConnectionId) void saveWindowState({ capiThreadId: threadId }).catch(() => {});
     },
 
     async restoreWindow() {
       try {
         const ws = await fetchWindowState();
         if (!ws.connectionId || !get().connections.some((c) => c.id === ws.connectionId)) return;
+        // Seed the conversation pointer BEFORE connecting — connect's ensureCapiThread would
+        // otherwise mint a fresh one and the restored window would open on an empty chat.
+        if (ws.capiThreadId) set({ capiThreads: { ...get().capiThreads, [ws.connectionId]: ws.capiThreadId } });
         await get().connect(ws.connectionId);
         const patch: Partial<Pick<AppState, "activeTabId" | "schemaFilter">> = {};
         if (ws.activeTabId && get().tabs.some((t) => t.id === ws.activeTabId)) patch.activeTabId = ws.activeTabId;

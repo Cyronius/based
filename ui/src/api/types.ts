@@ -171,6 +171,8 @@ export interface WindowState {
   connectionId: string | null;
   activeTabId: string | null;
   schemaFilter: string;
+  /** The window's active capi conversation for its current connection (BASED-CHAT-HISTORY-PICKER). */
+  capiThreadId: string | null;
 }
 
 export interface EngineCapabilities {
