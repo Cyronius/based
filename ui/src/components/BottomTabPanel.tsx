@@ -3,6 +3,7 @@
 // resizable Panel to match.
 import type { ReactNode } from "react";
 import { IconButton } from "./IconButton";
+import { ChevronDownIcon } from "./icons";
 
 export interface BottomTab {
   id: string;
@@ -15,11 +16,13 @@ export function BottomTabPanel({
   activeId,
   onActivate,
   onClose,
+  onMinimize,
 }: {
   tabs: BottomTab[];
   activeId: string | null;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
+  onMinimize?: () => void;
 }) {
   if (tabs.length === 0) return null;
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0];
@@ -52,6 +55,12 @@ export function BottomTabPanel({
             </IconButton>
           </div>
         ))}
+        <div className="flex-1" />
+        {onMinimize && (
+          <IconButton size="sm" className="self-center text-faint hover:text-paper" title="Minimize panel" aria-label="Minimize panel" onClick={onMinimize}>
+            <ChevronDownIcon />
+          </IconButton>
+        )}
       </div>
       <div className="flex-1 min-h-0">{active.content}</div>
     </div>
