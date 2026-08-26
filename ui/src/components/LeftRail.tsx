@@ -18,6 +18,60 @@ function loadWidth(): number {
   return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
 }
 
+// Traces: BASED-LANCE-CREATE-TABLE-UI — right-click menu on a connection row. "New table…" appears
+// only for the active, connected connection on engines with the createTable capability (creation
+// runs through the live session adapter, so only the active connection can host it).
+function ConnectionContextMenu({ connId, x, y, onClose }: { connId: string; x: number; y: number; onClose: () => void }) {
+  const activeConnectionId = useStore((s) => s.activeConnectionId);
+  const status = useStore((s) => s.status);
+  const capabilities = useStore((s) => s.capabilities);
+  const setDialog = useStore((s) => s.setDialog);
+  const setNewTableOpen = useStore((s) => s.setNewTableOpen);
+  const connections = useStore((s) => s.connections);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const canCreateTable = connId === activeConnectionId && status === "connected" && !!capabilities?.createTable;
+  const full = connections.find((c) => c.id === connId);
+  const item = (label: string, onClick: () => void) => (
+    <button
+      key={label}
+      className="w-full text-left px-3 py-1.5 text-[length:var(--fs-base)] text-paper-dim hover:bg-ink-900"
+      onClick={() => {
+        onClick();
+        onClose();
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-48 rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up py-1"
+      style={{ top: Math.min(y, window.innerHeight - 90), left: Math.min(x, window.innerWidth - 200) }}
+    >
+      {canCreateTable && item("New table…", () => setNewTableOpen(true))}
+      {full && item("Edit connection…", () => setDialog({ mode: "edit", connection: full }))}
+    </div>
+  );
+}
+
 function ConnectionSelector() {
   const connections = useStore((s) => s.connections);
   const engines = useStore((s) => s.engines);
@@ -26,6 +80,7 @@ function ConnectionSelector() {
   const connect = useStore((s) => s.connect);
   const setDialog = useStore((s) => s.setDialog);
   const [open, setOpen] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; connId: string } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,7 +127,14 @@ function ConnectionSelector() {
       {open && (
         <div className="absolute z-30 mt-1 w-full rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up">
           {connections.map((c) => (
-            <div key={c.id} className="flex items-center group border-b border-line-soft last:border-b-0">
+            <div
+              key={c.id}
+              className="flex items-center group border-b border-line-soft last:border-b-0"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCtxMenu({ x: e.clientX, y: e.clientY, connId: c.id });
+              }}
+            >
               <button
                 className={`flex-1 text-left px-3 py-2 hover:bg-ink-800 min-w-0 ${c.id === activeConnectionId ? "text-brass" : ""}`}
                 onClick={() => {
@@ -106,6 +168,17 @@ function ConnectionSelector() {
             + New connection
           </button>
         </div>
+      )}
+      {ctxMenu && (
+        <ConnectionContextMenu
+          connId={ctxMenu.connId}
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          onClose={() => {
+            setCtxMenu(null);
+            setOpen(false);
+          }}
+        />
       )}
     </div>
   );

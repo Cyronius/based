@@ -1190,11 +1190,12 @@ approving a statement does not make the connection able to run it.
 - `run_query` (the only agent-callable exec tool) rejects mutations, so the model cannot self-execute DML
 - `run_mutation` and `import_csv` are absent from the frontend tool map on a non-writable connection
 
-**Design constraint for a future LanceDB write surface (no implementation):** `run_mutation` takes a
+**Design constraint for the LanceDB write surface:** `run_mutation` takes a
 SQL string, and Lance's write operations — `merge_insert`, `add_columns` with expressions,
 `alter_columns`, predicate `delete` — are SDK API calls, not DDL. They cannot be expressed through
-this tool and will need their own proposal tools with their own approval cards. `run_mutation`'s
-generality is real only where SQL is the write interface.
+this tool and need their own proposal tools with their own approval cards. `run_mutation`'s
+generality is real only where SQL is the write interface. First realization: `create_table`
+(BASED-AGENT-LANCE-CREATE).
 
 **Security posture (no spec impact):** `approved` is a UX gate suited to a personal tool; the real
 enforcement is the capability check plus the fact that DML has no agent-reachable exec tool.
@@ -2184,8 +2185,11 @@ Adapter selection resolves through the engine registry (BASED-ENGINE-REGISTRY) r
 
 The LanceDB adapter shall connect file-based (uri = a directory) and cloud (`db://slug` + API key from the secret channel + region), and `probe()` reports ok with a LanceDB server string or an error.
 
+A local directory that exists but contains no entries at all connects as an empty single-db database (the bootstrap path for creating a brand-new database from nothing, BASED-LANCE-CREATE-TABLE). A directory with content but no LanceDB tables anywhere still errors — pointing a connection at an arbitrary populated folder stays a mistake, not an empty database.
+
 **Acceptance criteria:**
 - A local dir probe returns `ok: true` with a `serverVersion` matching `/LanceDB/`
+- An existing directory with zero entries connects; `listObjects()` returns `[]`
 - Cloud connect (opt-in, env-gated `BASED_LANCE_CLOUD_URI`/`_KEY`; self-skips otherwise) connects and lists tables
 
 ### BASED-LANCE-BROWSE: List tables, columns (incl. vectors), page rows
@@ -2712,7 +2716,7 @@ On a local connect, if the target directory has no LanceDB tables directly but c
 - A directory with 2 subfolders, each a valid LanceDB directory with one table, connects successfully; `listSchemas()` returns both subfolder names; `listObjects()` returns both tables with `schema` set to their owning subfolder.
 - `getTableColumns`/`readTablePage` given a `schema` route to that subfolder's table.
 - `vectorSearch`/`textSearch`/`hybridSearch` given a table name that's unique across subfolders resolve it automatically; a name present in zero subfolders throws a "not found" error; a name present in more than one subfolder throws an "ambiguous" error naming the conflicting folders.
-- A directory with no LanceDB tables anywhere (not at the top level, not in any subfolder) makes `connect()` throw a descriptive error rather than silently connecting to nothing.
+- A non-empty directory with no LanceDB tables anywhere (not at the top level, not in any subfolder) makes `connect()` throw a descriptive error rather than silently connecting to nothing. (A truly empty directory instead bootstraps as an empty database — BASED-LANCE-CONNECT.)
 
 ### BASED-LANCE-EMBED-COMPUTE: based-side embeddings
 **Applies to:** based (core)
@@ -2723,6 +2727,56 @@ On a local connect, if the target directory has no LanceDB tables directly but c
 **Acceptance criteria:**
 - `vector`/`hybrid` mode with `query` + a resolved embedding profile computes a vector and returns results ranked by it
 - `vector`/`hybrid` mode with `query`, no embedding profile, no connection default, and no raw `vector` throws a descriptive error rather than silently misusing the text as a vector
+
+### BASED-LANCE-CREATE-TABLE: Create an empty LanceDB table (and database)
+**Applies to:** based (core)
+**Test category:** unit + integration
+
+`EngineCapabilities` gains `createTable: boolean` — true on local LanceDB connections (`!isCloud()`), false on cloud (untestable here; the SDK supports it) and on SQL engines (they create tables through `run_mutation` DDL). It is deliberately **not** `write`: rows stay read-only on Lance connections, and flipping `write` would switch on `run_mutation`/`import_csv`/grid-edit, none of which Lance can honour.
+
+`LanceDbAdapter.createTable({name, folder?, columns})` creates an **empty** table via the SDK's `createEmptyTable` with an explicit schema — never from seed rows (row inference maps every JS number to Float64 and errors on dates, and with no delete in this build a junk seed row would be permanent). The schema is built by a pure `buildLanceSchema(columns)` (`core/src/db/lanceSchema.ts`) that maps a closed column-spec set — `string | int | float | bool | date | vector(dim)` — to a *structural* `SchemaLike` (string type names plus `{typeId: 16, listSize: dim}` for vectors), keeping the adapter free of an `apache-arrow` import. Validation: at least one column, unique identifier-charset names, vector `dim` 1–8192 required iff type is vector. `date` maps to `datemillisecond` (the SDK's sanitizer has no timestamp string name).
+
+Targeting: single-db connections create at the root; base-folder connections create in the named `folder` — an existing subfolder, or a **new** one (creating a database), guarded against Lance's reserved directory names and `.lance` suffixes. Creation uses `mode: "create"` so an existing table name errors rather than overwriting. After a create, the adapter updates its base-folder snapshot and closes the DuckDB SQL bridge so the next SQL/LSP call re-attaches (a new folder needs a new ATTACH). Known limitation: other windows' sessions keep a stale explorer snapshot until they reconnect. Concurrent creates from another process surface as the SDK's commit-conflict error, passed through.
+
+`POST /api/session/create-table` runs it for the dialog (rejected with 400 when `capabilities.createTable` is false) and records a history row.
+
+**Acceptance criteria:**
+- `buildLanceSchema` maps each supported type to the expected Arrow type name and a vector spec to `FixedSizeList[dim]<Float32>`; duplicate/invalid names, empty columns, and missing/out-of-range `dim` throw
+- Creating a table with scalar + vector columns in a temp dir yields an empty table whose `getTableColumns` reports the vector column with the right dimension; `listObjects()` includes it without reconnecting
+- Creating the same name again errors (no overwrite)
+- On a base-folder connection, creating into a new folder name creates the folder-database and `listSchemas()`/`listObjects()` include it
+- `/api/session/create-table` on an engine without `createTable` → 400
+- The DuckDB bridge sees the new table on the next SQL call (bridge reset)
+
+### BASED-LANCE-CREATE-TABLE-UI: New Table dialog and entry points
+**Applies to:** based (ui)
+**Test category:** manual
+
+A New Table dialog (table name; target folder on base-folder connections — an existing folder or a new name; column rows with name + type from the supported set and a dimension for vectors) posts to `/api/session/create-table` and refreshes the explorer on success. Entry points, both gated on `capabilities.createTable`: a "+" icon button in the Object Explorer's Tables group header, and a "New table…" item in the connection row's context menu (LeftRail) for the active, connected connection.
+
+**Verification (manual):**
+1. Connect to a local LanceDB directory; the Tables group header shows a "+" button and right-clicking the active connection row offers "New table…"
+2. Create a table with a string column and a vector(4) column → it appears in the explorer without reconnecting; its Data tab opens empty
+3. On a base-folder connection, type a new folder name → the folder appears as a schema and the table under it
+4. On SQL Server / Snowflake / (future) Lance cloud connections, neither entry point renders
+
+### BASED-AGENT-LANCE-CREATE: create_table proposal tool
+**Applies to:** based (core + ui)
+**Test category:** unit + integration
+
+The first realization of BASED-AGENT-MUTATION-GATE's "future LanceDB write surface" note: Lance writes are SDK calls, not SQL, so table creation gets its own proposal tool with its own approval card rather than riding `run_mutation`. The same three layers apply:
+1. The frontend `create_table` tool (name, folder, columns, reason) is offered only when `capabilities.createTable` is true — `filterToolsByCapabilities` becomes a per-tool required-capability map (`run_mutation`/`import_csv` → `write`, `create_table` → `createTable`)
+2. The approval card previews the table name, target folder, and column list; only the user's Approve sends the request
+3. `POST /api/agent/create-table` re-checks `approved === true` **and** `capabilities.createTable` server-side, and writes an audit row (kind `mutation`, `approved: true`, a `create table` summary as the sql text) before reporting the outcome
+
+The Lance briefing replaces its flat "read-only, no tool to propose changes" line, when `createTable` is true, with one that stays unconditionally true: rows remain read-only, but `create_table` can propose a new empty table for user approval.
+
+**Acceptance criteria:**
+- `create_table` present in the frontend tool map iff `capabilities.createTable`; `run_mutation`/`import_csv` still absent on non-writable connections
+- `/api/agent/create-table` without `approved: true` → 400, nothing created, no audit row
+- With `approved: true` on a capability-less engine → 400
+- With `approved: true` on local Lance → creates the table and writes an audit row with `approved`
+- The briefing mentions `create_table` iff the capability is true
 
 ## Snowflake engine
 

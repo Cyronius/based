@@ -1,5 +1,6 @@
 // Type-only imports, so the scripter/dialect ↔ types cycle is erased at build time.
 import type { SqlDialect } from "./dialect";
+import type { LanceColumnSpec } from "./lanceSchema";
 import type { ScriptAction, ScriptInput } from "./scripter";
 
 export type AuthType =
@@ -429,6 +430,10 @@ export interface EngineCapabilities {
   search: boolean;
   /** Row writes via runCommands() / the editable grid. */
   write: boolean;
+  /** Table creation via the adapter's createTable() (BASED-LANCE-CREATE-TABLE). Deliberately
+   *  narrower than `write`: local LanceDB can create empty tables while rows stay read-only, and
+   *  SQL engines create tables through DDL (`run_mutation`) instead. */
+  createTable: boolean;
   /** Server-side ORDER BY / WHERE on readTablePage (BASED-TABLE-ORDERBY). False on unordered
    *  engines (LanceDB) — the Data tab's headers stay non-interactive there. */
   orderedBrowse: boolean;
@@ -518,6 +523,10 @@ export interface DatabaseAdapter {
   /** Unified vector/keyword/hybrid search, with based-side prefiltering, optional external
    *  reranking, and floor/delta score filtering. Present when capabilities.search is true. */
   search?(params: LanceSearchParams): Promise<SearchRows>;
+  /** Create an empty table with an explicit schema. Present when `capabilities.createTable` is
+   *  true. `folder` targets (or creates) a base-folder sub-database on connections that have them
+   *  (BASED-LANCE-CREATE-TABLE). */
+  createTable?(spec: { name: string; folder?: string; columns: LanceColumnSpec[] }): Promise<{ columns: TableColumn[] }>;
   /** Full-precision sample of one vector column for the Embeddings visualization
    *  (BASED-EMBED-VECTORS). Present only on engines that store vectors (LanceDB). */
   readVectorSample?(

@@ -147,6 +147,7 @@ export class SnowflakeAdapter implements DatabaseAdapter {
     sql: true,
     search: false,
     write: true,
+    createTable: false,
     orderedBrowse: true,
     script: true,
     relations: true,

@@ -198,6 +198,8 @@ export interface AppState {
    *  current connection's entry is mirrored into window state so a restart reopens the same one. */
   capiThreads: Record<string, string>;
   dialog: DialogState;
+  /** New Table dialog visibility (BASED-LANCE-CREATE-TABLE-UI). */
+  newTableOpen: boolean;
   rightRailOpen: boolean;
   banner: string | null;
   theme: string;
@@ -271,6 +273,7 @@ export interface AppState {
   /** BASED-CTRL-N: asks the shell to open a new native window; a no-op under BASED_DEV_URL dev mode. */
   newWindow(): Promise<void>;
   setDialog(dialog: DialogState): void;
+  setNewTableOpen(open: boolean): void;
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
   insertSqlIntoEditor(sql: string): void;
@@ -643,6 +646,7 @@ export const useStore = create<AppState>((set, get) => {
     activeTabId: null,
     capiThreads: {},
     dialog: { mode: "closed" },
+    newTableOpen: false,
     rightRailOpen: false,
     banner: null,
     theme: themeHint(),
@@ -1248,6 +1252,10 @@ export const useStore = create<AppState>((set, get) => {
 
     setDialog(dialog) {
       set({ dialog });
+    },
+
+    setNewTableOpen(newTableOpen) {
+      set({ newTableOpen });
     },
 
     toggleRightRail() {

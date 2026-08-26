@@ -12,7 +12,7 @@
 // (BASED-AGENT-THREADS).
 import { useEffect, useState } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
-import { api, inspectCsv, runAgentMutation, streamCsvImport, type CsvImportChunk } from "../api/client";
+import { api, inspectCsv, runAgentCreateTable, runAgentMutation, streamCsvImport, type CreateTableRequest, type CsvImportChunk } from "../api/client";
 import type { EngineCapabilities, MutationResult, TableColumn } from "../api/types";
 import { capiToolDefs, filterToolsByCapabilities } from "./capiToolDefs";
 import { useStore, type QueryTabState } from "../store";
@@ -335,6 +335,88 @@ function ImportApprovalCard({ args }: { args: ImportArgs }) {
   );
 }
 
+// Traces: BASED-AGENT-LANCE-CREATE — the gated create-table card. Lance writes are SDK calls, not
+// SQL, so table creation gets its own proposal card (BASED-AGENT-MUTATION-GATE's design
+// constraint) instead of riding run_mutation; only the user's Approve reaches the gated
+// /api/agent/create-table endpoint, which re-checks the capability server-side.
+let pendingCreateResolve: ((v: string) => void) | null = null;
+
+interface CreateTableArgs {
+  name?: string;
+  folder?: string;
+  columns?: CreateTableRequest["columns"];
+  reason?: string;
+}
+
+function CreateTableApprovalCard({ args }: { args: CreateTableArgs }) {
+  const [phase, setPhase] = useState<"idle" | "running" | "done" | "rejected">("idle");
+  const [outcome, setOutcome] = useState("");
+  const [failed, setFailed] = useState(false);
+  const cols = args.columns ?? [];
+  const target = `${args.folder ? `${args.folder}.` : ""}${args.name ?? ""}`;
+
+  const approve = async () => {
+    setPhase("running");
+    try {
+      const res = await runAgentCreateTable({ name: args.name ?? "", folder: args.folder, columns: cols });
+      const text = `Created ${target} in ${res.durationMs} ms.`;
+      setOutcome(text);
+      setPhase("done");
+      void useStore.getState().refreshObjects();
+      pendingCreateResolve?.(JSON.stringify({ approved: true, status: "ok", summary: text }));
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      setFailed(true);
+      setOutcome(text);
+      setPhase("done");
+      pendingCreateResolve?.(JSON.stringify({ approved: true, status: "error", summary: text }));
+    }
+    pendingCreateResolve = null;
+  };
+
+  const reject = () => {
+    setPhase("rejected");
+    pendingCreateResolve?.(JSON.stringify({ approved: false }));
+    pendingCreateResolve = null;
+  };
+
+  return (
+    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
+      <div className="ledger-label mb-1 text-brass">New table approval</div>
+      {args.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
+      <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">
+        <span className="font-semibold">{target}</span>
+        <span className="text-muted"> — new empty table</span>
+      </div>
+      <pre className="mb-2 overflow-x-auto rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft">
+        {cols.map((c) => `${c.name} ${c.type}${c.type === "vector" && c.dim ? `(${c.dim})` : ""}`).join("\n") || "(no columns)"}
+      </pre>
+      {phase === "idle" ? (
+        <div className="flex gap-2">
+          <button
+            className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30"
+            onClick={approve}
+          >
+            Approve &amp; create
+          </button>
+          <button
+            className="rounded bg-err/15 px-3 py-1 text-[length:var(--fs-base)] text-err border border-err/40 hover:bg-err/25"
+            onClick={reject}
+          >
+            Reject
+          </button>
+        </div>
+      ) : phase === "running" ? (
+        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Creating…</div>
+      ) : phase === "rejected" ? (
+        <div className="text-[length:var(--fs-base)] text-err">Rejected — nothing was created.</div>
+      ) : (
+        <div className={`text-[length:var(--fs-base)] ${failed ? "text-err" : "text-ok"}`}>{outcome}</div>
+      )}
+    </div>
+  );
+}
+
 export const capiTools: Record<string, ToolDefinition> = {
   list_tabs: {
     definition: capiToolDefs.list_tabs,
@@ -476,6 +558,16 @@ export const capiTools: Record<string, ToolDefinition> = {
         pendingResolve = resolve;
       }),
     renderer: (args) => <ApprovalCard args={args as { sql?: string; reason?: string }} />,
+  },
+
+  create_table: {
+    definition: capiToolDefs.create_table,
+    isFrontend: true,
+    handler: () =>
+      new Promise<string>((resolve) => {
+        pendingCreateResolve = resolve;
+      }),
+    renderer: (args) => <CreateTableApprovalCard args={args as CreateTableArgs} />,
   },
 };
 

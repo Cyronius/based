@@ -90,6 +90,7 @@ export const LANCEDB_ENGINE: EngineDescriptor = {
       sql: true,
       search: true,
       write: false,
+      createTable: true,
       orderedBrowse: false,
       script: false,
       relations: false,

@@ -23,6 +23,7 @@ const MSSQL: EngineCapabilities = {
   sql: true,
   search: false,
   write: true,
+  createTable: false,
   orderedBrowse: true,
   script: false,
   relations: false,

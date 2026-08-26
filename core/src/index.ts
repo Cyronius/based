@@ -139,6 +139,7 @@ export {
   SHED_TOOL_RESULT_NOTE,
 } from "./agent/contextRecovery";
 export { describeLanceSchema } from "./db/lanceDescribe";
+export { buildLanceSchema, MAX_VECTOR_DIM, type LanceColumnSpec, type LanceSchemaLike } from "./db/lanceSchema";
 export { exportData, sanitizeExportFileName, EXPORT_ROW_CAP, type ExportSource, type ExportResult } from "./export/exportData";
 export {
   sanitizeSaveFileName,

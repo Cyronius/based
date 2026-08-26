@@ -85,6 +85,7 @@ describe("BASED-AGENT-EXPORT: sql/table source selection", () => {
     sql: true,
     search: false,
     write: false,
+    createTable: true,
     orderedBrowse: false,
     script: false,
     relations: false,

@@ -161,6 +161,23 @@ describe("Lance SQL (embedded DuckDB)", () => {
     }
   }, 120_000);
 
+  // Traces: BASED-LANCE-CREATE-TABLE — creating a table resets the bridge so the next SQL call
+  // re-attaches and can see it (the ATTACH happened before the table existed).
+  test("BASED-LANCE-CREATE-TABLE: the SQL bridge sees a table created after its first boot", async () => {
+    const adapter = new LanceDbAdapter(cfgFor(soloDir), noSecret);
+    await adapter.connect();
+    try {
+      const before = await runSql(adapter, "SELECT count(*) FROM docs");
+      expect(before.status).toBe("ok"); // bridge booted and attached
+      await adapter.createTable({ name: "post_boot", columns: [{ name: "label", type: "string" }] });
+      const after = await runSql(adapter, "SELECT count(*) AS n FROM post_boot");
+      expect(after.status).toBe("ok");
+      expect(rowsOf(after.chunks)).toEqual([[0]]);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
   test("BASED-LANCE-SQL: rowCap truncates and stops scanning", async () => {
     const adapter = new LanceDbAdapter(cfgFor(soloDir), noSecret);
     await adapter.connect();
