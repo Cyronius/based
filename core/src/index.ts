@@ -60,6 +60,7 @@ export {
   AiConfigStore,
   resolveModel,
   resolveExecutionDefaults,
+  stripEmptyModelFromBody,
   providerOptionsNamespace,
   resolveAiTimeouts,
   DEFAULT_AI_TIMEOUT_SECONDS,

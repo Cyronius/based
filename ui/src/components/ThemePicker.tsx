@@ -525,10 +525,13 @@ function AiProfileForm({
   }
   const kindFields = KIND_FIELDS[form.kind];
   const azure = form.kind === "azure-openai";
+  // Model is optional for openai-compatible: single-model local servers (LM Studio, llama.cpp)
+  // run their loaded model when the request carries none; blank means exactly that.
+  const modelRequired = form.kind === "openai" || form.kind === "anthropic";
   const canSave =
     form.name.trim() &&
     (!kindFields.urlRequired || form.baseUrl.trim()) &&
-    (azure ? (form.deployment ?? "").trim() : form.model.trim()) &&
+    (azure ? (form.deployment ?? "").trim() : !modelRequired || form.model.trim()) &&
     !paramsError;
   return (
     <div className="border border-line-soft rounded p-2 space-y-1.5 bg-ink-950/40">
@@ -552,7 +555,13 @@ function AiProfileForm({
       />
       <input
         className={field}
-        placeholder={azure ? "Model (optional — the deployment is what runs)" : "Model"}
+        placeholder={
+          azure
+            ? "Model (optional — the deployment is what runs)"
+            : modelRequired
+              ? "Model"
+              : "Model (optional — blank uses the server's loaded model)"
+        }
         value={form.model}
         onChange={(e) => setForm({ ...form, model: e.target.value })}
       />

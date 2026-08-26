@@ -2001,8 +2001,9 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 - `azure-openai` without `deployment` throws an error mentioning "deployment"
 - `openai` / `azure-openai` / `anthropic` with no key throw an error naming the provider kind
 - `openai-compatible` with no key still resolves (local LM Studio path unchanged)
+- `openai-compatible` with a blank model still resolves, and the outgoing request body carries no `model` key: `stripEmptyModelFromBody` removes an empty/whitespace-only `model` from a JSON body and leaves any other body (non-JSON, or a real model id) untouched. Blank means "the server's loaded/default model" — single-model servers (LM Studio, llama.cpp) only apply their default when the key is *absent*, so `model: ""` must never be sent.
 
-**UI (manual):** the profile form's field requirements are per-kind — base URL required for `openai-compatible` and `azure-openai` (labeled "Endpoint" for Azure, placeholder showing the resource-URL shape), optional for `openai`/`anthropic` (blank = provider default); `deployment` required for `azure-openai`. A profile pointed at a live provider with a real key streams a chat turn.
+**UI (manual):** the profile form's field requirements are per-kind — base URL required for `openai-compatible` and `azure-openai` (labeled "Endpoint" for Azure, placeholder showing the resource-URL shape), optional for `openai`/`anthropic` (blank = provider default); `deployment` required for `azure-openai`; model required for `openai`/`anthropic` (their APIs reject a request without one), optional for `openai-compatible` (blank = server's loaded model — cloud-style compatible backends like Ollama/vLLM/OpenRouter still need it filled in) and `azure-openai` (the deployment is what runs). A profile pointed at a live provider with a real key streams a chat turn.
 
 ### BASED-AI-PROFILE-PARAMS: Per-profile model parameter JSON
 **Applies to:** based (core, ui)
