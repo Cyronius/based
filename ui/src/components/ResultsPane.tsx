@@ -7,6 +7,8 @@ import { ResultText } from "./ResultText";
 import { PlanView } from "./PlanView";
 import { GridContextMenu } from "./GridContextMenu";
 import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
+import { IconButton } from "./IconButton";
+import { ChevronDownIcon } from "./icons";
 
 type View = "grid" | "text" | "plan";
 
@@ -14,10 +16,12 @@ export function ResultsPane({
   tab,
   onCellTextChange,
   onCellActivate,
+  onMinimize,
 }: {
   tab: QueryTabState;
   onCellTextChange?: (text: string | null) => void;
   onCellActivate?: (text: string) => void;
+  onMinimize?: () => void;
 }) {
   const setActiveResult = useStore((s) => s.setActiveResult);
   const [view, setView] = useState<View>("grid");
@@ -84,6 +88,11 @@ export function ResultsPane({
             </span>
             <GridToolbarActions actions={exportActions} onFitColumns={() => fitColumnsRef.current()} />
           </>
+        )}
+        {onMinimize && (
+          <IconButton size="sm" className="text-faint hover:text-paper" title="Minimize results" aria-label="Minimize results" onClick={onMinimize}>
+            <ChevronDownIcon />
+          </IconButton>
         )}
       </div>
 
