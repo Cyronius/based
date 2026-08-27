@@ -639,12 +639,18 @@ describe("BASED-CHAT-HISTORY-PICKER: thread list + lifecycle", () => {
   }
 
   async function seedThread(memory: Awaited<ReturnType<typeof seededMemory>>, resourceId: string, tid: string, text: string, at: Date) {
-    await memory.saveThread({ thread: { id: tid, resourceId, title: `New Thread ${at.toISOString()}`, createdAt: at, updatedAt: at } });
+    const thread = { id: tid, resourceId, title: `New Thread ${at.toISOString()}`, createdAt: at, updatedAt: at };
+    await memory.saveThread({ thread });
     await memory.saveMessages({
       messages: [
         { id: `${tid}-m1`, role: "user", createdAt: at, threadId: tid, resourceId, content: { format: 2, parts: [{ type: "text", text }] } },
       ] as never,
     });
+    // Mastra's saveMessages stamps the thread's updatedAt to "now" (message time IS conversation
+    // recency in production — correct there, but it collapses this seeding's controlled spacing
+    // into same-millisecond writes whose sort order is nondeterministic). Re-save the thread so
+    // the seeded updatedAt is what the newest-15 ordering actually sees.
+    await memory.saveThread({ thread });
   }
 
   async function seededMemory() {
