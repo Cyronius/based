@@ -1,7 +1,7 @@
 # Plan: macOS port + CI release pipeline
 
-**Status:** in progress — **Phases 1–2 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
-macOS build workflow landed and green, `.dmg` artifact produced)
+**Status:** in progress — **Phases 1–3 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
+macOS build workflow landed and green, `.dmg` artifact produced; dialogs relayed to the shell)
 **Spec impact:** 6 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-MENU-MAC`,
 `BASED-WINDOW-LIFECYCLE-MAC`, `BASED-PACKAGE-MAC`, `BASED-INSTALLER-MAC`, `BASED-RELEASE-CI`),
 8 modified (`BASED-SECRET-STORE`, `BASED-DIALOG-OPEN-FILE`, `BASED-FILE-OPEN-SQL`,
@@ -126,35 +126,41 @@ served its purpose, leaving `workflow_dispatch` as the sole trigger described in
 
 ---
 
-### Phase 3 — Native dialogs (2 d)
+### ✅ Phase 3 — Native dialogs (done)
 
-[`core/src/dialogs.ts`](../../../core/src/dialogs.ts) is the single genuinely Windows-locked source
-file: all four exports shell out to `powershell.exe` with WinForms
-(`SaveFileDialog` / `OpenFileDialog` / `FolderBrowserDialog`) or to `cmd.exe /c start`.
+Design (2) from the earlier draft was taken: dialogs moved into the Tauri shell
+(`tauri-plugin-dialog`), the one deliberate exception to "the shell holds no app logic" — they are
+a windowing-system concern (parenting, and on macOS a core-owned subprocess dialog can't exist).
 
-Two viable designs:
+Shipped:
 
-1. **`osascript` sibling** — add a darwin branch that shells to `osascript -e 'choose file …'` and
-   `open <path>`. Preserves the existing spawn-a-subprocess shape and the "shell is disposable"
-   principle. Roughly a day.
-2. **Move dialogs into the Tauri shell** (`tauri-plugin-dialog`), exposed to core over the existing
-   loopback channel. Real native dialogs on both platforms, deletes the PowerShell hack outright,
-   and removes the odd situation where a *database client* spawns a PowerShell process to pick a
-   file. Roughly two days.
+- **Shell-dialog channel.** Core serves `GET /api/shell/dialogs` (SSE, token-authed); the shell
+  subscribes for the app's lifetime — in packaged *and* dev mode, since both know core's URL — and
+  answers each `{id, kind, filters/defaultName/startingFolder}` request with a real native dialog
+  via `POST /api/shell/dialog-result {id, path}` ([`main.rs`](../../../shell-tauri/src/main.rs)
+  `subscribe_shell_dialogs`/`show_shell_dialog`, reconnect loop for dev-core restarts; dialogs
+  parent to the focused window). The SSE stream opens with a `: connected` comment frame — with no
+  initial payload Bun never flushes headers and the subscriber sees a hung connect.
+- **Core broker.** [`dialogs.ts`](../../../core/src/dialogs.ts) rewritten: structured
+  `FileFilter {name, extensions[]}` on the wire (WinForms filter strings are now a
+  fallback-formatting detail), `ShellDialogBroker` (per-server instance, not module state) with
+  in-flight requests resolved as *cancelled* if the shell detaches. Endpoint contracts unchanged —
+  the UI needed no edits.
+- **Fallbacks, not deleted outright** (deviation from the draft's "deletes the PowerShell hack"):
+  browser dev has no shell attached, so shell-less core still shows PowerShell WinForms on Windows
+  and `osascript -e 'choose …'` on macOS. The packaged app never hits either path.
+- `openWithDefaultApp` branched: `open` (darwin) / `cmd start` (win32) / `xdg-open` (else).
+- `resolveDownloadDir()` verified — already `homedir()`-based, correct on macOS; spec wording was
+  already platform-neutral.
+- Covered by
+  [`integration.shellDialogs.test.ts`](../tests/integration.shellDialogs.test.ts) (5 tests: relay
+  round-trip with structured filters, cancel, defaultName carry, detach-cancels-in-flight, unknown
+  id ignored). `BASED-DIALOG-OPEN-FILE` rewritten in `spec.md` (now core + shell-tauri,
+  integration + manual).
 
-**Recommend (2).** It costs one extra day and retires code the spec currently has to apologize for.
-The tradeoff is that it breaks the current invariant that the shell holds no app logic — dialogs
-become the one exception, which is defensible because they are inherently a windowing-system
-concern. If (1) is chosen instead to save time, `BASED-DIALOG-OPEN-FILE`'s wording changes but the
-loopback API surface does not, so the choice is reversible.
-
-Either way the core-facing API (`POST /api/dialog/open-file`, `/api/file/open-sql`,
-`/api/file/save-sql`) is unchanged, so the UI needs no edits and the existing integration tests keep
-passing.
-
-**Also in this phase:** `resolveDownloadDir()` in `core/src/files/saveFile.ts`
-(`BASED-SAVE-FILE-WRITER`) — verify it resolves the Downloads folder from `$HOME` on macOS rather
-than `USERPROFILE`, and that its temp-dir fallback is right.
+**Verified:** 646 pass / 0 new failures (one pre-existing agent-threads failure on main), all three
+typechecks clean, `cargo check` clean. Windows packaged dialogs switch from WinForms subprocess to
+shell-native — strictly better (parented, no PowerShell spawn); noted for the Phase 7 checklist.
 
 ---
 
@@ -308,7 +314,7 @@ restore, and the dock-reopen behavior.
 |---|---|---|
 | ~~1 — Platform abstraction~~ | ~~0.5 d~~ **done** | no |
 | ~~2 — First CI build~~ | ~~1 d~~ **done, run pending** | no |
-| 3 — Native dialogs | 2 d | no (verify in 7) |
+| ~~3 — Native dialogs~~ | ~~2 d~~ **done** | no (verify in 7) |
 | 4 — macOS UX conventions | 2.5 d | no (verify in 7) |
 | 5 — Packaging + distribution | 1.5 d | no (verify in 7) |
 | 6 — Release pipeline | 1 d | no |

@@ -542,15 +542,33 @@ grid reloads.
 4. The button is absent on views, PK-less (read-only) tables, and LanceDB connections
 
 ### BASED-DIALOG-OPEN-FILE: Native open-file dialog
-**Applies to:** based (core)
-**Test category:** manual
+**Applies to:** based (core + shell-tauri)
+**Test category:** integration (relay) + manual (UI)
 
-`POST /api/dialog/open-file { kind }` opens a native OpenFileDialog (PowerShell WinForms, like the
-existing save/folder dialogs) filtered per kind and returns `{ path }` or `{ path: null }` on
-cancel.
+`POST /api/dialog/open-file { kind }` opens a native open-file dialog filtered per kind and
+returns `{ path }` or `{ path: null }` on cancel.
 
-**Verification procedure:** the import stepper's "Choose file" opens the native dialog filtered to
-`*.csv`; cancel returns to the stepper without error.
+The dialog itself is shown by the Tauri shell — dialogs are the one piece of app behavior that
+lives in the shell, because they are a windowing-system concern (parenting to the focused window;
+on macOS a core-owned subprocess dialog cannot exist at all). Core relays each request over the
+shell-dialog channel: the shell holds a lifetime subscription to `GET /api/shell/dialogs` (SSE)
+and answers via `POST /api/shell/dialog-result { id, path }`. All dialog endpoints
+(open-file/save-sql/save-transcript/export/folder) ride the same channel; filters cross the wire
+structured (`{ name, extensions[] }`), never as a platform filter string. When no shell is
+attached (browser dev, standalone core), core falls back to a per-OS subprocess dialog
+(PowerShell WinForms on Windows, `osascript` on macOS). A shell that detaches mid-dialog resolves
+the request as cancelled (`{ path: null }`), never hangs it.
+
+**Acceptance criteria (integration — the relay, with a fake shell subscriber):**
+- A dialog endpoint call publishes a request (with `id`, `kind`, structured `filters`) onto the
+  subscribed stream; POSTing `{ id, path }` resolves the endpoint call with that path
+- POSTing `{ id, path: null }` resolves it as `{ path: null }` (cancel)
+- Save requests carry `defaultName`; folder requests carry `startingFolder`
+- Detaching the subscriber while a request is in flight resolves it as `{ path: null }`
+- A result for an unknown `id` is ignored without error
+
+**Verification procedure (manual):** the import stepper's "Choose file" opens the native dialog
+filtered to `*.csv`, parented to the app window; cancel returns to the stepper without error.
 
 ### BASED-FILE-OPEN-SQL: Open a .sql file into a query tab
 **Applies to:** based (core + ui)

@@ -12,6 +12,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -199,6 +200,103 @@ fn dispatch_open_batch(app: &AppHandle, paths: Vec<String>) {
     let _ = app.run_on_main_thread(move || create_window(&app2, None, &paths));
 }
 
+/// Native file dialogs (BASED-DIALOG-OPEN-FILE and friends): core relays every dialog request to
+/// this process, because real native dialogs belong to the windowing process — core's old approach
+/// (a PowerShell WinForms subprocess) has no macOS equivalent and can't parent to our windows.
+/// Subscribes to core's /api/shell/dialogs SSE stream for the app's lifetime, answering each
+/// request via POST /api/shell/dialog-result. The reconnect loop matters in dev, where core
+/// restarts on edit; packaged, core is our child and outlives every reconnect attempt.
+fn subscribe_shell_dialogs(app: AppHandle, base_url: String, token: String) {
+    std::thread::spawn(move || loop {
+        let url = format!("{base_url}/api/shell/dialogs?token={token}");
+        // No timeout: this response streams for the app's lifetime.
+        if let Ok(resp) = ureq::get(&url).call() {
+            let reader = BufReader::new(resp.into_reader());
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                if let Ok(req) = serde_json::from_str::<serde_json::Value>(data) {
+                    show_shell_dialog(&app, req);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    });
+}
+
+/// Show one relayed dialog and POST the choice (or None on cancel) back to core. Runs the
+/// non-blocking callback API on the main thread — the callbacks fire on the event loop, so the
+/// actual POST hops to a worker thread.
+fn show_shell_dialog(app: &AppHandle, req: serde_json::Value) {
+    let Some(id) = req.get("id").and_then(|v| v.as_str()).map(str::to_owned) else {
+        return;
+    };
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let state = app.state::<ShellState>();
+        let base_url = state.base_url.clone();
+        let token = state.token.clone();
+        let front = state.focus_order.lock().unwrap().first().cloned();
+        drop(state);
+
+        let respond = move |path: Option<String>| {
+            let url = format!("{base_url}/api/shell/dialog-result?token={token}");
+            let body = serde_json::json!({ "id": id, "path": path }).to_string();
+            std::thread::spawn(move || {
+                let _ = ureq::post(&url)
+                    .timeout(HTTP_TIMEOUT)
+                    .set("content-type", "application/json")
+                    .send_string(&body);
+            });
+        };
+        let to_path = |f: tauri_plugin_dialog::FilePath| {
+            f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
+        };
+
+        let mut dialog = app.dialog().file();
+        if let Some(w) = front.and_then(|(_, label)| app.get_webview_window(&label)) {
+            dialog = dialog.set_parent(&w);
+        }
+        match req.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+            kind @ ("open-file" | "save-file") => {
+                for f in req
+                    .get("filters")
+                    .and_then(|f| f.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("Files");
+                    let exts: Vec<&str> = f
+                        .get("extensions")
+                        .and_then(|e| e.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                        .unwrap_or_default();
+                    if !exts.is_empty() {
+                        dialog = dialog.add_filter(name, &exts);
+                    }
+                }
+                if kind == "open-file" {
+                    dialog.pick_file(move |f| respond(f.and_then(to_path)));
+                } else {
+                    if let Some(name) = req.get("defaultName").and_then(|v| v.as_str()) {
+                        dialog = dialog.set_file_name(name);
+                    }
+                    dialog.save_file(move |f| respond(f.and_then(to_path)));
+                }
+            }
+            "folder" => {
+                if let Some(dir) = req.get("startingFolder").and_then(|v| v.as_str()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog.pick_folder(move |f| respond(f.and_then(to_path)));
+            }
+            _ => respond(None), // unknown kind — answer rather than leave core's request hanging
+        }
+    });
+}
+
 /// BASED-WINDOW-RESTORE: sids that were still open when the app last exited.
 fn fetch_persisted_sids(base_url: &str, token: &str) -> Vec<String> {
     let url = format!("{base_url}/api/windows?token={token}");
@@ -335,6 +433,7 @@ fn main() {
     let cb_tx = open_tx.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         // Single-instance at the OS level: a second launch fires this callback in the primary with
         // the secondary's argv, then exits.
         .plugin(tauri_plugin_single_instance::init(move |app, argv, cwd| {
@@ -378,6 +477,8 @@ fn main() {
                 focus_order: Mutex::new(Vec::new()),
             });
             app.manage(CoreChild(Mutex::new(child)));
+
+            subscribe_shell_dialogs(app.handle().clone(), base_url.clone(), token.clone());
 
             // Restore ordering: persisted sids first, then the file-open batch (via the batcher, so
             // a cold multi-select's sibling processes coalesce with the primary's own argv), and a

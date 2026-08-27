@@ -37,7 +37,7 @@ import { resolveEmbeddingProfile, resolveRerankerProfile } from "./db/searchProf
 import { buildEditCommands, type TableChangeSet } from "./db/tableEdit";
 import { joinScripts, type ScriptAction } from "./db/scripter";
 import { scriptWithAdapter } from "./db/scriptDispatch";
-import { filterFor, openFileDialog, openFolderDialog, openWithDefaultApp, saveFileDialog } from "./dialogs";
+import { createDialogs, filterFor, openWithDefaultApp, ShellDialogBroker } from "./dialogs";
 import { parseCsv } from "./import/csvParse";
 import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
 import { toCsv } from "./export/csv";
@@ -178,6 +178,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
   const agentInstructions = new AgentInstructionsStore(db);
   const audit = new AuditStore(db);
   const agentMemory = createAgentMemory(opts.agentDbPath);
+
+  // Native dialogs (BASED-DIALOG-OPEN-FILE and friends): shown by the Tauri shell when one is
+  // subscribed to /api/shell/dialogs, per-OS subprocess fallback in shell-less dev.
+  const shellDialogs = new ShellDialogBroker();
+  const dialogs = createDialogs(shellDialogs);
 
   const sessions = new Map<string, SessionState>();
   const executions = new Map<string, QueryExecution>();
@@ -897,13 +902,13 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     // Traces: BASED-LANCE-FOLDER-BROWSE
     if (path === "/api/dialog/folder" && method === "POST") {
       const body = (await req.json()) as { startingFolder?: string };
-      const path_ = await openFolderDialog(body.startingFolder);
+      const path_ = await dialogs.openFolder(body.startingFolder);
       return json({ path: path_ });
     }
     // Traces: BASED-DIALOG-OPEN-FILE
     if (path === "/api/dialog/open-file" && method === "POST") {
       const body = (await req.json()) as { kind?: "sql" | "csv" | "xlsx" };
-      const path_ = await openFileDialog(filterFor(body.kind ?? "csv"));
+      const path_ = await dialogs.openFile(filterFor(body.kind ?? "csv"));
       return json({ path: path_ });
     }
 
@@ -978,7 +983,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/file/open-sql" && method === "POST") {
       const body = (await req.json()) as { path?: string };
       let target = body.path ?? null;
-      if (!target) target = await openFileDialog(filterFor("sql"));
+      if (!target) target = await dialogs.openFile(filterFor("sql"));
       if (!target) return json({ path: null });
       const file = Bun.file(target);
       if (!(await file.exists())) return json({ error: `File not found: ${target}` }, 400);
@@ -992,7 +997,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     if (path === "/api/file/save-sql" && method === "POST") {
       const body = (await req.json()) as { content: string; path?: string; defaultName?: string };
       let target = body.path ?? null;
-      if (!target) target = await saveFileDialog(body.defaultName ?? "query.sql", filterFor("sql"));
+      if (!target) target = await dialogs.saveFile(body.defaultName ?? "query.sql", filterFor("sql"));
       if (!target) return json({ path: null });
       await Bun.write(target, body.content);
       return json({ path: target });
@@ -1005,7 +1010,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const body = (await req.json()) as { messages?: unknown[]; title?: string; path?: string; defaultName?: string };
       if (!Array.isArray(body.messages)) return json({ error: "messages must be an array" }, 400);
       let target = body.path ?? null;
-      if (!target) target = await saveFileDialog(body.defaultName ?? "based-chat.md", filterFor("md"));
+      if (!target) target = await dialogs.saveFile(body.defaultName ?? "based-chat.md", filterFor("md"));
       if (!target) return json({ path: null }); // user cancelled the dialog
       await Bun.write(target, transcriptMarkdown(body.messages as never, { title: body.title }));
       return json({ path: target });
@@ -1021,13 +1026,42 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (body.openAfter) {
         target = join(tmpdir(), `based-results-${Date.now()}.${body.format}`);
       } else {
-        target = await saveFileDialog(`results.${body.format}`, filterFor(body.format));
+        target = await dialogs.saveFile(`results.${body.format}`, filterFor(body.format));
         if (!target) return json({ path: null });
       }
       if (body.format === "csv") await Bun.write(target, toCsv(body.columns, body.rows));
       else await writeXlsx(target, body.columns, body.rows);
       if (body.openAfter) openWithDefaultApp(target);
       return json({ path: target });
+    }
+
+    // --- shell dialog relay ---
+    // The Tauri shell subscribes here for the app's lifetime and answers each request with a real
+    // native dialog (shell-tauri/src/main.rs). Token-authed like everything else; no sid — dialogs
+    // are app-modal, not per-window.
+    if (path === "/api/shell/dialogs" && method === "GET") {
+      let ref: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          ref = controller;
+          shellDialogs.attach(controller);
+          // A comment frame, not an event: flushes the response headers so the subscriber's HTTP
+          // client sees the stream come up (nothing else may be enqueued for hours).
+          controller.enqueue(encoder.encode(": connected\n\n"));
+        },
+        cancel() {
+          shellDialogs.detach(ref);
+        },
+      });
+      return new Response(stream, {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+      });
+    }
+    if (path === "/api/shell/dialog-result" && method === "POST") {
+      const body = (await req.json()) as { id?: string; path?: string | null };
+      if (!body.id) return json({ error: "id required" }, 400);
+      shellDialogs.resolve(body.id, typeof body.path === "string" && body.path.length > 0 ? body.path : null);
+      return json({ ok: true });
     }
 
     // --- SSE ---
