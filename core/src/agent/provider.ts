@@ -65,7 +65,16 @@ export function resolveModel(config: ResolvableAiConfig, apiKey: string | null):
       // providerOptions namespace (BASED-AI-PROFILE-PARAMS) — the model spreads that namespace's
       // object straight into the request body.
       const key = apiKey && apiKey.length > 0 ? apiKey : "not-needed";
-      const provider = createOpenAICompatible({ name: "openai-compatible", baseURL: config.baseUrl, apiKey: key });
+      // A blank model means "the server's loaded/default model". The SDK always serializes a
+      // `model` key, but single-model servers only apply their default when the key is *absent*
+      // (LM Studio treats `model: ""` as a lookup), so strip it from the outgoing body.
+      const blankModel = config.model.trim().length === 0;
+      const provider = createOpenAICompatible({
+        name: "openai-compatible",
+        baseURL: config.baseUrl,
+        apiKey: key,
+        ...(blankModel ? { fetch: modelStrippingFetch } : {}),
+      });
       return provider(config.model);
     }
     case "openai": {
@@ -85,6 +94,40 @@ export function resolveModel(config: ResolvableAiConfig, apiKey: string | null):
     }
   }
 }
+
+/**
+ * Remove an empty (or whitespace-only) `model` key from a JSON request body, leaving any other
+ * body — non-JSON, non-object, or one with a real model id — byte-for-byte untouched. Pure —
+ * unit-tested (BASED-AI-PROVIDER-WIRED).
+ */
+export function stripEmptyModelFromBody(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as Record<string, unknown>).model === "string" &&
+      ((parsed as Record<string, unknown>).model as string).trim() === ""
+    ) {
+      delete (parsed as Record<string, unknown>).model;
+      return JSON.stringify(parsed);
+    }
+  } catch {
+    // not JSON — leave it alone
+  }
+  return body;
+}
+
+/** Global fetch with stripEmptyModelFromBody applied to string request bodies. Bun's `typeof
+ *  fetch` carries a `preconnect` property, so the wrapper borrows the real one to satisfy it. */
+const modelStrippingFetch: typeof fetch = Object.assign(
+  (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (init && typeof init.body === "string") init = { ...init, body: stripEmptyModelFromBody(init.body) };
+    return fetch(input, init);
+  },
+  { preconnect: fetch.preconnect },
+);
 
 function requireKey(apiKey: string | null, kind: ProviderKind): string {
   if (!apiKey) throw new Error(`Provider "${kind}" requires an API key — set one on the profile (stored in Credential Manager)`);

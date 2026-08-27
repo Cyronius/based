@@ -8,6 +8,7 @@ import {
   resolveModel,
   resolveExecutionDefaults,
   resolveAiTimeouts,
+  stripEmptyModelFromBody,
   DEFAULT_AI_TIMEOUT_SECONDS,
   AI_RUN_TIMEOUT_MULTIPLIER,
 } from "@based/core";
@@ -52,6 +53,30 @@ describe("BASED-AI-PROVIDER-WIRED: resolveModel branches", () => {
 
   test.each(["openai", "azure-openai", "anthropic"] as const)("%s without a key throws naming the provider", (kind) => {
     expect(() => resolveModel({ ...base, kind, baseUrl: "https://x", deployment: "d" }, null)).toThrow(new RegExp(kind, "i"));
+  });
+
+  test("openai-compatible with a blank model still resolves (single-model local server)", () => {
+    const m = resolveModel({ ...base, kind: "openai-compatible", baseUrl: "http://localhost:1234/v1", model: "" }, null);
+    expect(m).toBeDefined();
+    expect((m as { modelId: string }).modelId).toBe("");
+  });
+
+  test("an empty model key is stripped from the request body", () => {
+    const body = JSON.stringify({ model: "", messages: [{ role: "user", content: "hi" }], stream: true });
+    expect(JSON.parse(stripEmptyModelFromBody(body))).toEqual({ messages: [{ role: "user", content: "hi" }], stream: true });
+  });
+
+  test("a whitespace-only model key is stripped too", () => {
+    expect(JSON.parse(stripEmptyModelFromBody(JSON.stringify({ model: "  ", stream: false })))).toEqual({ stream: false });
+  });
+
+  test("a non-empty model key is left untouched", () => {
+    const body = JSON.stringify({ model: "local-model", messages: [] });
+    expect(stripEmptyModelFromBody(body)).toBe(body);
+  });
+
+  test("a non-JSON body passes through verbatim", () => {
+    expect(stripEmptyModelFromBody("not json")).toBe("not json");
   });
 });
 

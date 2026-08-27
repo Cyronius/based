@@ -525,10 +525,13 @@ function AiProfileForm({
   }
   const kindFields = KIND_FIELDS[form.kind];
   const azure = form.kind === "azure-openai";
+  // Model is optional for openai-compatible: single-model local servers (LM Studio, llama.cpp)
+  // run their loaded model when the request carries none; blank means exactly that.
+  const modelRequired = form.kind === "openai" || form.kind === "anthropic";
   const canSave =
     form.name.trim() &&
     (!kindFields.urlRequired || form.baseUrl.trim()) &&
-    (azure ? (form.deployment ?? "").trim() : form.model.trim()) &&
+    (azure ? (form.deployment ?? "").trim() : !modelRequired || form.model.trim()) &&
     !paramsError;
   return (
     <div className="border border-line-soft rounded p-2 space-y-1.5 bg-ink-950/40">
@@ -552,7 +555,13 @@ function AiProfileForm({
       />
       <input
         className={field}
-        placeholder={azure ? "Model (optional — the deployment is what runs)" : "Model"}
+        placeholder={
+          azure
+            ? "Model (optional — the deployment is what runs)"
+            : modelRequired
+              ? "Model"
+              : "Model (optional — blank uses the server's loaded model)"
+        }
         value={form.model}
         onChange={(e) => setForm({ ...form, model: e.target.value })}
       />
@@ -688,6 +697,7 @@ function AiProfilesSection({ onEdit }: { onEdit: (id: string | "new") => void })
 function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => void }) {
   const aiProfiles = useStore((s) => s.aiProfiles);
   const saveAiProfile = useStore((s) => s.saveAiProfile);
+  const setActiveAiProfile = useStore((s) => s.setActiveAiProfile);
   const deleteAiProfile = useStore((s) => s.deleteAiProfile);
   const [form, setForm] = useState<AiProfileInput>(() => {
     const p = id === "new" ? undefined : aiProfiles.find((e) => e.id === id);
@@ -699,7 +709,10 @@ function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => v
   async function onSave() {
     const input = { ...form };
     if (!input.apiKey) delete input.apiKey; // blank on edit = keep the stored key
-    await saveAiProfile(input);
+    const saved = await saveAiProfile(input);
+    // A just-created profile is what the user wants to talk to next — activate it right away.
+    // Edits never steal activation.
+    if (id === "new") await setActiveAiProfile(saved.id);
     onClose();
   }
 
