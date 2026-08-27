@@ -59,6 +59,12 @@ displays fine.
 - Manual: profile with kind openai-compatible, blank model, LM Studio base URL → Save enabled,
   chat turn streams against the loaded model; the request LM Studio logs has no `model` field.
 
+## Rider (same PR)
+
+**Modified: BASED-AI-PROVIDER-PROFILES** — saving a *new* AI profile activates it immediately
+(`AiProfileEditor.onSave` calls `setActiveAiProfile` when creating); edits never change the
+active profile. Manual verification via the requirement's procedure.
+
 ## Delivery
 
 Branch `optional-model-name` off `main`, PR into `main`.

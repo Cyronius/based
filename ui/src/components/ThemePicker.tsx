@@ -697,6 +697,7 @@ function AiProfilesSection({ onEdit }: { onEdit: (id: string | "new") => void })
 function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => void }) {
   const aiProfiles = useStore((s) => s.aiProfiles);
   const saveAiProfile = useStore((s) => s.saveAiProfile);
+  const setActiveAiProfile = useStore((s) => s.setActiveAiProfile);
   const deleteAiProfile = useStore((s) => s.deleteAiProfile);
   const [form, setForm] = useState<AiProfileInput>(() => {
     const p = id === "new" ? undefined : aiProfiles.find((e) => e.id === id);
@@ -708,7 +709,10 @@ function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => v
   async function onSave() {
     const input = { ...form };
     if (!input.apiKey) delete input.apiKey; // blank on edit = keep the stored key
-    await saveAiProfile(input);
+    const saved = await saveAiProfile(input);
+    // A just-created profile is what the user wants to talk to next — activate it right away.
+    // Edits never steal activation.
+    if (id === "new") await setActiveAiProfile(saved.id);
     onClose();
   }
 
