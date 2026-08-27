@@ -1,13 +1,7 @@
-# Phase 2 of specs/based/plans/macos-port.md — prove the macOS toolchain works end to end.
-#
-# This produces a .dmg. It does NOT yet produce a *usable* app: file dialogs still shell out to
-# powershell.exe, there is no macOS menu (so Cmd+C/V do not work in the webview), and shortcuts are
-# still Ctrl-based. Those are Phases 3 and 4. The point of this workflow is to surface toolchain
-# failures — a missing darwin-arm64 native prebuild, the .bun store layout differing on a runner,
-# DMG bundling needing something the image lacks — before that work starts.
-#
-# Manually triggered on purpose: Phase 6 folds this into a tag-triggered release workflow that
-# builds both platforms. Until then, run it from the Actions tab.
+# The manual (workflow_dispatch) macOS build — a .dmg from any branch, for testing the port
+# without cutting a release. The tag-triggered release pipeline is release.yml (BASED-RELEASE-CI);
+# this stays as the way to hand-test macOS changes from a WIP branch, and mirrors the release
+# job's steps (including --frozen-lockfile) so a green run here means the release job will build.
 name: build (macOS)
 
 on:
@@ -16,8 +10,8 @@ on:
 jobs:
   build:
     # macos-latest is Apple Silicon, and arm64 is the only macOS target we ship (see the plan's
-    # "arm64 only" decision — macOS Tahoe 26 is Apple's last Intel release). Phase 6 should pin an
-    # explicit image instead of "latest" so a release is reproducible.
+    # "arm64 only" decision — macOS Tahoe 26 is Apple's last Intel release). Fine to float here;
+    # the release workflow pins its image (macos-15) so releases are reproducible.
     runs-on: macos-latest
     timeout-minutes: 45
 
@@ -34,11 +28,9 @@ jobs:
         with:
           workspaces: shell-tauri
 
-      # Plain install, not --frozen-lockfile: bun.lock was written on Windows and this is the first
-      # darwin resolve, so the optional per-platform native packages may legitimately differ.
-      # Phase 6 should tighten this once a macOS install is known-good.
+      # --frozen-lockfile mirrors release.yml — a green run here proves the release job's install.
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build UI
         run: bun run build:ui

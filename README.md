@@ -125,6 +125,8 @@ region into a grid, find nearest neighbours by cosine similarity, let the model 
 
 ## Install
 
+### Windows
+
 Download the latest `based-<version>-Setup.exe` from
 **[Releases](https://github.com/Cyronius/based/releases/latest)** and run it. Per-user install into
 `%LOCALAPPDATA%\Programs\based` — no administrator rights needed.
@@ -138,6 +140,33 @@ Download the latest `based-<version>-Setup.exe` from
 > ```
 
 Uninstalling leaves your data (`%APPDATA%\based`) and your saved credentials alone.
+
+### macOS (Apple Silicon)
+
+The recommended path is Homebrew, which skips the Gatekeeper friction entirely:
+
+```bash
+brew tap cyronius/based
+brew install --cask based --no-quarantine
+```
+
+Or download `based-<version>-macos-arm64.dmg` from
+**[Releases](https://github.com/Cyronius/based/releases/latest)** and drag **based** to
+Applications.
+
+> **macOS will claim the app "is damaged and can't be opened."** It isn't — the app is not
+> code-signed, and that's Gatekeeper's message for quarantined unsigned apps (since macOS 15 the
+> old right-click → Open bypass no longer works). Either allow it once under **System Settings →
+> Privacy & Security → Open Anyway**, or clear the quarantine flag yourself:
+>
+> ```bash
+> xattr -cr /Applications/based.app
+> ```
+>
+> Every release publishes the DMG's SHA-256 in its notes (`shasum -a 256 <file>` to verify).
+
+Data lives in `~/Library/Application Support/based`; credentials go to the macOS Keychain.
+Intel Macs aren't supported.
 
 ## Getting started
 

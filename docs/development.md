@@ -118,21 +118,24 @@ Same first three steps as Windows (`build:ui` → `bundle-core.ts` → `tauri bu
 (`libduckdb.dylib` present, `bun/bun` present and executable) so a misbuild fails at the runner
 instead of on a user's machine.
 
-The app this produces **is not usable yet** — file dialogs still shell out to `powershell.exe`,
-there is no macOS menu (so Cmd+C/V do nothing in the webview), and shortcuts are Ctrl-based. That
-work, and the tag-triggered release pipeline that will replace the manual trigger, is
+The port work this workflow existed to de-risk has landed: dialogs are relayed to the shell
+(`/api/shell/dialogs`), the macOS menu/lifecycle/file-open conventions are implemented, and
+shortcuts are platform-correct. What remains is verification on real hardware — Phase 7 of
 [specs/based/plans/macos-port.md](../specs/based/plans/macos-port.md).
 
 ## Cutting a release
 
 ```powershell
 .\scripts\release.ps1 patch            # or minor / major / -Version 1.0.0
-.\scripts\release.ps1 patch -DryRun    # build and draft everything, publish nothing
+.\scripts\release.ps1 patch -DryRun    # bump + changelog draft only, publish nothing
 ```
 
-Preflight (clean tree, on `main`, `gh` authenticated) → typecheck + tests → bump → build installer →
-draft a `CHANGELOG.md` section from the commit log and **stop for you to rewrite it** → commit, tag,
-push → `gh release create` with the `.exe` and its SHA-256.
+The local half: preflight (clean tree, on `main`) → bump → draft a `CHANGELOG.md` section from the
+commit log and **stop for you to rewrite it** → commit, tag, push. The tag push triggers
+[release.yml](../.github/workflows/release.yml), which typechecks, tests, builds the Windows
+installer (Inno Setup via choco) and the macOS `.dmg` on pinned runners, publishes one GitHub
+release with both artifacts + SHA-256s + per-platform install notes, and bumps the
+`Cyronius/homebrew-based` cask (needs the `TAP_PUSH_TOKEN` secret; skips with a warning if absent).
 
 Version bumping alone:
 
@@ -146,13 +149,10 @@ step — Cargo.toml feeds the exe's file-version metadata) and regenerates
 [core/src/version.ts](../core/src/version.ts), which is committed so a fresh clone typechecks
 without running the script first. The version reaches the status bar via `/api/health`.
 
-**Releases are still cut locally, not in CI.** Between Inno Setup, the Rust toolchain, and native
-modules whose bindings are selected from the build host's platform, a Windows runner is several
-fragile pieces at once. That is now changing from the other end: the macOS build already runs in
-Actions (above), and Phase 6 of the
-[macOS port plan](../specs/based/plans/macos-port.md) splits `release.ps1` at the build boundary —
-bump/changelog/tag stay local, and a tag push builds and publishes both platforms. `release.ps1`
-was written so those steps drop into a workflow largely unchanged.
+**Builds happen in CI, not locally.** `release.ps1` used to build the installer on this machine
+(Inno Setup + Rust toolchain required locally); Phase 6 of the
+[macOS port plan](../specs/based/plans/macos-port.md) split it at the build boundary, so releases
+are reproducible from the repository alone and both platforms build from the same tag.
 
 ### Note on PowerShell scripts
 

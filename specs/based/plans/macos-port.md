@@ -1,7 +1,8 @@
 # Plan: macOS port + CI release pipeline
 
-**Status:** in progress — **Phases 1–4 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
-macOS build workflow landed and green, `.dmg` artifact produced; dialogs relayed to the shell)
+**Status:** in progress — **Phases 1–6 complete**; only Phase 7 (verification on macOS hardware)
+remains. All new/modified requirements below are merged into `spec.md` except the Phase 7-deferred
+`BASED-DEV-CLEAN-SHUTDOWN` rewording.
 **Spec impact:** 6 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-MENU-MAC`,
 `BASED-WINDOW-LIFECYCLE-MAC`, `BASED-PACKAGE-MAC`, `BASED-INSTALLER-MAC`, `BASED-RELEASE-CI`),
 8 modified (`BASED-SECRET-STORE`, `BASED-DIALOG-OPEN-FILE`, `BASED-FILE-OPEN-SQL`,
@@ -201,56 +202,48 @@ and compile in the Phase 6 CI build. Menu items/lifecycle behavior verify on har
 
 ---
 
-### Phase 5 — Packaging and distribution (1.5 d)
+### ✅ Phase 5 — Packaging and distribution (done, tap repo pending)
 
-**5a. DMG.** Unlike Windows there is no staging step to hand-roll — Tauri places `bundle.resources`
-into `based.app/Contents/Resources` natively, and `resource_dir()` returns that path, so
-`spawn_core()`'s existing packaged-layout lookup works as-is. Configure DMG window
-background/layout in `tauri.conf.json` if desired; the default is acceptable.
+**5a. DMG** — nothing to build: Tauri places `bundle.resources` into
+`based.app/Contents/Resources` natively and `spawn_core()`'s packaged lookup works as-is. Default
+DMG layout accepted. Spec: **`BASED-PACKAGE-MAC`** added (self-contained bundle; translocation on
+the Phase 7 checklist).
 
-**5b. `.sql` association.** The Windows path is HKCU registry keys written by
-[`installer.iss`](../../../scripts/installer.iss). macOS is `CFBundleDocumentTypes` in `Info.plist`,
-declared via `tauri.conf.json`'s `bundle.macOS` config, with `LSHandlerRank: Alternate` so we
-register as an available handler without stealing the user's existing default — matching the
-non-destructive stance `BASED-SQL-ASSOC-WIN` already takes.
+**5b. `.sql` association** — [`shell-tauri/Info.plist`](../../../shell-tauri/Info.plist), merged
+into the generated plist by the Tauri bundler: `CFBundleDocumentTypes` for `sql` at
+`LSHandlerRank: Alternate` (register as available, never steal the default —
+`BASED-SQL-ASSOC-WIN`'s stance, now cross-referenced both ways). A custom Info.plist rather than
+`bundle.fileAssociations` because the config schema has no rank field.
 
-**5c. Homebrew tap.** A `homebrew-based` repo containing `Casks/based.rb` pointing at the release
-DMG. Bumped by the release workflow (Phase 6) so it never drifts from the latest tag. README install
-section gains the macOS block:
+**5c. Homebrew tap** — [`scripts/homebrew-cask.rb.tmpl`](../../../scripts/homebrew-cask.rb.tmpl)
+rendered ({{VERSION}}/{{SHA256}}) and pushed to `Cyronius/homebrew-based` by the release
+workflow. **Two manual setup steps remain for the user:** create the (public) `homebrew-based`
+repo, and add a `TAP_PUSH_TOKEN` fine-grained PAT secret (contents:write on the tap repo) to this
+repo — the workflow skips the bump with a warning until then, so releases don't block.
 
-```bash
-brew tap cyronius/based
-brew install --cask based --no-quarantine
-```
-
-**5d. Unsigned-install documentation.** For DMG downloaders, Gatekeeper shows *"'based' is damaged
-and can't be opened"*, and since macOS 15 the Control-click → Open bypass no longer works — the
-route is System Settings → Privacy & Security → Open Anyway, or `xattr -cr /Applications/based.app`.
-This must be in the README and the release notes template, worded as clearly as the existing
-SmartScreen note in [`release.ps1`](../../../scripts/release.ps1).
-
-One consequence worth noting: quarantined unsigned apps are subject to **App Translocation** (run
-from a randomized read-only path). `resource_dir()` stays self-consistent under translocation and
-all writes go to `~/Library/Application Support`, so this should be harmless — but it is on the
-Phase 7 checklist because "should be" is doing work in that sentence. The Homebrew path avoids it
-entirely.
+**5d. Unsigned-install documentation** — README gained the macOS install section (brew primary,
+DMG + Open Anyway / `xattr -cr` fallback); the release workflow's publish job writes the same
+instructions plus both SHA-256s into every release's notes. Spec: **`BASED-INSTALLER-MAC`** added.
 
 ---
 
-### Phase 6 — Release pipeline (1 d)
+### ✅ Phase 6 — Release pipeline (done, first tag will prove it)
 
-Split [`release.ps1`](../../../scripts/release.ps1) at the build boundary:
+[`release.ps1`](../../../scripts/release.ps1) split at the build boundary exactly as planned:
+local = preflight → bump → changelog draft **stopped for editing** → commit/tag/push; the tag
+triggers [`release.yml`](../../../.github/workflows/release.yml) — parallel `windows-2025`
+(typecheck, full test suite, `package-win.ps1` with Inno Setup via choco — `winget` isn't
+reliably usable on runners) and `macos-15` jobs (pinned images, per the Phase 2 note), each also
+asserting the tag matches `tauri.conf.json`'s version, then a publish job that assembles the
+release notes from the tag's CHANGELOG section + install instructions + checksums, creates ONE
+release with both artifacts, and bumps the cask (5c). Both CI installs are now
+`--frozen-lockfile`; [`build-macos.yml`](../../../.github/workflows/build-macos.yml) stays as the
+manual branch-testing build and mirrors the release job so a green dispatch proves the release
+install. Spec: **`BASED-RELEASE-CI`** added; `docs/development.md` rewritten accordingly.
 
-| Stays local | Moves to CI (tag-triggered) |
-|---|---|
-| bump ([`bump-version.ps1`](../../../scripts/bump-version.ps1), unchanged — `tauri.conf.json` remains the version source of truth), changelog draft + edit, commit, tag, push | typecheck, tests, Windows build (Inno Setup via `winget`), macOS build, checksum, `gh release create` with both artifacts, Homebrew cask bump |
-
-`.github/workflows/release.yml` on `push: tags: ['v*']`, two jobs (`windows-latest`,
-`macos-14`), both uploading to the same release.
-
-Secondary benefit: Windows releases become reproducible. Today they depend on whatever happens to be
-installed on one machine — [`docs/development.md`](../../../docs/development.md) says as much, and
-records "moving to GitHub Actions is tracked as future work." This closes that.
+**Known blocker for the first tag:** the full suite currently has one pre-existing failure on
+main (`BASED-CHAT-HISTORY-PICKER` thread-list test) — the release workflow's test gate will fail
+until it's fixed. It fails on clean main with no port changes; not introduced by this work.
 
 **Cost: $0.** Standard runners, including macOS, are free for public repositories.
 
@@ -321,10 +314,10 @@ restore, and the dock-reopen behavior.
 | ~~2 — First CI build~~ | ~~1 d~~ **done, run pending** | no |
 | ~~3 — Native dialogs~~ | ~~2 d~~ **done** | no (verify in 7) |
 | ~~4 — macOS UX conventions~~ | ~~2.5 d~~ **done** | no (verify in 7) |
-| 5 — Packaging + distribution | 1.5 d | no (verify in 7) |
-| 6 — Release pipeline | 1 d | no |
+| ~~5 — Packaging + distribution~~ | ~~1.5 d~~ **done** | no (verify in 7) |
+| ~~6 — Release pipeline~~ | ~~1 d~~ **done** | no |
 | 7 — Verification + WKWebView shakeout | 1–3 d | **yes** |
-| | **8–10 d remaining** | |
+| | **1–3 d remaining (Phase 7)** | |
 
 ## Out of scope
 

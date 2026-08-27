@@ -21,13 +21,15 @@ Connections (name, server, initial database, auth type, options) shall persist i
 - The stored record contains no password/client-secret material
 - The two search-profile ids round-trip, can be cleared back to `null`, and read as absent on a config saved without them
 
-### BASED-SECRET-STORE: Secrets in Windows Credential Manager
+### BASED-SECRET-STORE: Secrets in the OS keychain
 **Applies to:** based (core)
 **Test category:** integration
 
-SQL-login passwords and service-principal client secrets shall be stored in Windows Credential Manager keyed by connection id, retrievable by the core process, and deleted when the connection is deleted.
+SQL-login passwords and service-principal client secrets shall be stored in the OS credential
+store — Windows Credential Manager / macOS Keychain, via the same `@napi-rs/keyring` API — keyed
+by connection id, retrievable by the core process, and deleted when the connection is deleted.
 
-Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error. Blobs written by the earlier password path shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk.
+Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". The 2560-byte blob cap and the UTF-16 halving below are **Credential Manager limits, not Keychain limits** — but the byte encoding and the over-cap guard apply on every platform, both so a secret saved on one OS is sized the same on the other and because Windows is where the guard bites: Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error. Blobs written by the earlier password path (Windows-only history — no macOS build ever shipped it) shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk.
 
 **Acceptance criteria:**
 - `setSecret(id, s)` → `getSecret(id)` returns `s`
@@ -3160,6 +3162,24 @@ packaged-only failure — none reproduces under `bun run`.
   built UI; child-core handshake + LanceDB/DuckDB verified in the spike scorecard).
 - Tauri + Inno packaging pass pending a human run of the procedure above.
 
+### BASED-PACKAGE-MAC: macOS app bundle is self-contained
+**Applies to:** based (shell-tauri)
+**Test category:** manual
+
+Sibling to BASED-PACKAGE-WIN. On macOS, `bundle-core.ts` emits the same `dist-core/{core,ui,bun}`
+tree (with `libduckdb.dylib` as the DuckDB companion and an executable `bun` runtime — the exec
+bit is re-`chmod`ed at bundle time as insurance against a lost bit in artifact round-trips), and
+Tauri places `bundle.resources` into `based.app/Contents/Resources` natively — there is no
+staging step to hand-roll. `resource_dir()` returns that path, so `spawn_core()`'s packaged
+lookup works unchanged. All writes go to `~/Library/Application Support/based`, so the bundle
+stays self-consistent even under App Translocation (a quarantined unsigned app runs from a
+randomized read-only path).
+
+**Verification procedure (on macOS hardware — the Phase 7 checklist):**
+1. Install from the DMG onto a path with no repo checkout → launch → the full UI renders.
+2. Run a LanceDB query (exercises the DuckDB native stack + `libduckdb.dylib`).
+3. Repeat 1–2 with the quarantine flag still set (translocated run) after Open Anyway.
+
 ### BASED-INSTALLER-WIN: Windows installer
 **Applies to:** based (repo `scripts/`)
 **Test category:** manual
@@ -3190,6 +3210,54 @@ runtime logs), shortcuts, and all registry keys written at install; user data in
 - 2026-07-25 PASS (electrobun-era installer, steps 1–2; superseded by the Tauri packaging).
 - Tauri-based installer pass pending a human run of the procedure above.
 
+### BASED-INSTALLER-MAC: macOS distribution (DMG + Homebrew cask)
+**Applies to:** based (repo)
+**Test category:** manual
+
+Two install paths, both unsigned (a deliberate decision — see the macos-port plan):
+
+- **DMG** — built by CI (`bun x @tauri-apps/cli build` on a macOS runner), published on the
+  release as `based-<version>-macos-arm64.dmg` with its SHA-256 in the notes. Because the app is
+  unsigned, Gatekeeper shows *"'based' is damaged and can't be opened"*; since macOS 15 the
+  Control-click → Open bypass no longer works, so the documented routes are System Settings →
+  Privacy & Security → **Open Anyway**, or `xattr -cr /Applications/based.app`. This is documented
+  in the README install section and in every release's notes (the CI publish job writes it).
+- **Homebrew cask (primary)** — `brew tap cyronius/based && brew install --cask based
+  --no-quarantine` skips quarantine entirely. The tap repo (`Cyronius/homebrew-based`) holds
+  `Casks/based.rb`, rendered from `scripts/homebrew-cask.rb.tmpl` and pushed by the release
+  workflow on every tag, so the cask never drifts from the latest release.
+
+`.sql` association: `shell-tauri/Info.plist` (merged into the bundle's generated Info.plist by
+the Tauri bundler) declares a `CFBundleDocumentTypes` entry for `sql` at **`LSHandlerRank:
+Alternate`** — based registers as an *available* handler without stealing the user's existing
+default, matching BASED-SQL-ASSOC-WIN's non-destructive stance.
+
+**Verification procedure (on macOS hardware — the Phase 7 checklist):**
+1. Install from the DMG; confirm the "damaged" dialog appears and both documented bypasses work.
+2. `brew install --cask based --no-quarantine` from the tap → app launches with no Gatekeeper
+   friction; `brew upgrade` after the next release moves it forward.
+3. Right-click a `.sql` → Open With lists based; the previous default handler is unchanged;
+   double-click with based as chosen handler opens it as a tab (BASED-OPEN-SQL-ARGV).
+
+### BASED-RELEASE-CI: Tag-triggered two-platform release pipeline
+**Applies to:** based (repo)
+**Test category:** manual
+
+`scripts/release.ps1` owns only the local, human-in-the-loop half: preflight → version bump
+(`bump-version.ps1`, `tauri.conf.json` remains the version source of truth) → CHANGELOG section
+drafted from the commit log and **stopped for human editing** → commit, tag, push. The pushed
+`v*` tag triggers `.github/workflows/release.yml`: a Windows job (pinned image; typecheck, full
+test suite, `package-win.ps1` with Inno Setup from choco) and a macOS job (pinned image; the
+BASED-PACKAGE-MAC bundle-layout verification, `tauri build`, DMG) build in parallel; both jobs
+check that the tag matches `tauri.conf.json`'s version; a publish job then creates ONE GitHub
+release carrying both artifacts, their SHA-256s, the CHANGELOG section for that version, and the
+per-platform unsigned-install instructions, then bumps the Homebrew cask (skipping with a
+warning when the `TAP_PUSH_TOKEN` secret is absent, so a missing tap never blocks the release).
+
+**Verification procedure:** cut a release with `scripts/release.ps1`; confirm the workflow goes
+green, the release page shows both artifacts with install notes, and `Casks/based.rb` in the tap
+points at the new version with the DMG's real SHA-256.
+
 ### BASED-SQL-ASSOC-WIN: .sql "Open with" registration
 **Applies to:** based (installer)
 **Test category:** manual
@@ -3203,7 +3271,8 @@ user's existing default. All under HKCU: ProgID `based.sql` (friendly name, `Def
 exe receives argv (and the single-instance plugin forwards a second launch's argv to the
 primary), so the electrobun-era `based-open.exe` stub is gone; the shell still consumes
 `<dataDir>/pending-open.txt` so a stale stub-written registration keeps working across the
-upgrade (BASED-OPEN-SQL-ARGV).
+upgrade (BASED-OPEN-SQL-ARGV). The macOS counterpart — `CFBundleDocumentTypes` at
+`LSHandlerRank: Alternate`, the same never-steal-the-default stance — is BASED-INSTALLER-MAC.
 
 **Verification procedure:**
 1. Right-click a `.sql` → Open with → based is listed and opens the file; the previous default

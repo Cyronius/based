@@ -1,0 +1,23 @@
+# Traces: BASED-INSTALLER-MAC — template for Casks/based.rb in the Cyronius/homebrew-based tap.
+# Rendered and pushed by .github/workflows/release.yml (the "Bump Homebrew tap" step) on every
+# release, so the cask never drifts from the latest tag. {{VERSION}} and {{SHA256}} are the only
+# substitutions. Install: brew tap cyronius/based && brew install --cask based --no-quarantine
+cask "based" do
+  version "{{VERSION}}"
+  sha256 "{{SHA256}}"
+
+  url "https://github.com/Cyronius/based/releases/download/v#{version}/based-#{version}-macos-arm64.dmg"
+  name "based"
+  desc "AI-first database client for SQL Server, Snowflake, and LanceDB"
+  homepage "https://github.com/Cyronius/based"
+
+  depends_on arch: :arm64
+  depends_on macos: ">= :big_sur"
+
+  app "based.app"
+
+  # `brew uninstall` leaves user data alone (matching the Windows uninstaller); `brew zap` removes it.
+  zap trash: [
+    "~/Library/Application Support/based",
+  ]
+end
