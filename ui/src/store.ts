@@ -210,6 +210,8 @@ export interface AppState {
   explorerRoutineAction: "details" | "script-create";
   /** Query-editor keymap (BASED-EDITOR-VIM). */
   editorKeymap: "default" | "vim";
+  /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
+  sqlFileOpenTarget: "current-window" | "new-window";
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -220,6 +222,7 @@ export interface AppState {
   setRowPageSize(n: number): void;
   setExplorerActions(table: AppState["explorerTableAction"], routine: AppState["explorerRoutineAction"]): void;
   setEditorKeymap(k: AppState["editorKeymap"]): void;
+  setSqlFileOpenTarget(t: AppState["sqlFileOpenTarget"]): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
   loadConnections(): Promise<void>;
@@ -655,6 +658,7 @@ export const useStore = create<AppState>((set, get) => {
     explorerTableAction: "details",
     explorerRoutineAction: "details",
     editorKeymap: "default",
+    sqlFileOpenTarget: "current-window",
     capturePlan: false,
     captureStats: false,
 
@@ -673,6 +677,7 @@ export const useStore = create<AppState>((set, get) => {
           explorerTableAction: s.explorerTableAction ?? "details",
           explorerRoutineAction: s.explorerRoutineAction ?? "details",
           editorKeymap: s.editorKeymap ?? "default",
+          sqlFileOpenTarget: s.sqlFileOpenTarget ?? "current-window",
         });
       } catch {
         // keep the hinted theme if the server is unreachable
@@ -708,6 +713,11 @@ export const useStore = create<AppState>((set, get) => {
     setEditorKeymap(k) {
       set({ editorKeymap: k });
       void saveSettings({ editorKeymap: k }).catch(() => {});
+    },
+
+    setSqlFileOpenTarget(t) {
+      set({ sqlFileOpenTarget: t });
+      void saveSettings({ sqlFileOpenTarget: t }).catch(() => {});
     },
 
     toggleCapturePlan() {

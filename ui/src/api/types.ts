@@ -448,6 +448,8 @@ export interface AppSettings {
   explorerRoutineAction: "details" | "script-create";
   /** Query-editor keymap (BASED-EDITOR-VIM). */
   editorKeymap: "default" | "vim";
+  /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
+  sqlFileOpenTarget: "current-window" | "new-window";
 }
 
 // Traces: BASED-HISTORY-UI — mirrors core/src/storage/history.ts

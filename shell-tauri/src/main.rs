@@ -19,6 +19,9 @@ struct ShellState {
     base_url: String,
     token: String,
     windows_created: AtomicUsize,
+    /// (sid, window label), most-recently-focused first — the dispatch target for
+    /// current-window file opens (BASED-SQL-OPEN-TARGET). Maintained by window events.
+    focus_order: Mutex<Vec<(String, String)>>,
 }
 
 /// The spawned core process. None in dev mode, where dev:core runs separately (BASED_DEV_URL).
@@ -65,14 +68,16 @@ fn consume_pending_opens() -> Vec<String> {
         .collect()
 }
 
-fn create_window(app: &AppHandle, existing_sid: Option<String>, open_path: Option<String>) {
+fn create_window(app: &AppHandle, existing_sid: Option<String>, open_paths: &[String]) {
     let state = app.state::<ShellState>();
     let sid = existing_sid.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let n = state.windows_created.fetch_add(1, Ordering::SeqCst);
     let offset = (n % 8) as f64 * 40.0;
-    let open = open_path
-        .map(|p| format!("&open={}", urlencoding::encode(&p)))
-        .unwrap_or_default();
+    // BASED-OPEN-SQL-ARGV: one repeated `open=` param per file — a whole batch rides one window.
+    let open: String = open_paths
+        .iter()
+        .map(|p| format!("&open={}", urlencoding::encode(p)))
+        .collect();
     let url: tauri::Url = match format!(
         "{}/#token={}&sid={}{}",
         state.base_url, state.token, sid, open
@@ -100,21 +105,98 @@ fn create_window(app: &AppHandle, existing_sid: Option<String>, open_path: Optio
         }
     };
 
+    state
+        .focus_order
+        .lock()
+        .unwrap()
+        .insert(0, (sid.clone(), label.clone()));
+
     // Destroyed (not CloseRequested) so programmatic closes also release the core session.
     let base_url = state.base_url.clone();
     let token = state.token.clone();
-    win.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Destroyed) {
+    let app_handle = app.clone();
+    win.on_window_event(move |event| match event {
+        WindowEvent::Focused(true) => {
+            if let Some(state) = app_handle.try_state::<ShellState>() {
+                let mut order = state.focus_order.lock().unwrap();
+                if let Some(pos) = order.iter().position(|(s, _)| s == &sid) {
+                    let entry = order.remove(pos);
+                    order.insert(0, entry);
+                }
+            }
+        }
+        WindowEvent::Destroyed => {
+            if let Some(state) = app_handle.try_state::<ShellState>() {
+                state.focus_order.lock().unwrap().retain(|(s, _)| s != &sid);
+            }
             let close = format!("{base_url}/api/session/close?sid={sid}&token={token}");
             std::thread::spawn(move || {
                 let _ = ureq::post(&close).timeout(HTTP_TIMEOUT).call();
             });
         }
+        _ => {}
     });
 
     if std::env::var("BASED_DEVTOOLS").as_deref() == Ok("1") {
         win.open_devtools();
     }
+}
+
+/// BASED-SQL-OPEN-TARGET: where a file-open batch lands, read fresh per batch so a settings
+/// change applies without a restart. Any failure means the default.
+fn fetch_open_target(base_url: &str, token: &str) -> String {
+    let url = format!("{base_url}/api/settings?token={token}");
+    let fallback = || "current-window".to_string();
+    let Ok(resp) = ureq::get(&url).timeout(HTTP_TIMEOUT).call() else {
+        return fallback();
+    };
+    let Ok(body) = resp.into_string() else {
+        return fallback();
+    };
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("sqlFileOpenTarget")
+                .and_then(|s| s.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(fallback)
+}
+
+/// Send one deduped file-open batch where the setting says (BASED-SQL-OPEN-TARGET): as tabs in the
+/// last-focused window (relayed through core, since the page has no Tauri IPC), or into ONE new
+/// window carrying the whole batch. Runs on the batcher thread.
+fn dispatch_open_batch(app: &AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let state = app.state::<ShellState>();
+    let base_url = state.base_url.clone();
+    let token = state.token.clone();
+    let front = state.focus_order.lock().unwrap().first().cloned();
+    drop(state);
+    if fetch_open_target(&base_url, &token) == "current-window" {
+        if let Some((sid, label)) = front {
+            let body = serde_json::json!({ "sid": sid, "paths": paths }).to_string();
+            let url = format!("{base_url}/api/open-files?token={token}");
+            let sent = ureq::post(&url)
+                .timeout(HTTP_TIMEOUT)
+                .set("content-type", "application/json")
+                .send_string(&body);
+            if sent.is_ok() {
+                let app2 = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(w) = app2.get_webview_window(&label) {
+                        let _ = w.set_focus();
+                    }
+                });
+                return;
+            }
+            // Relay failed — fall through to a new window rather than dropping the open.
+        }
+    }
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || create_window(&app2, None, &paths));
 }
 
 /// BASED-WINDOW-RESTORE: sids that were still open when the app last exited.
@@ -213,7 +295,7 @@ fn spawn_core(app: &tauri::App) -> Result<(CoreInfo, Child), String> {
                 let parsed: serde_json::Value = serde_json::from_str(rest).unwrap_or_default();
                 if parsed.get("type").and_then(|t| t.as_str()) == Some("new-window") {
                     let h = handle.clone();
-                    let _ = handle.run_on_main_thread(move || create_window(&h, None, None));
+                    let _ = handle.run_on_main_thread(move || create_window(&h, None, &[]));
                 }
             } else {
                 println!("[core] {line}");
@@ -244,10 +326,18 @@ fn main() {
         .chain(consume_pending_opens())
         .collect();
 
+    // BASED-OPEN-SQL-ARGV: file-open batching. Explorer launches one process per selected file, so
+    // one multi-select arrives as N near-simultaneous single-instance callbacks — they all feed
+    // this channel, and a batcher thread (spawned in setup, once core's URL is known) accumulates
+    // until ~300ms of silence before dispatching once. The channel needs no Tauri state, so a
+    // callback firing before setup completes is safe.
+    let (open_tx, open_rx) = mpsc::channel::<Vec<String>>();
+    let cb_tx = open_tx.clone();
+
     tauri::Builder::default()
         // Single-instance at the OS level: a second launch fires this callback in the primary with
         // the secondary's argv, then exits.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        .plugin(tauri_plugin_single_instance::init(move |app, argv, cwd| {
             let mut files: Vec<String> = argv
                 .iter()
                 .skip(1)
@@ -264,11 +354,10 @@ fn main() {
                 .collect();
             files.extend(consume_pending_opens());
             if files.is_empty() {
-                create_window(app, None, None);
+                // A plain re-launch still opens a bare window immediately — no batching delay.
+                create_window(app, None, &[]);
             } else {
-                for f in files {
-                    create_window(app, None, Some(f));
-                }
+                let _ = cb_tx.send(files);
             }
         }))
         .setup(move |app| {
@@ -286,25 +375,42 @@ fn main() {
                 base_url: base_url.clone(),
                 token: token.clone(),
                 windows_created: AtomicUsize::new(0),
+                focus_order: Mutex::new(Vec::new()),
             });
             app.manage(CoreChild(Mutex::new(child)));
 
-            // Restore ordering: persisted sids first, then explicit file-open requests, and a bare
-            // window only if neither produced one — so a launch never opens zero windows.
+            // Restore ordering: persisted sids first, then the file-open batch (via the batcher, so
+            // a cold multi-select's sibling processes coalesce with the primary's own argv), and a
+            // bare window only if neither produced one — so a launch never opens zero windows.
             let handle = app.handle().clone();
             let restorable: Vec<String> = fetch_persisted_sids(&base_url, &token)
                 .into_iter()
                 .filter(|s| s != "default")
                 .collect();
             for sid in &restorable {
-                create_window(&handle, Some(sid.clone()), None);
+                create_window(&handle, Some(sid.clone()), &[]);
             }
-            for p in &open_requests {
-                create_window(&handle, None, Some(p.clone()));
+            if !open_requests.is_empty() {
+                let _ = open_tx.send(open_requests.clone());
             }
             if restorable.is_empty() && open_requests.is_empty() {
-                create_window(&handle, None, None);
+                create_window(&handle, None, &[]);
             }
+
+            // The batcher: block for a first chunk, keep accumulating until 300ms of silence,
+            // dedupe preserving order, dispatch, repeat.
+            let batcher_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                while let Ok(first) = open_rx.recv() {
+                    let mut batch = first;
+                    while let Ok(more) = open_rx.recv_timeout(Duration::from_millis(300)) {
+                        batch.extend(more);
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    batch.retain(|p| seen.insert(p.clone()));
+                    dispatch_open_batch(&batcher_handle, batch);
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

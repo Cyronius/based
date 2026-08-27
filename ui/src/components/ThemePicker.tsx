@@ -55,6 +55,8 @@ function GeneralTab() {
   const setExplorerActions = useStore((s) => s.setExplorerActions);
   const editorKeymap = useStore((s) => s.editorKeymap);
   const setEditorKeymap = useStore((s) => s.setEditorKeymap);
+  const sqlFileOpenTarget = useStore((s) => s.sqlFileOpenTarget);
+  const setSqlFileOpenTarget = useStore((s) => s.setSqlFileOpenTarget);
 
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
@@ -118,6 +120,21 @@ function GeneralTab() {
           <option value="script-create">Script as create</option>
         </select>
       </label>
+
+      {/* Traces: BASED-SQL-OPEN-TARGET — where an OS .sql file-open lands. */}
+      <div className="ledger-label pt-2">Opening .sql files</div>
+      <select
+        className={selectCls}
+        value={sqlFileOpenTarget}
+        onChange={(e) => setSqlFileOpenTarget(e.target.value as typeof sqlFileOpenTarget)}
+      >
+        <option value="current-window">In the last-used window</option>
+        <option value="new-window">In a new window</option>
+      </select>
+      <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
+        Where a .sql file opened from Explorer lands. Selecting several files at once always opens them together in one
+        window.
+      </p>
     </div>
   );
 }

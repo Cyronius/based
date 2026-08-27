@@ -3190,28 +3190,66 @@ upgrade (BASED-OPEN-SQL-ARGV).
 - 2026-07-25 PASS (electrobun-era stub registration; superseded by the direct-exe verb).
 - Direct `based-shell.exe` verb pass pending a human run of the procedure above.
 
-### BASED-OPEN-SQL-ARGV: Opening a .sql path at launch
+### BASED-OPEN-SQL-ARGV: Opening .sql paths at launch
 **Applies to:** based (shell + ui)
 **Test category:** manual
 
-A launch asked to open files (direct argv paths, or leftover lines in
-`<dataDir>/pending-open.txt` from an electrobun-era stub registration) opens one window per
-file with `open=<path>` in the URL hash; the UI (BASED-FILE-OPEN-SQL's `openSqlFile`) loads it
-into a query tab — titled by file name, `filePath` set — as soon as the window has a connected
-session (fresh windows wait for the user's first connect; restored windows fire right after
-restore). File-open windows are additive to BASED-WINDOW-RESTORE. If an instance is already
-running, the OS-level second launch fires the Tauri single-instance plugin's callback in the
-primary with the secondary's argv (relative paths resolved against the secondary's cwd) and the
-secondary exits; the primary opens one window per existing file, or a plain window when the
-launch carried no files.
+File-open requests — direct argv paths, argv forwarded by the Tauri single-instance plugin from
+a second launch (relative paths resolved against the secondary's cwd; the secondary exits), and
+leftover lines in `<dataDir>/pending-open.txt` from an electrobun-era stub registration —
+coalesce in the shell into one batch: Windows Explorer launches one process per selected file,
+so the shell accumulates arriving file lists until ~300ms of silence, then dedupes and
+dispatches the batch once. A batch opens **at most one window**: per BASED-SQL-OPEN-TARGET it
+either lands as tabs in the last-focused window, or opens ONE new window carrying every path as
+a repeated `open=<path>` URL-hash param. The UI opens each `open=` path (BASED-FILE-OPEN-SQL's
+`openSqlFile`) into a query tab — titled by file name, `filePath` set — as soon as the window
+has a connected session (fresh windows wait for the user's first connect; restored windows fire
+right after restore); duplicates dedupe per window by `filePath`. File-open windows are additive
+to BASED-WINDOW-RESTORE. A second launch with no files still opens a plain window immediately.
 
 **Verification procedure:**
-1. App not running: double-click a `.sql` → app starts, window opens; after connecting, the tab
-   shows the file's content and name.
-2. App running: double-click another `.sql` → a new window in the same instance (no second
-   process); no blank extra windows on rapid multi-double-click.
+1. App not running: multi-select 3 `.sql` files → Enter → app starts with ONE window carrying
+   them; after connecting, three tabs show the files' content and names.
+2. App running (new-window mode): multi-select 3 `.sql` files → Enter → ONE new window in the
+   same instance with three tabs; no blank extra windows.
+3. App running (current-window mode): double-click a `.sql` → it opens as a tab in the
+   last-focused window, which comes to the front.
 
 - 2026-07-25 PASS (electrobun-era stub flow; superseded by native argv).
 - 2026-07-31 PASS (Tauri spike: argv path opened a window per file; single-instance plugin
-  forwarded a second launch's argv to the primary. In-tab content rendering after connect
-  pending a human pass).
+  forwarded a second launch's argv to the primary; superseded by batched at-most-one-window
+  dispatch).
+- Batched dispatch pass pending a human run of the procedure above.
+
+### BASED-SQL-OPEN-TARGET: Where an OS file-open lands
+**Applies to:** based (shell + core + ui)
+**Test category:** integration (core relay + setting) / manual (shell dispatch)
+
+The `sqlFileOpenTarget` setting (`"current-window"` | `"new-window"`, default
+`"current-window"`) decides where a file-open batch lands. The shell reads it from
+`GET /api/settings` per batch, defaulting to current-window on any error, and tracks window
+focus order itself (`WindowEvent::Focused`); multi-selected files always share one window in
+both modes (BASED-OPEN-SQL-ARGV).
+
+Current-window dispatch routes through core, because windows are External-URL webviews with no
+Tauri IPC: the shell POSTs `{sid, paths}` to `/api/open-files` and focuses that window; core
+relays an `{type: "open-files", paths}` event over the sid's SSE stream, **buffering the batch
+until that sid's SSE stream attaches** (a restored window's page may not have booted yet) and
+flushing it exactly once. The UI queues the paths and opens them sequentially once the window
+has a connected session. With no window open (or in new-window mode), the shell opens one new
+window with the whole batch in the hash.
+
+The Settings → General control ("Opening .sql files") offers "In the last-used window" / "In a
+new window".
+
+**Acceptance criteria:**
+- A fresh settings read includes `sqlFileOpenTarget: "current-window"`; a saved
+  `"new-window"` round-trips
+- `POST /api/open-files` with an attached SSE reader for the sid delivers one `open-files`
+  event with the paths; another sid's stream sees nothing
+- With no SSE client attached, the batch is buffered and flushed exactly once when the sid's
+  stream attaches (a second attach gets nothing)
+- Empty or missing `paths` → 400
+
+**Verification (manual, shell half):** procedure steps 1–3 of BASED-OPEN-SQL-ARGV, run in both
+modes via Settings → General.

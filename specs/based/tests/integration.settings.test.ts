@@ -95,6 +95,23 @@ describe("BASED-SETTINGS: app settings persistence", () => {
     db.close();
   });
 
+  // Traces: BASED-SQL-OPEN-TARGET — the file-open target rides the same merge-over-defaults row;
+  // the shell reads it fresh per batch, so this round-trip is the whole settings half.
+  test("sqlFileOpenTarget defaults to current-window and round-trips", async () => {
+    const fresh = (await (await api("/api/settings")).json()) as { sqlFileOpenTarget: string };
+    expect(fresh.sqlFileOpenTarget).toBe("current-window");
+
+    const saved = (await (
+      await api("/api/settings", { method: "POST", body: JSON.stringify({ sqlFileOpenTarget: "new-window" }) })
+    ).json()) as { sqlFileOpenTarget: string; editorKeymap: string };
+    expect(saved.sqlFileOpenTarget).toBe("new-window");
+    expect(saved.editorKeymap).toBe("vim"); // prior test's value — untouched by this patch
+
+    const db = openDb(dbPath);
+    expect(new SettingsStore(db).get().sqlFileOpenTarget).toBe("new-window");
+    db.close();
+  });
+
   test("a partial patch merges over existing settings", () => {
     const db = openDb(dbPath);
     const store = new SettingsStore(db);
