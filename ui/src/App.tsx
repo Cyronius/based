@@ -13,6 +13,7 @@ import { DocsView } from "./components/DocsView";
 import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { NewTableDialog } from "./components/NewTableDialog";
 import { IconButton } from "./components/IconButton";
 
 // BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries `open=<path>` in the hash.
@@ -244,6 +245,7 @@ export function App() {
       </div>
       <StatusBar />
       {dialog.mode !== "closed" && <ConnectionDialog />}
+      <NewTableDialog />
     </div>
   );
 }

@@ -11,13 +11,14 @@
 // Imports capiToolDefs rather than capiTools: the schemas and the capability policy are deliberately
 // free of React/store/monaco so they can be asserted here, and they are what the model actually sees.
 import { describe, expect, test } from "bun:test";
-import { capiToolDefs, filterToolsByCapabilities, WRITE_ONLY_TOOLS } from "../../../ui/src/agent/capiToolDefs";
+import { capiToolDefs, filterToolsByCapabilities, TOOL_REQUIRED_CAPABILITY } from "../../../ui/src/agent/capiToolDefs";
 import type { EngineCapabilities } from "../../../ui/src/api/types";
 
 const WRITABLE: EngineCapabilities = {
   sql: true,
   search: false,
   write: true,
+  createTable: false,
   orderedBrowse: true,
   script: true,
   relations: true,
@@ -46,6 +47,14 @@ const READ_ONLY: EngineCapabilities = {
   takeByKey: true,
 };
 
+// Traces: BASED-AGENT-LANCE-CREATE — local LanceDB: rows read-only, but table creation exists.
+const LANCE_LOCAL: EngineCapabilities = {
+  ...READ_ONLY,
+  variant: "lancedb-local",
+  sql: true,
+  createTable: true,
+};
+
 const offered = (caps: EngineCapabilities | null) => Object.keys(filterToolsByCapabilities(capiToolDefs, caps));
 
 describe("BASED-AGENT-SURFACE-VARIANT: frontend tools are capability-filtered", () => {
@@ -59,12 +68,24 @@ describe("BASED-AGENT-SURFACE-VARIANT: frontend tools are capability-filtered", 
     expect(offered(READ_ONLY)).not.toContain("import_csv");
   });
 
-  test("every write-only tool named by the policy actually exists", () => {
+  test("every tool named by the capability policy actually exists", () => {
     // Otherwise the policy silently stops covering a renamed tool and it leaks back onto read-only
     // connections — the original bug, one rename later.
-    for (const name of WRITE_ONLY_TOOLS) {
+    for (const name of Object.keys(TOOL_REQUIRED_CAPABILITY)) {
       expect(Object.keys(capiToolDefs)).toContain(name);
     }
+  });
+
+  // Traces: BASED-AGENT-LANCE-CREATE — create_table follows its own narrow capability, not `write`.
+  test("create_table is offered exactly where the capability is true", () => {
+    expect(offered(LANCE_LOCAL)).toContain("create_table");
+    expect(offered(READ_ONLY)).not.toContain("create_table"); // lance cloud: createTable false
+    expect(offered(WRITABLE)).not.toContain("create_table"); // mssql creates tables via run_mutation DDL
+  });
+
+  test("a createTable connection still never sees the row-write tools", () => {
+    expect(offered(LANCE_LOCAL)).not.toContain("run_mutation");
+    expect(offered(LANCE_LOCAL)).not.toContain("import_csv");
   });
 
   test("the workspace tools survive on every connection", () => {

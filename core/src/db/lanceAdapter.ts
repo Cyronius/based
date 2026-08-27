@@ -14,6 +14,7 @@ import { DUCKDB_DIALECT, type SqlDialect } from "./dialect";
 import type { SecretProvider } from "./entra";
 import { DEFAULT_ROW_CAP } from "./rowcap";
 import { serializeLanceValue } from "./lanceSerialize";
+import { buildLanceSchema, type LanceColumnSpec } from "./lanceSchema";
 import { LanceSqlBridge } from "./lanceSql";
 import { embedQuery } from "./embeddings";
 import { rerank } from "./reranker";
@@ -67,6 +68,10 @@ export class LanceDbAdapter implements DatabaseAdapter {
       sql: !this.isCloud(),
       search: true,
       write: false,
+      // Rows stay read-only, but local connections can create empty tables (and base-folder
+      // sub-databases) — BASED-LANCE-CREATE-TABLE. Cloud supports it in the SDK but is untestable
+      // here, so it stays off until someone can verify it.
+      createTable: !this.isCloud(),
       // Lance is an unordered engine (readTablePage has no stable ORDER BY) — no server-side
       // sort browse (BASED-TABLE-ORDERBY). Filtering is a different question: a `where` predicate
       // needs no ordering, and it is the ONLY way to narrow rows on a cloud connection.
@@ -155,6 +160,12 @@ export class LanceDbAdapter implements DatabaseAdapter {
           // dir is itself a LanceDB database.
           this.conn = direct;
           this.baseFolderDbs = null;
+        } else if (this.isEmptyDir(dir)) {
+          // Traces: BASED-LANCE-CONNECT — a truly empty directory bootstraps as an empty single-db
+          // database so a brand-new database can be built from nothing (BASED-LANCE-CREATE-TABLE).
+          // A populated non-Lance directory still errors below.
+          this.conn = direct;
+          this.baseFolderDbs = null;
         } else {
           // Traces: BASED-LANCE-BASEFOLDER — dir has no tables of its own; treat it as a base folder
           // and scan its subdirectories for ones that are themselves valid LanceDB databases.
@@ -196,6 +207,14 @@ export class LanceDbAdapter implements DatabaseAdapter {
       }
     }
     return found;
+  }
+
+  private isEmptyDir(dir: string): boolean {
+    try {
+      return readdirSync(dir).length === 0;
+    } catch {
+      return false;
+    }
   }
 
   private closeConn(conn: lancedb.Connection): void {
@@ -800,5 +819,61 @@ export class LanceDbAdapter implements DatabaseAdapter {
   // Read-only in this build (capabilities.write is false).
   async runCommands(_commands: DbCommand[]): Promise<CommandResult> {
     return { rowsAffected: [], error: "LanceDB connections are read-only in this build." };
+  }
+
+  // Traces: BASED-LANCE-CREATE-TABLE — the one write this build allows: creating an EMPTY table
+  // with an explicit schema (createEmptyTable, default mode "create" so an existing name errors,
+  // never overwrites). Never from seed rows: row inference maps every JS number to Float64 and
+  // errors on dates, and with no delete in this build a junk seed row would be permanent.
+  async createTable(spec: { name: string; folder?: string; columns: LanceColumnSpec[] }): Promise<{ columns: TableColumn[] }> {
+    if (this.isCloud()) throw new Error("Creating tables on LanceDB Cloud is not supported in this build.");
+    const name = spec.name?.trim();
+    if (!name) throw new Error("Table name is required.");
+    if (/[\\/]/.test(name) || name.startsWith(".")) throw new Error(`Invalid table name "${name}".`);
+    const schema = buildLanceSchema(spec.columns);
+
+    const folder = spec.folder?.trim() || undefined;
+    let conn: lancedb.Connection;
+    let newFolder: string | null = null;
+    if (this.baseFolderDbs) {
+      if (!folder) throw new Error("This is a base-folder connection — name the folder to create the table in.");
+      const existing = this.baseFolderDbs.get(folder);
+      if (existing) {
+        conn = existing.conn;
+      } else {
+        if (/[\\/]/.test(folder) || folder.startsWith(".")) throw new Error(`Invalid folder name "${folder}".`);
+        if (LANCE_RESERVED_DIR_NAMES.has(folder)) {
+          throw new Error(`"${folder}" is a reserved LanceDB directory name and cannot be a folder.`);
+        }
+        if (folder.toLowerCase().endsWith(".lance")) {
+          throw new Error(`Folder names cannot end with ".lance" — that suffix marks a table directory.`);
+        }
+        if (!this.localDir) throw new Error("Not connected");
+        conn = await lancedb.connect(join(this.localDir, folder));
+        newFolder = folder;
+      }
+    } else {
+      if (folder) throw new Error("This connection has no folders — omit `folder`.");
+      conn = this.requireConn();
+    }
+
+    if ((await conn.tableNames()).includes(name)) {
+      throw new Error(`Table "${name}" already exists${folder ? ` in folder "${folder}"` : ""}.`);
+    }
+    await conn.createEmptyTable(name, schema as never);
+
+    // Keep this session's snapshots honest: the base-folder table list feeds listObjects(), and the
+    // DuckDB bridge ATTACHed the directory layout at boot (a new folder needs a new ATTACH) — other
+    // windows' sessions stay stale until they reconnect.
+    if (this.baseFolderDbs && folder) {
+      if (newFolder) this.baseFolderDbs.set(newFolder, { conn, tables: [name] });
+      else {
+        const entry = this.baseFolderDbs.get(folder)!;
+        if (!entry.tables.includes(name)) entry.tables.push(name);
+      }
+    }
+    await this.sqlBridge?.close().catch(() => {});
+    this.sqlBridge = null;
+    return { columns: await this.getTableColumns(folder ?? "", name) };
   }
 }

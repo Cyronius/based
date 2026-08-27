@@ -179,6 +179,9 @@ export interface EngineCapabilities {
   sql: boolean;
   search: boolean;
   write: boolean;
+  /** Table creation (BASED-LANCE-CREATE-TABLE) — narrower than `write`: local LanceDB creates
+   *  empty tables while rows stay read-only. */
+  createTable: boolean;
   /** Server-side ORDER BY / WHERE on table browse (BASED-TABLE-ORDERBY). */
   orderedBrowse: boolean;
   /** Object DDL scripting (BASED-TABLE-DETAILS / BASED-SCRIPT-API). */
@@ -371,6 +374,8 @@ export interface EmbeddingProfile {
   baseUrl: string;
   model: string;
   hasKey: boolean;
+  /** Output dimension of `model` (BASED-LANCE-EMBED-DIM) — null until first use back-fills it. */
+  dimension?: number | null;
   createdAt: string;
   updatedAt: string;
 }

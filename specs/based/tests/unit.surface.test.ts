@@ -32,6 +32,7 @@ const MSSQL: EngineCapabilities = {
   sql: true,
   search: false,
   write: true,
+  createTable: false,
   orderedBrowse: true,
   script: true,
   relations: true,
@@ -49,6 +50,7 @@ const LANCE_LOCAL: EngineCapabilities = {
   sql: true,
   search: true,
   write: false,
+  createTable: true,
   orderedBrowse: false,
   script: false,
   relations: false,
@@ -69,7 +71,7 @@ const LANCE_BASEFOLDER: EngineCapabilities = {
 };
 
 /** Cloud is the sharp case: no SQL at all. */
-const LANCE_CLOUD: EngineCapabilities = { ...LANCE_LOCAL, sql: false, variant: "lancedb-cloud" };
+const LANCE_CLOUD: EngineCapabilities = { ...LANCE_LOCAL, sql: false, createTable: false, variant: "lancedb-cloud" };
 
 /** The parameters a tool actually advertises to the model. */
 function paramsOf(tool: unknown): string[] {
@@ -293,6 +295,15 @@ describe("BASED-AGENT-SURFACE-VARIANT: descriptions are unconditionally true", (
     // SQL Server keeps the propose-for-approval doctrine.
     expect(prose(MSSQL)).toMatch(/\brun_mutation\b/);
   });
+
+  // Traces: BASED-AGENT-LANCE-CREATE — the briefing mentions create_table exactly where it exists.
+  test("the briefing names create_table iff the capability is true", () => {
+    expect(prose(LANCE_LOCAL)).toMatch(/\bcreate_table\b/);
+    expect(prose(LANCE_BASEFOLDER)).toMatch(/\bcreate_table\b/);
+    expect(prose(LANCE_CLOUD)).not.toMatch(/\bcreate_table\b/);
+    // Rows stay read-only either way, and the briefing still says so.
+    expect(prose(LANCE_LOCAL)).toMatch(/read-only/i);
+  });
 });
 
 describe("BASED-LANCE-AGENT-SURFACE: skills stay engine-filtered", () => {
@@ -384,6 +395,7 @@ const SNOWFLAKE: EngineCapabilities = {
   sql: true,
   search: false,
   write: true,
+  createTable: false,
   orderedBrowse: true,
   script: true,
   relations: true,

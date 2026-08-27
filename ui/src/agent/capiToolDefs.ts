@@ -12,10 +12,16 @@
 import type { StandardTool } from "@itkennel/lm-ag-ui";
 import type { EngineCapabilities } from "../api/types";
 
-/** Tools that propose a change to the database. Meaningless — and actively misleading — on a
- *  connection that cannot accept writes: the agent offers a fix, the user approves, the server
- *  refuses, and the agent looks incompetent for having offered. */
-export const WRITE_ONLY_TOOLS = ["run_mutation", "import_csv"] as const;
+/** Each proposal tool's required capability. A tool that proposes a change the connection cannot
+ *  accept is meaningless — and actively misleading: the agent offers, the user approves, the
+ *  server refuses, and the agent looks incompetent for having offered. create_table follows its
+ *  own narrow capability rather than `write` (BASED-AGENT-LANCE-CREATE): local LanceDB creates
+ *  tables while rows stay read-only, and SQL engines create tables through run_mutation DDL. */
+export const TOOL_REQUIRED_CAPABILITY = {
+  run_mutation: "write",
+  import_csv: "write",
+  create_table: "createTable",
+} as const satisfies Partial<Record<string, keyof EngineCapabilities>>;
 
 export const capiToolDefs = {
   list_tabs: {
@@ -93,6 +99,47 @@ export const capiToolDefs = {
     },
   },
 
+  // Traces: BASED-AGENT-LANCE-CREATE — Lance writes are SDK calls, not SQL, so table creation gets
+  // its own proposal tool + approval card instead of riding run_mutation.
+  create_table: {
+    name: "create_table",
+    description:
+      "Propose creating a brand-new empty LanceDB table. Shows the user an approval card with the table name, target folder, and column list; the table is created only if the user approves. The table starts empty and rows cannot be inserted afterwards — this connection's rows are read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "New table name (letters, digits, underscores; not starting with a digit)" },
+        folder: {
+          type: "string",
+          description:
+            "Base folder to create in (base-folder connections only): an existing folder, or a new name to create a new folder-database",
+        },
+        columns: {
+          type: "array",
+          description: "Column definitions — at least one",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Column name (letters, digits, underscores)" },
+              type: {
+                type: "string",
+                enum: ["string", "int", "float", "bool", "date", "vector"],
+                description: "Column type",
+              },
+              dim: {
+                type: "integer",
+                description: "Vector dimension — required for vector columns; match the embedding model that will fill it",
+              },
+            },
+            required: ["name", "type"],
+          },
+        },
+        reason: { type: "string", description: "Short explanation of why this table is needed" },
+      },
+      required: ["name", "columns"],
+    },
+  },
+
   run_mutation: {
     name: "run_mutation",
     description:
@@ -110,13 +157,18 @@ export const capiToolDefs = {
 
 export type CapiToolName = keyof typeof capiToolDefs;
 
-/** Drop the tools this connection cannot honour. Null capabilities (not yet connected) keeps
- *  everything: there is nothing to gate on yet, and no run can happen anyway. */
+/** Drop the tools whose required capability this connection lacks. Null capabilities (not yet
+ *  connected) keeps everything: there is nothing to gate on yet, and no run can happen anyway. */
 export function filterToolsByCapabilities<T>(
   tools: Record<string, T>,
   capabilities: EngineCapabilities | null,
 ): Record<string, T> {
-  if (!capabilities || capabilities.write) return tools;
-  const drop = new Set<string>(WRITE_ONLY_TOOLS);
-  return Object.fromEntries(Object.entries(tools).filter(([name]) => !drop.has(name)));
+  if (!capabilities) return tools;
+  const required = TOOL_REQUIRED_CAPABILITY as Partial<Record<string, keyof EngineCapabilities>>;
+  return Object.fromEntries(
+    Object.entries(tools).filter(([name]) => {
+      const cap = required[name];
+      return !cap || Boolean(capabilities[cap]);
+    }),
+  );
 }

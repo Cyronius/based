@@ -70,6 +70,7 @@ import type {
   TableSort,
   WireValue,
 } from "./db/types";
+import type { LanceColumnSpec } from "./db/lanceSchema";
 
 // Traces: BASED-UI-SESSION-RESUME — a request arrived for a sid whose in-memory session is gone
 // (the server process restarted — e.g. dev `bun --watch` — while the browser stayed open). Distinct
@@ -628,6 +629,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       }
     }
 
+    // Traces: BASED-LANCE-CREATE-TABLE — the dialog's create path (history row, no approval flow).
+    if (path === "/api/session/create-table" && method === "POST") {
+      const body = (await req.json()) as CreateTableBody;
+      return createTableFor(sid, body, { audited: false });
+    }
+
     // --- tabs ---
     if (path === "/api/tabs" && method === "GET") {
       return json(tabs.list(url.searchParams.get("connectionId") ?? ""));
@@ -852,6 +859,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const body = (await req.json()) as { sql: string; approved?: boolean };
       if (body.approved !== true) return json({ error: "Mutation not approved" }, 400);
       return runMutation(sid, body.sql);
+    }
+    // Traces: BASED-AGENT-LANCE-CREATE — the agent's create_table proposal, after user approval.
+    if (path === "/api/agent/create-table" && method === "POST") {
+      const body = (await req.json()) as CreateTableBody & { approved?: boolean };
+      if (body.approved !== true) return json({ error: "Create table not approved" }, 400);
+      return createTableFor(sid, body, { audited: true });
     }
     const agentMatch = path.match(/^\/api\/agent\/([^/]+)$/);
     if (agentMatch && method === "POST") return agentStream(sid, agentMatch[1]!, req);
@@ -1112,6 +1125,46 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       error: result.error,
     });
     return json({ status, rowsAffected: result.rowsAffected, error: result.error, durationMs });
+  }
+
+  interface CreateTableBody {
+    name?: string;
+    folder?: string;
+    columns?: LanceColumnSpec[];
+  }
+
+  // Traces: BASED-LANCE-CREATE-TABLE, BASED-AGENT-LANCE-CREATE — the only paths that create a table
+  // on an engine whose write surface is SDK calls rather than SQL. The capability re-check mirrors
+  // runMutation's doctrine: consent is not capability. The agent path audits (kind "mutation", with
+  // a create-table summary standing in for SQL); the dialog path records plain history.
+  async function createTableFor(sid: string, body: CreateTableBody, opts: { audited: boolean }): Promise<Response> {
+    const adapter = requireAdapter(sid);
+    if (!adapter.capabilities.createTable || !adapter.createTable) {
+      return json({ error: "This connection does not support creating tables." }, 400);
+    }
+    const session = getSession(sid);
+    const startedAt = new Date().toISOString();
+    const colSummary = (body.columns ?? [])
+      .map((c) => `${c.name} ${c.type}${c.type === "vector" && c.dim ? `(${c.dim})` : ""}`)
+      .join(", ");
+    const summary = `-- create table ${body.folder ? `${body.folder}.` : ""}${body.name ?? ""} (${colSummary})`;
+    const t0 = performance.now();
+    const record = (status: "ok" | "error", error: string | null) => {
+      const durationMs = Math.round(performance.now() - t0);
+      const base = { connectionId: session.connectionId!, database: session.database!, startedAt, durationMs, status, error };
+      if (opts.audited) audit.add({ ...base, kind: "mutation", sql: summary, approved: true });
+      else history.add({ ...base, sql: summary });
+      return durationMs;
+    };
+    try {
+      const result = await adapter.createTable({ name: body.name ?? "", folder: body.folder, columns: body.columns ?? [] });
+      const durationMs = record("ok", null);
+      return json({ status: "ok", table: body.name, folder: body.folder ?? null, columns: result.columns, durationMs });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const durationMs = record("error", msg);
+      return json({ status: "error", error: msg, durationMs }, 400);
+    }
   }
 
   // Traces: BASED-AGENT-MUTATION-GATE, BASED-AGENT-AUDIT — runs an approved mutation and audits it.

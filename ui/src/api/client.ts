@@ -20,6 +20,7 @@ import type {
   RoutineParameter,
   ScriptAction,
   SearchRows,
+  TableColumn,
   TableDetails,
   TableIndex,
   TableChangeSet,
@@ -264,6 +265,35 @@ export function runAgentMutation(sql: string): Promise<MutationResult> {
   return api<MutationResult>("/api/agent/mutation", {
     method: "POST",
     body: JSON.stringify({ sql, approved: true }),
+  });
+}
+
+// Traces: BASED-LANCE-CREATE-TABLE, BASED-AGENT-LANCE-CREATE
+export interface CreateTableRequest {
+  name: string;
+  folder?: string;
+  columns: Array<{ name: string; type: "string" | "int" | "float" | "bool" | "date" | "vector"; dim?: number }>;
+}
+
+export interface CreateTableResult {
+  status: "ok" | "error";
+  table?: string;
+  folder?: string | null;
+  columns?: TableColumn[];
+  error?: string;
+  durationMs: number;
+}
+
+/** Create a table from the New Table dialog (capability-gated server-side). */
+export function createTable(body: CreateTableRequest): Promise<CreateTableResult> {
+  return api<CreateTableResult>("/api/session/create-table", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Create an agent-proposed table after the user approves it on the card. */
+export function runAgentCreateTable(body: CreateTableRequest): Promise<CreateTableResult> {
+  return api<CreateTableResult>("/api/agent/create-table", {
+    method: "POST",
+    body: JSON.stringify({ ...body, approved: true }),
   });
 }
 

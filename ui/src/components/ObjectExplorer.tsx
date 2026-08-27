@@ -5,6 +5,7 @@ import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
 import { profileFor } from "../lib/engineProfile";
 import { ExplorerContextMenu } from "./ExplorerContextMenu";
+import { IconButton } from "./IconButton";
 
 const GROUPS: Array<{ type: DbObjectType; label: string; glyph: string }> = [
   { type: "table", label: "Tables", glyph: "▦" },
@@ -28,6 +29,7 @@ export function ObjectExplorer() {
   const activeConnectionId = useStore((s) => s.activeConnectionId);
   const connections = useStore((s) => s.connections);
   const engines = useStore((s) => s.engines);
+  const setNewTableOpen = useStore((s) => s.setNewTableOpen);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   // Traces: BASED-UI-SCRIPT-AS — selection is type-homogeneous: plain click selects one, ctrl
@@ -124,16 +126,32 @@ export function ObjectExplorer() {
       {groups.map((g) => {
         const items = grouped.get(g.type) ?? [];
         const isCollapsed = collapsed[g.type] ?? false;
+        // Traces: BASED-LANCE-CREATE-TABLE-UI — the "+" beside Tables opens the New Table dialog.
+        // It sits next to (not inside) the collapse toggle: buttons don't nest.
+        const canAdd = g.type === "table" && !!capabilities?.createTable && status === "connected";
         return (
           <section key={g.type}>
-            <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-ink-900 group"
-              onClick={() => setCollapsed({ ...collapsed, [g.type]: !isCollapsed })}
-            >
-              <span className={`text-faint text-[length:var(--fs-xs)] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
-              <span className="ledger-label group-hover:text-muted">{g.label}</span>
-              <span className="ml-auto text-[length:var(--fs-xs)] font-mono text-faint">{items.length}</span>
-            </button>
+            <div className="flex items-center pr-1 hover:bg-ink-900 group">
+              <button
+                className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5"
+                onClick={() => setCollapsed({ ...collapsed, [g.type]: !isCollapsed })}
+              >
+                <span className={`text-faint text-[length:var(--fs-xs)] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+                <span className="ledger-label group-hover:text-muted">{g.label}</span>
+                <span className="ml-auto text-[length:var(--fs-xs)] font-mono text-faint">{items.length}</span>
+              </button>
+              {canAdd && (
+                <IconButton
+                  size="sm"
+                  title="New table"
+                  aria-label="New table"
+                  className="shrink-0 text-faint opacity-0 group-hover:opacity-100 hover:text-brass"
+                  onClick={() => setNewTableOpen(true)}
+                >
+                  +
+                </IconButton>
+              )}
+            </div>
             {!isCollapsed &&
               items.map((o, index) => {
                 const isSelected = selected.has(keyOf(o));

@@ -54,6 +54,7 @@ export const MSSQL_ENGINE: EngineDescriptor = {
       sql: true,
       search: false,
       write: true,
+      createTable: false,
       orderedBrowse: true,
       script: true,
       relations: true,

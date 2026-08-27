@@ -28,7 +28,11 @@ export function lanceBriefing(caps: EngineCapabilities): string {
   const lines = [
     "You are connected to a LanceDB vector database.",
     "- Tables hold rows with regular columns plus one or more vector (embedding) columns; call describe_table to see which columns are vectors, their dimension, and their index metric.",
-    "- Tables have no primary key and are search/append-oriented. This connection is read-only: you cannot insert, update, or delete rows, and there is no tool to propose it. Say so plainly rather than offering a fix you can't apply.",
+    // Traces: BASED-AGENT-LANCE-CREATE — every line stays unconditionally true for THIS connection:
+    // rows are read-only either way; create_table exists only where the capability says so.
+    caps.createTable
+      ? "- Tables have no primary key and are search/append-oriented. Rows are read-only: you cannot insert, update, or delete them, and there is no tool to propose it — say so plainly rather than offering a fix you can't apply. You CAN propose creating a brand-new empty table with create_table; the user approves it on a card before anything is created."
+      : "- Tables have no primary key and are search/append-oriented. This connection is read-only: you cannot insert, update, or delete rows, and there is no tool to propose it. Say so plainly rather than offering a fix you can't apply.",
     "- To find rows by meaning, use vector_search. To find rows by keyword, use text_search (needs a full-text index — get_indexes tells you whether one exists). To combine both with reranking, use hybrid_search.",
     "- To find rows by an exact condition rather than by relevance, use read_table with a `where` predicate — it returns rows in table order. Do not run a throwaway search just to filter. Use count_rows before paging so you know the scale, and take_rows to fetch specific ids (e.g. the ids a search just returned).",
     "- vector_search and hybrid_search embed your text query automatically using the embedding profile this connection is configured with (pass embeddingProfileId to override it), or a raw vector you supply. If the connection has no embedding profile and no vector is given, the tool errors — call list_search_profiles to see what exists, and either name one or fall back to text_search.",

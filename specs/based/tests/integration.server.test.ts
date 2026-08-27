@@ -666,6 +666,142 @@ describe("BASED-AGENT-MUTATION-GATE: writes are refused on a read-only connectio
   });
 });
 
+// Traces: BASED-AGENT-LANCE-CREATE, BASED-LANCE-CREATE-TABLE — the create-table routes and their
+// gates, against a real local LanceDB connection bootstrapped from an EMPTY directory (which also
+// exercises the BASED-LANCE-CONNECT empty-dir bootstrap through the server).
+describe("BASED-AGENT-LANCE-CREATE: create-table routes", () => {
+  const SID = "lance-create";
+  let connectionId = "";
+
+  beforeAll(async () => {
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-create-"));
+    const conn = (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "srv-lance-create",
+          server: "",
+          database: "lancedb",
+          engine: "lancedb",
+          authType: "lancedb-local",
+          uri: dir,
+          encrypt: false,
+          trustServerCertificate: false,
+        } satisfies ConnectionInput),
+      })
+    ).json()) as ConnectionConfig;
+    connectionId = conn.id;
+    const connected = await api(`/api/session/connect?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ connectionId }),
+    });
+    expect(connected.status).toBe(200);
+  }, 120_000);
+
+  afterAll(async () => {
+    await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+  });
+
+  const auditRows = async () =>
+    (await (await api(`/api/agent/audit?connectionId=${connectionId}`)).json()) as Array<{
+      sql: string;
+      kind: string;
+      approved: boolean;
+      status: string;
+    }>;
+
+  test("the connect response advertises the createTable capability", async () => {
+    const state = (await (await api(`/api/session/state?sid=${SID}`)).json()) as {
+      capabilities: { createTable: boolean; write: boolean };
+    };
+    expect(state.capabilities.createTable).toBe(true);
+    expect(state.capabilities.write).toBe(false); // rows stay read-only
+  });
+
+  test("the agent route without approved:true is a 400 and leaves no audit row", async () => {
+    const res = await api(`/api/agent/create-table?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ name: "sneaky", columns: [{ name: "id", type: "string" }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not approved/i);
+    expect((await auditRows()).length).toBe(0);
+  });
+
+  test("an approved agent create makes the table and writes an audit row", async () => {
+    const res = await api(`/api/agent/create-table?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({
+        approved: true,
+        name: "agent_made",
+        columns: [
+          { name: "id", type: "string" },
+          { name: "embedding", type: "vector", dim: 4 },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; columns: Array<{ name: string; isVector?: boolean }> };
+    expect(body.status).toBe("ok");
+    expect(body.columns.find((c) => c.name === "embedding")?.isVector).toBe(true);
+
+    const rows = await auditRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.kind).toBe("mutation");
+    expect(rows[0]!.approved).toBe(true);
+    expect(rows[0]!.sql).toMatch(/create table agent_made/i);
+
+    const { objects } = (await (await api(`/api/session/objects?sid=${SID}`)).json()) as { objects: Array<{ name: string }> };
+    expect(objects.map((o) => o.name)).toContain("agent_made");
+  });
+
+  test("the dialog route creates without an audit row, and a duplicate name is a 400", async () => {
+    const res = await api(`/api/session/create-table?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ name: "dialog_made", columns: [{ name: "label", type: "string" }] }),
+    });
+    expect(res.status).toBe(200);
+    expect((await auditRows()).some((r) => /dialog_made/.test(r.sql))).toBe(false);
+
+    const dup = await api(`/api/session/create-table?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ name: "dialog_made", columns: [{ name: "label", type: "string" }] }),
+    });
+    expect(dup.status).toBe(400);
+    expect(((await dup.json()) as { error: string }).error).toMatch(/already exists/i);
+  });
+});
+
+// The capability gate needs an engine WITHOUT createTable, which requires the live dev DB.
+const dCreateGate = DEV_DB_AVAILABLE ? describe : describe.skip;
+if (!DEV_DB_AVAILABLE) warnDevDbSkip("integration.server", "create-table capability gate");
+
+dCreateGate("BASED-LANCE-CREATE-TABLE: refused on an engine without the capability", () => {
+  const SID = "mssql-create-gate";
+
+  test("POST /api/session/create-table on SQL Server is a 400", async () => {
+    const { id: _omit, createdAt: _c, updatedAt: _u, ...input } = devConnection("srv-create-gate");
+    const created = (await (
+      await api("/api/connections", { method: "POST", body: JSON.stringify(input) })
+    ).json()) as ConnectionConfig;
+    const connected = await api(`/api/session/connect?sid=${SID}`, {
+      method: "POST",
+      body: JSON.stringify({ connectionId: created.id }),
+    });
+    expect(connected.status).toBe(200);
+    try {
+      const res = await api(`/api/session/create-table?sid=${SID}`, {
+        method: "POST",
+        body: JSON.stringify({ name: "nope", columns: [{ name: "id", type: "string" }] }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/does not support creating tables/i);
+    } finally {
+      await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+    }
+  }, 120_000);
+});
+
 describe("BASED-UI-SESSION-RESUME: session-lost signal", () => {
   // A server restart wipes in-memory sessions; a fresh sid that never connected reproduces that exact
   // state (no adapter). The endpoint must answer with the distinct 409 `session-lost` the client keys on
