@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { openEvents } from "./api/client";
 import { activeQueryTab, useStore, visibleTabs } from "./store";
+import { isAccel, isCancelChord } from "./platform";
 import monaco from "./monacoSetup";
 import { syncMonacoTheme, DEFAULT_FONT_SCALE, FONT_SCALE_STEP } from "./theme";
 import { LeftRail } from "./components/LeftRail";
@@ -161,40 +162,43 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const state = useStore.getState();
       const tab = activeQueryTab(state);
-      if (e.key === "F5" || (e.key === "Enter" && e.ctrlKey)) {
+      if (e.key === "F5" || (e.key === "Enter" && isAccel(e))) {
         e.preventDefault();
         if (tab) void state.runQuery(tab.id);
-      } else if (e.key.toLowerCase() === "s" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "s" && isAccel(e)) {
         e.preventDefault();
         if (tab) void state.saveTab(tab.id, { as: e.shiftKey });
-      } else if (e.key.toLowerCase() === "o" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "o" && isAccel(e)) {
         e.preventDefault();
         if (state.activeConnectionId) void state.openSqlFile();
-      } else if (e.key === "Pause" && e.ctrlKey) {
+      } else if (isCancelChord(e)) {
         e.preventDefault();
         if (tab?.running) void state.cancelQuery(tab.id);
-      } else if (e.key.toLowerCase() === "j" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "j" && isAccel(e)) {
         e.preventDefault();
         state.toggleRightRail();
-      } else if (e.key.toLowerCase() === "t" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "t" && isAccel(e)) {
         e.preventDefault();
         if (state.activeConnectionId) state.newQueryTab();
-      } else if (e.key.toLowerCase() === "n" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "n" && isAccel(e)) {
         e.preventDefault();
         void state.newWindow();
-      } else if (e.key.toLowerCase() === "w" && e.ctrlKey) {
+      } else if (e.key.toLowerCase() === "w" && isAccel(e)) {
+        // On macOS this shadows the OS "close window" meaning on purpose — tabs here behave like
+        // browser tabs, and browsers bind ⌘W to close-tab (the menu's Close Window is ⇧⌘W).
         e.preventDefault();
         if (state.activeTabId) state.closeTab(state.activeTabId);
-      } else if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "_")) {
+      } else if (isAccel(e) && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "_")) {
         // Traces: BASED-UI-FONT-ZOOM — "=" and "-" are the unshifted keys; "+"/"_" cover Shift and
         // the numpad. Monaco's own zoom commands are not registered, so nothing shadows these.
         e.preventDefault();
         const grow = e.key === "=" || e.key === "+";
         state.setFontScale(state.fontScale + (grow ? FONT_SCALE_STEP : -FONT_SCALE_STEP));
-      } else if (e.ctrlKey && e.key === "0") {
+      } else if (isAccel(e) && e.key === "0") {
         e.preventDefault();
         state.setFontScale(DEFAULT_FONT_SCALE);
       } else if ((e.key === "PageUp" || e.key === "PageDown") && e.ctrlKey) {
+        // Ctrl (not ⌘) on every platform — the browser-tab-switching convention macOS also uses.
         e.preventDefault();
         const visible = visibleTabs(state);
         if (visible.length > 1) {

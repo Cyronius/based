@@ -11,6 +11,7 @@
 // one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
+import { accel, isMac } from "../platform";
 import { THEMES, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
 import {
@@ -79,7 +80,7 @@ function GeneralTab() {
         <span>Large</span>
       </div>
       {/* Traces: BASED-UI-SHORTCUTS discoverability — the gesture shares this control's action. */}
-      <div className="text-[length:var(--fs-sm)] text-faint">Or hold Ctrl and scroll, or press Ctrl+= / Ctrl+- (Ctrl+0 resets).</div>
+      <div className="text-[length:var(--fs-sm)] text-faint">{isMac ? `Or pinch to zoom, or press ${accel("=")} / ${accel("-")} (${accel("0")} resets).` : "Or hold Ctrl and scroll, or press Ctrl+= / Ctrl+- (Ctrl+0 resets)."}</div>
 
       {/* Traces: BASED-EDITOR-VIM — modal editing in the query editor; the mode indicator and the
           `:` command line share the app's bottom status bar. */}
@@ -91,7 +92,7 @@ function GeneralTab() {
       <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
         Vim adds modal editing to the query editor. The current mode and the <span className="font-mono">:</span> command
         line appear in the status bar at the bottom; <span className="font-mono">:w</span> saves the tab and{" "}
-        <span className="font-mono">:q</span> closes it. F5, Ctrl+Enter, and Ctrl+S keep working in every mode.
+        <span className="font-mono">:q</span> closes it. F5, {accel("Enter")}, and {accel("S")} keep working in every mode.
       </p>
 
       {/* Traces: BASED-EXPLORER-ACTION — default double-click behavior in the object explorer. */}

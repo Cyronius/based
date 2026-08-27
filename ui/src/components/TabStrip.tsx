@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore } from "../store";
 import { TabContextMenu } from "./TabContextMenu";
 import { IconButton } from "./IconButton";
+import { accel } from "../platform";
 
 const MAX_FETCH_SIZE = 50_000;
 
@@ -115,7 +116,7 @@ export function TabStrip() {
             </span>
             <IconButton
               size="sm"
-              title="Close tab (Ctrl+W)"
+              title={`Close tab (${accel("W")})`}
               aria-label="Close tab"
               className="-mr-1 text-faint hover:text-err opacity-0 group-hover:opacity-100"
               onClick={(e) => {
@@ -130,7 +131,7 @@ export function TabStrip() {
       })}
       {sqlEditor && (
         <IconButton
-          title="New query tab (Ctrl+T)"
+          title={`New query tab (${accel("T")})`}
           aria-label="New query tab"
           className="self-center mx-1 text-muted hover:text-brass text-base"
           onClick={() => newQueryTab()}

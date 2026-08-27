@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAgent, AgentProvider } from "@itkennel/lm-ag-ui";
 import { useStore } from "../store";
+import { accel } from "../platform";
 import { useActivity } from "../agent/activityStore";
 import { token, sessionId, AGENT_BASE_URL } from "../api/client";
 import { capiToolsFor } from "../agent/capiTools";
@@ -72,7 +73,7 @@ function CapiHeader({
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
       <button
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-faint hover:bg-ink-800 hover:text-brass"
-        title="Collapse Capi (Ctrl+J)"
+        title={`Collapse Capi (${accel("J")})`}
         onClick={toggle}
       >
         <span>›</span>
@@ -388,7 +389,7 @@ export function RightRail() {
       {!open && (
         <button
           className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-          title="Expand Capi (Ctrl+J)"
+          title={`Expand Capi (${accel("J")})`}
           onClick={toggle}
         >
           <span className="text-[length:var(--fs-sm)]">‹</span>

@@ -2106,25 +2106,31 @@ The canonical binding table. The global keydown handler (`App.tsx`) and the per-
 registrations (`EditorPane.tsx`) implement it; the help tab (BASED-HELP-DOCS) renders it; adding,
 removing, or changing a binding is a spec change to this table.
 
-| Shortcut | Action |
-|---|---|
-| F5 / Ctrl+Enter | Run the active query tab |
-| Ctrl+Break | Cancel the running query |
-| Ctrl+S | Save tab to `.sql` (overwrites in place when file-backed) |
-| Ctrl+Shift+S | Save to a new `.sql` file |
-| Ctrl+O | Open a `.sql` file |
-| Ctrl+T | New query tab |
-| Ctrl+W | Close the active tab |
-| Ctrl+PageUp / Ctrl+PageDown | Previous / next tab |
-| Ctrl+J | Toggle the Capi rail |
-| Ctrl+N | New window |
-| Ctrl+Scroll, Ctrl+= / Ctrl+- | Zoom the app text size in / out |
-| Ctrl+0 | Reset the text size to 100% |
+The platform modifier is Ctrl on Windows and ⌘ on macOS, with one definition of both the check
+(`isAccel`) and the label (`accel`) in `ui/src/platform.ts` (Monaco bindings use `KeyMod.CtrlCmd`,
+which is the same mapping). Deliberate exceptions, called out per row: tab cycling stays Ctrl-based
+on macOS (the browser convention, and ⌘PageUp has no OS meaning to honor), and macOS has no
+Pause/Break key so cancel is the macOS-conventional ⌘. instead.
+
+| Windows | macOS | Action |
+|---|---|---|
+| F5 / Ctrl+Enter | F5 / ⌘Enter | Run the active query tab |
+| Ctrl+Break | ⌘. | Cancel the running query |
+| Ctrl+S | ⌘S | Save tab to `.sql` (overwrites in place when file-backed) |
+| Ctrl+Shift+S | ⇧⌘S | Save to a new `.sql` file |
+| Ctrl+O | ⌘O | Open a `.sql` file |
+| Ctrl+T | ⌘T | New query tab |
+| Ctrl+W | ⌘W | Close the active tab (⌘W deliberately shadows the OS close-window meaning — tabs behave like browser tabs; the menu's Close Window is ⇧⌘W) |
+| Ctrl+PageUp / Ctrl+PageDown | same (Ctrl, not ⌘) | Previous / next tab |
+| Ctrl+J | ⌘J | Toggle the Capi rail |
+| Ctrl+N | ⌘N | New window (on macOS the menu's New Window item owns the ⌘N accelerator; same action) |
+| Ctrl+Scroll, Ctrl+= / Ctrl+- | Pinch, ⌘= / ⌘- | Zoom the app text size in / out |
+| Ctrl+0 | ⌘0 | Reset the text size to 100% |
 
 **Discoverability rule:** every visible control whose action is also bound to a shortcut
-advertises that shortcut in its hover tooltip — e.g. "New query tab (Ctrl+T)", "Run (F5 /
-Ctrl+Enter)". Shortcuts with no corresponding control (Ctrl+N, Ctrl+PageUp/PageDown) are
-discoverable via the help tab.
+advertises that shortcut in its hover tooltip, in the *platform-correct* form — e.g. "New query
+tab (Ctrl+T)" / "New query tab (⌘T)". Shortcuts with no corresponding control (new window, tab
+cycling) are discoverable via the help tab, which likewise renders platform-correct labels.
 
 The *behavior* behind each binding stays specified by its own requirement (BASED-UI-TABS,
 BASED-CANCEL, BASED-FILE-OPEN-SQL, BASED-CHAT-UI, BASED-WINDOW-RESTORE, BASED-UI-FONT-ZOOM…) — this
@@ -3208,13 +3214,15 @@ upgrade (BASED-OPEN-SQL-ARGV).
 - 2026-07-25 PASS (electrobun-era stub registration; superseded by the direct-exe verb).
 - Direct `based-shell.exe` verb pass pending a human run of the procedure above.
 
-### BASED-OPEN-SQL-ARGV: Opening .sql paths at launch
+### BASED-OPEN-SQL-ARGV: Opening OS-requested .sql paths at launch
 **Applies to:** based (shell + ui)
 **Test category:** manual
 
 File-open requests — direct argv paths, argv forwarded by the Tauri single-instance plugin from
-a second launch (relative paths resolved against the secondary's cwd; the secondary exits), and
-leftover lines in `<dataDir>/pending-open.txt` from an electrobun-era stub registration —
+a second launch (relative paths resolved against the secondary's cwd; the secondary exits),
+leftover lines in `<dataDir>/pending-open.txt` from an electrobun-era stub registration, and on
+macOS `RunEvent::Opened` file URLs (macOS delivers file opens as Apple Events, never argv; both
+cold-launch double-clicks and opens while running arrive this way) —
 coalesce in the shell into one batch: Windows Explorer launches one process per selected file,
 so the shell accumulates arriving file lists until ~300ms of silence, then dedupes and
 dispatches the batch once. A batch opens **at most one window**: per BASED-SQL-OPEN-TARGET it
@@ -3238,6 +3246,7 @@ to BASED-WINDOW-RESTORE. A second launch with no files still opens a plain windo
   forwarded a second launch's argv to the primary; superseded by batched at-most-one-window
   dispatch).
 - Batched dispatch pass pending a human run of the procedure above.
+- macOS `RunEvent::Opened` path pending the Phase 7 hardware pass (macos-port plan).
 
 ### BASED-SQL-OPEN-TARGET: Where an OS file-open lands
 **Applies to:** based (shell + core + ui)
@@ -3271,3 +3280,40 @@ new window".
 
 **Verification (manual, shell half):** procedure steps 1–3 of BASED-OPEN-SQL-ARGV, run in both
 modes via Settings → General.
+
+### BASED-MENU-MAC: macOS menu bar
+**Applies to:** based (shell-tauri)
+**Test category:** manual
+
+On macOS the shell installs a real menu bar (`build_mac_menu` in `shell-tauri/src/main.rs`):
+
+- **based** — About, Services, Hide/Hide Others/Show All, Quit (⌘Q)
+- **File** — New Window (⌘N, works with zero windows open), Close Window (⇧⌘W — *not* ⌘W, which
+  is the page's close-tab per BASED-UI-SHORTCUTS)
+- **Edit** — Undo/Redo, Cut/Copy/Paste/Select All as predefined items. This submenu is
+  functional, not decorative: WKWebView routes edit commands through the menu bar, so without it
+  ⌘C/⌘V/⌘X/⌘A do nothing anywhere in the webview.
+- **Window** — Minimize, Zoom, Full Screen
+
+Windows deliberately has no menu bar. New Window and Close Window act via the same paths as
+their non-menu equivalents (`create_window`; closing the focused window).
+
+**Verification procedure (on macOS hardware):**
+1. Type in the query editor and a text input: ⌘C/⌘V/⌘X/⌘A and ⌘Z all work
+2. File → New Window (and ⌘N) opens a window; ⇧⌘W closes the focused window; ⌘W closes a tab
+3. With every window closed, File → New Window still works from the menu bar
+
+### BASED-WINDOW-LIFECYCLE-MAC: close ≠ quit on macOS
+**Applies to:** based (shell-tauri)
+**Test category:** manual
+
+On macOS, closing the last window leaves the app running (menu bar + dock icon alive, core child
+alive with every window's restorable state); the run loop's `ExitRequested` handler prevents the
+exit when no exit code is carried. An explicit quit (⌘Q / menu Quit) exits and kills the core
+child. Clicking the dock icon with no visible windows (`RunEvent::Reopen`) opens a new window.
+On Windows, closing the last window still exits the app.
+
+**Verification procedure (on macOS hardware):**
+1. Close every window → the app stays in the dock; clicking the dock icon opens a new window
+2. Quit (⌘Q) → the app and the `bun` core child both terminate (verify in Activity Monitor)
+3. Close the last window, reopen from the dock, and connect — window state restores normally

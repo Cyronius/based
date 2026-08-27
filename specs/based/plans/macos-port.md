@@ -1,6 +1,6 @@
 # Plan: macOS port + CI release pipeline
 
-**Status:** in progress — **Phases 1–3 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
+**Status:** in progress — **Phases 1–4 complete** (`BASED-PLATFORM-PATHS` merged into `spec.md`;
 macOS build workflow landed and green, `.dmg` artifact produced; dialogs relayed to the shell)
 **Spec impact:** 6 new requirements (`BASED-PLATFORM-PATHS` ✅, `BASED-MENU-MAC`,
 `BASED-WINDOW-LIFECYCLE-MAC`, `BASED-PACKAGE-MAC`, `BASED-INSTALLER-MAC`, `BASED-RELEASE-CI`),
@@ -164,35 +164,40 @@ shell-native — strictly better (parented, no PowerShell spawn); noted for the 
 
 ---
 
-### Phase 4 — macOS UX conventions (2.5 d)
+### ✅ Phase 4 — macOS UX conventions (done)
 
-**4a. The app menu (must-do, easy to miss).** Tauri on macOS with no menu means **Cmd+C / Cmd+V /
-Cmd+X / Cmd+A do not work anywhere in the webview** — WKWebView routes edit commands through the
-menu bar. An app with a working query editor and broken copy/paste will read as fundamentally
-broken. Requires a real `Menu` with the standard App / Edit / Window submenus, plus based's own
-items wired to the same actions as the shortcut table.
+**4a. App menu** — `build_mac_menu()` in [`main.rs`](../../../shell-tauri/src/main.rs):
+based (About/Services/Hide/Quit), File (New Window ⌘N — the only entry point with zero windows
+open; Close Window ⇧⌘W), Edit (predefined Undo/Redo/Cut/Copy/Paste/Select All — what makes
+WKWebView edit commands work at all), Window (Minimize/Zoom/Full Screen). Attached only on macOS
+(`cfg!` + runtime `set_menu`, so the code type-checks on Windows); menu events route to the same
+`create_window`/close paths. Spec: **`BASED-MENU-MAC`** added.
 
-**4b. Modifier keys.** 14 `e.ctrlKey` checks in
-[`App.tsx`](../../../ui/src/App.tsx#L136-L190) plus 29 hardcoded `"Ctrl+"` label strings across the
-UI. Introduce a platform helper — `isAccel(e)` returning `e.metaKey || e.ctrlKey`, and an
-`accelLabel()` formatter emitting `⌘` or `Ctrl`. The `BASED-UI-SHORTCUTS` table gains a macOS
-column; the help tab (`BASED-HELP-DOCS`) renders whichever applies. Mechanical, but it touches many
-files and the tooltip discoverability rule means every advertised shortcut string is in scope.
+**4b. Modifier keys** — [`ui/src/platform.ts`](../../../ui/src/platform.ts): `isAccel(e)`
+(⌘ on mac, Ctrl elsewhere — *not* the draft's `metaKey || ctrlKey`, so the two modifiers stay
+distinct), `accel("Shift+S")` → `Ctrl+Shift+S`/`⇧⌘S` label formatter, and `isCancelChord` — macOS
+has no Pause/Break key, so cancel is the macOS-conventional **⌘.**. All App.tsx handlers and every
+advertised shortcut string (DocsView table, QueryTabView/TabStrip/RightRail tooltips, ThemePicker
+prose) go through these. Monaco already used `KeyMod.CtrlCmd`. Collisions settled: ⌘W stays
+close-tab (browser-tab convention; menu Close Window takes ⇧⌘W), menu owns ⌘N (same action either
+way), tab cycling stays Ctrl+PageUp/Down on both platforms, zoom keys are accel-based while
+wheel-zoom stays `ctrlKey` (a mac trackpad pinch arrives as Ctrl+wheel). `BASED-UI-SHORTCUTS`
+table rewritten with a macOS column + platform-correct-tooltip rule.
 
-Watch for collisions: Cmd+W (close tab) and Cmd+Q (quit) have OS-level meaning on macOS, and Ctrl+N
-→ Cmd+N must not fight the menu's New Window item.
+**4c. Window/dock lifecycle** — run loop reworked: `ExitRequested` without an exit code (=
+last-window-close) is prevented on macOS so the app + core child outlive the last window; explicit
+quit (⌘Q → `app.exit`, which carries a code) passes through to the existing `Exit` core-kill.
+`RunEvent::Reopen` with no visible windows opens one. Spec: **`BASED-WINDOW-LIFECYCLE-MAC`** added.
 
-**4c. Window and dock lifecycle.** The current `RunEvent::Exit` handler in
-[`main.rs`](../../../shell-tauri/src/main.rs) kills the core child — correct on Windows, wrong on
-macOS, where closing the last window should leave the app running. Needs `RunEvent::ExitRequested`
-with `api.prevent_exit()` on macOS, plus `RunEvent::Reopen` to create a window when the dock icon is
-clicked.
+**4d. File-open events** — `RunEvent::Opened { urls }` (macOS Apple Events; argv never carries
+file opens there) feeds the same 300 ms batcher channel as argv/single-instance, so multi-select
+coalescing and `BASED-SQL-OPEN-TARGET` dispatch apply unchanged. argv + `pending-open.txt` stay
+as the Windows mechanisms. `BASED-OPEN-SQL-ARGV` retitled/extended.
 
-**4d. File-open events.** `BASED-OPEN-SQL-ARGV` assumes argv, which is a Windows/Linux convention.
-**macOS delivers file-open requests as Apple Events, not argv** — double-clicking a `.sql` file will
-not populate `std::env::args()`. Tauri surfaces these as `RunEvent::Opened { urls }`. The argv path
-and the `pending-open.txt` mechanism both stay for Windows; macOS gets the event handler routed into
-the same `create_window(app, None, Some(path))` call.
+**Verified:** all three typechecks clean; `cargo check` clean on Windows. The macOS-only match
+arms (`Reopen`/`Opened`) can't compile on a Windows host — they were verified against the tauri
+2.11.5 crate source (`Reopen` is `#[non_exhaustive]`, hence the `..`; `Opened.urls: Vec<url::Url>`)
+and compile in the Phase 6 CI build. Menu items/lifecycle behavior verify on hardware in Phase 7.
 
 ---
 
@@ -315,7 +320,7 @@ restore, and the dock-reopen behavior.
 | ~~1 — Platform abstraction~~ | ~~0.5 d~~ **done** | no |
 | ~~2 — First CI build~~ | ~~1 d~~ **done, run pending** | no |
 | ~~3 — Native dialogs~~ | ~~2 d~~ **done** | no (verify in 7) |
-| 4 — macOS UX conventions | 2.5 d | no (verify in 7) |
+| ~~4 — macOS UX conventions~~ | ~~2.5 d~~ **done** | no (verify in 7) |
 | 5 — Packaging + distribution | 1.5 d | no (verify in 7) |
 | 6 — Release pipeline | 1 d | no |
 | 7 — Verification + WKWebView shakeout | 1–3 d | **yes** |

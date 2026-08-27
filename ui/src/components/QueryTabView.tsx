@@ -8,6 +8,7 @@ import { OutputPane } from "./OutputPane";
 import { BottomTabPanel, type BottomTab } from "./BottomTabPanel";
 import { CellView } from "./CellView";
 import { ChevronUpIcon } from "./icons";
+import { accel, cancelLabel } from "../platform";
 
 type BottomTabId = "output" | "cell";
 
@@ -94,7 +95,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         {tab.running ? (
           <button
             className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
-            title="Cancel (Ctrl+Break)"
+            title={`Cancel (${cancelLabel})`}
             onClick={() => void cancelQuery(tab.id)}
           >
             ■ Cancel
@@ -102,7 +103,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         ) : (
           <button
             className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
-            title="Run (F5 / Ctrl+Enter)"
+            title={`Run (F5 / ${accel("Enter")})`}
             disabled={!canRun}
             onClick={() => void runQuery(tab.id)}
           >
@@ -111,21 +112,21 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         )}
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
-          title="Open a .sql file (Ctrl+O)"
+          title={`Open a .sql file (${accel("O")})`}
           onClick={() => void openSqlFile()}
         >
           Open…
         </button>
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
-          title="Save to .sql (Ctrl+S)"
+          title={`Save to .sql (${accel("S")})`}
           onClick={() => void saveTab(tab.id)}
         >
           Save{tab.dirty ? " •" : ""}
         </button>
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
-          title="Save to a new .sql file (Ctrl+Shift+S)"
+          title={`Save to a new .sql file (${accel("Shift+S")})`}
           onClick={() => void saveTab(tab.id, { as: true })}
         >
           Save As…

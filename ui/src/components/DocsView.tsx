@@ -2,6 +2,7 @@
 // one in BASED-UI-SHORTCUTS; the vim section must match BASED-EDITOR-VIM. Static content, so this
 // takes no props: the docs tab carries no state beyond its own identity.
 import type { ReactNode } from "react";
+import { accel, cancelLabel, isMac } from "../platform";
 
 function Kbd({ children }: { children: ReactNode }) {
   return (
@@ -33,53 +34,53 @@ function Rows({ rows }: { rows: Array<[ReactNode, ReactNode]> }) {
 const SHORTCUTS: Array<[ReactNode, ReactNode]> = [
   [
     <>
-      <Kbd>F5</Kbd> / <Kbd>Ctrl+Enter</Kbd>
+      <Kbd>F5</Kbd> / <Kbd>{accel("Enter")}</Kbd>
     </>,
     "Run the active query tab",
   ],
-  [<Kbd>Ctrl+Break</Kbd>, "Cancel the running query"],
+  [<Kbd>{cancelLabel}</Kbd>, "Cancel the running query"],
   [
-    <Kbd>Ctrl+S</Kbd>,
+    <Kbd>{accel("S")}</Kbd>,
     <>
       Save tab to <Mono>.sql</Mono> (overwrites in place when file-backed)
     </>,
   ],
   [
-    <Kbd>Ctrl+Shift+S</Kbd>,
+    <Kbd>{accel("Shift+S")}</Kbd>,
     <>
       Save to a new <Mono>.sql</Mono> file
     </>,
   ],
   [
-    <Kbd>Ctrl+O</Kbd>,
+    <Kbd>{accel("O")}</Kbd>,
     <>
       Open a <Mono>.sql</Mono> file
     </>,
   ],
-  [<Kbd>Ctrl+T</Kbd>, "New query tab"],
-  [<Kbd>Ctrl+W</Kbd>, "Close the active tab"],
+  [<Kbd>{accel("T")}</Kbd>, "New query tab"],
+  [<Kbd>{accel("W")}</Kbd>, "Close the active tab"],
   [
     <>
       <Kbd>Ctrl+PageUp</Kbd> / <Kbd>Ctrl+PageDown</Kbd>
     </>,
     "Previous / next tab",
   ],
-  [<Kbd>Ctrl+J</Kbd>, "Toggle the Capi rail"],
-  [<Kbd>Ctrl+N</Kbd>, "New window"],
+  [<Kbd>{accel("J")}</Kbd>, "Toggle the Capi rail"],
+  [<Kbd>{accel("N")}</Kbd>, "New window"],
   [
     <>
-      <Kbd>Ctrl+Scroll</Kbd> / <Kbd>Ctrl+=</Kbd> / <Kbd>Ctrl+-</Kbd>
+      <Kbd>{isMac ? "Pinch" : "Ctrl+Scroll"}</Kbd> / <Kbd>{accel("=")}</Kbd> / <Kbd>{accel("-")}</Kbd>
     </>,
     "Zoom the app text size in / out",
   ],
-  [<Kbd>Ctrl+0</Kbd>, "Reset the text size to 100%"],
+  [<Kbd>{accel("0")}</Kbd>, "Reset the text size to 100%"],
 ];
 
 const VIM_COMMANDS: Array<[ReactNode, ReactNode]> = [
   [
     <Mono>:w</Mono>,
     <>
-      Save the tab (same path as <Kbd>Ctrl+S</Kbd>)
+      Save the tab (same path as <Kbd>{accel("S")}</Kbd>)
     </>,
   ],
   [
@@ -114,8 +115,8 @@ export function DocsView() {
           </p>
           <Rows rows={VIM_COMMANDS} />
           <p className="mt-3 text-[length:var(--fs-base)] text-muted">
-            The app shortcuts above keep working in every vim mode. <Kbd>Ctrl+W</Kbd> stays bound to close-tab,
-            shadowing vim's window prefix.
+            The app shortcuts above keep working in every vim mode. <Kbd>{accel("W")}</Kbd> stays bound to close-tab
+            {isMac ? "." : ", shadowing vim's window prefix."}
           </p>
         </section>
       </div>

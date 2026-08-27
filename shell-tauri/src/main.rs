@@ -318,6 +318,56 @@ fn fetch_persisted_sids(base_url: &str, token: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// BASED-MENU-MAC: the macOS menu bar. Not cosmetic — WKWebView routes edit commands through the
+/// menu, so without an Edit submenu Cmd+C/V/X/A do nothing anywhere in the page. File carries the
+/// two window operations the page can't own: New Window (Cmd+N — also the only entry point while
+/// zero windows are open) and Close Window (Shift+Cmd+W, because plain Cmd+W is the page's
+/// close-tab, the browser-tab convention). Windows keeps no menu bar at all.
+fn build_mac_menu(app: &tauri::App) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    let handle = app.handle();
+    let app_menu = SubmenuBuilder::new(handle, "based")
+        .about(Some(AboutMetadata::default()))
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    let new_window = MenuItemBuilder::with_id("new-window", "New Window")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let close_window = MenuItemBuilder::with_id("close-window", "Close Window")
+        .accelerator("Shift+CmdOrCtrl+W")
+        .build(app)?;
+    let file = SubmenuBuilder::new(handle, "File")
+        .item(&new_window)
+        .separator()
+        .item(&close_window)
+        .build()?;
+    let edit = SubmenuBuilder::new(handle, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let window = SubmenuBuilder::new(handle, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .fullscreen()
+        .build()?;
+    MenuBuilder::new(handle)
+        .items(&[&app_menu, &file, &edit, &window])
+        .build()
+}
+
 struct CoreInfo {
     url: String,
     token: String,
@@ -431,6 +481,7 @@ fn main() {
     // callback firing before setup completes is safe.
     let (open_tx, open_rx) = mpsc::channel::<Vec<String>>();
     let cb_tx = open_tx.clone();
+    let opened_tx = open_tx.clone(); // for macOS RunEvent::Opened (Apple Events, not argv)
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -480,6 +531,22 @@ fn main() {
 
             subscribe_shell_dialogs(app.handle().clone(), base_url.clone(), token.clone());
 
+            // BASED-MENU-MAC — see build_mac_menu. cfg! keeps the builder type-checking on Windows;
+            // the menu is only ever attached on macOS.
+            if cfg!(target_os = "macos") {
+                app.set_menu(build_mac_menu(app)?)?;
+                app.on_menu_event(|app, event| match event.id().as_ref() {
+                    "new-window" => create_window(app, None, &[]),
+                    "close-window" => {
+                        let front = app.state::<ShellState>().focus_order.lock().unwrap().first().cloned();
+                        if let Some(w) = front.and_then(|(_, label)| app.get_webview_window(&label)) {
+                            let _ = w.close();
+                        }
+                    }
+                    _ => {}
+                });
+            }
+
             // Restore ordering: persisted sids first, then the file-open batch (via the batcher, so
             // a cold multi-select's sibling processes coalesce with the primary's own argv), and a
             // bare window only if neither produced one — so a launch never opens zero windows.
@@ -516,14 +583,53 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("based shell: failed to build tauri app")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
-                if let Some(state) = app.try_state::<CoreChild>() {
-                    if let Some(mut child) = state.0.lock().unwrap().take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+        .run(move |app, event| {
+            match event {
+                // BASED-WINDOW-LIFECYCLE-MAC: on macOS, closing the last window leaves the app (and
+                // the core child, with every window's restorable state) running — only an explicit
+                // quit (Cmd+Q / menu Quit → app.exit, which carries a code) is allowed through. On
+                // Windows, last-window-close still exits.
+                RunEvent::ExitRequested { code, api, .. } => {
+                    if cfg!(target_os = "macos") && code.is_none() {
+                        api.prevent_exit();
                     }
                 }
+                // BASED-WINDOW-LIFECYCLE-MAC: clicking the dock icon with no window open makes one.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen {
+                    has_visible_windows, ..
+                } => {
+                    if !has_visible_windows {
+                        create_window(app, None, &[]);
+                    }
+                }
+                // BASED-OPEN-SQL-ARGV: macOS delivers file opens as Apple Events, never argv — a
+                // double-clicked .sql lands here. Feed the same batcher the argv/single-instance
+                // paths feed, so multi-select coalescing and BASED-SQL-OPEN-TARGET apply unchanged.
+                #[cfg(target_os = "macos")]
+                RunEvent::Opened { urls } => {
+                    let files: Vec<String> = urls
+                        .iter()
+                        .filter_map(|u| u.to_file_path().ok())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .filter(|p| Path::new(p).exists())
+                        .collect();
+                    if !files.is_empty() {
+                        let _ = opened_tx.send(files);
+                    }
+                }
+                RunEvent::Exit => {
+                    // opened_tx must stay captured on every platform (its only send is behind the
+                    // macOS cfg above).
+                    let _ = &opened_tx;
+                    if let Some(state) = app.try_state::<CoreChild>() {
+                        if let Some(mut child) = state.0.lock().unwrap().take() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+                _ => {}
             }
         });
 }
