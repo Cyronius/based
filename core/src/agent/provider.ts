@@ -65,15 +65,11 @@ export function resolveModel(config: ResolvableAiConfig, apiKey: string | null):
       // providerOptions namespace (BASED-AI-PROFILE-PARAMS) — the model spreads that namespace's
       // object straight into the request body.
       const key = apiKey && apiKey.length > 0 ? apiKey : "not-needed";
-      // A blank model means "the server's loaded/default model". The SDK always serializes a
-      // `model` key, but single-model servers only apply their default when the key is *absent*
-      // (LM Studio treats `model: ""` as a lookup), so strip it from the outgoing body.
-      const blankModel = config.model.trim().length === 0;
       const provider = createOpenAICompatible({
         name: "openai-compatible",
         baseURL: config.baseUrl,
         apiKey: key,
-        ...(blankModel ? { fetch: modelStrippingFetch } : {}),
+        fetch: sanitizingFetch,
       });
       return provider(config.model);
     }
@@ -96,34 +92,69 @@ export function resolveModel(config: ResolvableAiConfig, apiKey: string | null):
 }
 
 /**
- * Remove an empty (or whitespace-only) `model` key from a JSON request body, leaving any other
- * body — non-JSON, non-object, or one with a real model id — byte-for-byte untouched. Pure —
- * unit-tested (BASED-AI-PROVIDER-WIRED).
+ * Rewrite an outgoing openai-compatible request body so it survives the stricter servers. Two
+ * fixes, both no-ops on a body that doesn't need them:
+ *
+ *  - A blank `model` means "the server's loaded/default model". The SDK always serializes a `model`
+ *    key, but single-model servers only apply their default when the key is *absent* (LM Studio
+ *    treats `model: ""` as a lookup), so it comes out.
+ *  - `reasoning_content` is dropped from assistant messages — see stripAssistantReasoningContent.
+ *
+ * A non-JSON or non-object body passes through byte-for-byte. Pure — unit-tested
+ * (BASED-AI-PROVIDER-WIRED).
  */
-export function stripEmptyModelFromBody(body: string): string {
+export function sanitizeRequestBody(body: string): string {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(body);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      typeof (parsed as Record<string, unknown>).model === "string" &&
-      ((parsed as Record<string, unknown>).model as string).trim() === ""
-    ) {
-      delete (parsed as Record<string, unknown>).model;
-      return JSON.stringify(parsed);
-    }
+    parsed = JSON.parse(body);
   } catch {
-    // not JSON — leave it alone
+    return body; // not JSON — leave it alone
   }
-  return body;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return body;
+  const obj = parsed as Record<string, unknown>;
+
+  let changed = false;
+  if (typeof obj.model === "string" && obj.model.trim() === "") {
+    delete obj.model;
+    changed = true;
+  }
+  if (stripAssistantReasoningContent(obj)) changed = true;
+  return changed ? JSON.stringify(obj) : body;
 }
 
-/** Global fetch with stripEmptyModelFromBody applied to string request bodies. Bun's `typeof
- *  fetch` carries a `preconnect` property, so the wrapper borrows the real one to satisfy it. */
-const modelStrippingFetch: typeof fetch = Object.assign(
+/**
+ * Delete `reasoning_content` from every assistant message, in place. Returns whether anything was
+ * removed.
+ *
+ * A reasoning model's thinking comes back on the response as `reasoning_content`, the SDK keeps it
+ * as a reasoning part, and on the next turn it serializes it straight back into the request. Servers
+ * split on whether that is legal input: LM Studio ignores it, Cerebras rejects the whole request
+ * ("property 'messages.2.assistant.reasoning_content' is unsupported", HTTP 400), and DeepSeek
+ * documents it as an error too. So the first turn of a conversation succeeds and every turn after it
+ * fails — the failure looks like the provider breaking at random.
+ *
+ * Dropping it unconditionally is safe: it is the model's own scratch work, not part of the
+ * conversation, and no server needs it echoed back to continue.
+ */
+function stripAssistantReasoningContent(body: Record<string, unknown>): boolean {
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return false;
+  let changed = false;
+  for (const message of messages) {
+    if (message === null || typeof message !== "object" || Array.isArray(message)) continue;
+    const m = message as Record<string, unknown>;
+    if (m.role !== "assistant" || !("reasoning_content" in m)) continue;
+    delete m.reasoning_content;
+    changed = true;
+  }
+  return changed;
+}
+
+/** Global fetch with sanitizeRequestBody applied to string request bodies. Bun's `typeof fetch`
+ *  carries a `preconnect` property, so the wrapper borrows the real one to satisfy it. */
+const sanitizingFetch: typeof fetch = Object.assign(
   (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    if (init && typeof init.body === "string") init = { ...init, body: stripEmptyModelFromBody(init.body) };
+    if (init && typeof init.body === "string") init = { ...init, body: sanitizeRequestBody(init.body) };
     return fetch(input, init);
   },
   { preconnect: fetch.preconnect },

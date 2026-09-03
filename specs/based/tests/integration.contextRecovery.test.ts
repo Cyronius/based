@@ -20,6 +20,7 @@ import {
   buildAgent,
   contextRecoveryProcessor,
   defaultCapabilitiesFor,
+  describeProviderError,
   isContextOverflowError,
   openDb,
   shedLargestToolResult,
@@ -273,4 +274,49 @@ describe("BASED-AGENT-CONTEXT-RECOVERY: the whole loop", () => {
     await expect(agent.generate("hello")).rejects.toThrow(/401/);
     expect(calls).toBe(1);
   }, 30_000);
+});
+
+// Traces: BASED-CHAT-UI — "Bad Request" alone told the user nothing. The reason a provider rejects
+// a request (an unsupported parameter, an unknown model, a rejected tool schema) is in the response
+// body the AI SDK's error message drops, and Cerebras rejecting a run is what surfaced that.
+describe("describeProviderError", () => {
+  test("appends the provider's reason from an APICallError responseBody", () => {
+    const err = Object.assign(new Error("Bad Request"), {
+      name: "AI_APICallError",
+      statusCode: 400,
+      responseBody: JSON.stringify({
+        error: { message: "Unsupported value for this model.", type: "invalid_request_error", param: "tool_choice" },
+      }),
+    });
+    // The param names the field the provider choked on; it is only appended when the sentence omits it.
+    expect(describeProviderError(err)).toBe("Bad Request — Unsupported value for this model. (param: tool_choice)");
+  });
+
+  test("reads a parsed `data` body, and a body carried on the cause", () => {
+    expect(describeProviderError({ message: "Bad Request", data: { error: { message: "model 'llama' not found" } } })).toBe(
+      "Bad Request — model 'llama' not found",
+    );
+    expect(
+      describeProviderError({ message: "API call failed", cause: { responseBody: '{"error":{"message":"invalid api key"}}' } }),
+    ).toBe("API call failed — invalid api key");
+  });
+
+  test("a non-JSON body passes through, truncated, and is never printed twice", () => {
+    expect(describeProviderError({ message: "Bad Gateway", responseBody: "upstream connect error" })).toBe(
+      "Bad Gateway — upstream connect error",
+    );
+    const long = "x".repeat(900);
+    const described = describeProviderError({ message: "Bad Request", responseBody: long });
+    expect(described.length).toBeLessThan(700);
+    expect(described.endsWith("…")).toBe(true);
+    // Providers that already inline the body in the message must not get it appended again.
+    expect(describeProviderError({ message: "Bad Request: quota exceeded", responseBody: "quota exceeded" })).toBe(
+      "Bad Request: quota exceeded",
+    );
+  });
+
+  test("an error with no body is just its message", () => {
+    expect(describeProviderError(new Error("fetch failed"))).toBe("fetch failed");
+    expect(describeProviderError(null)).toBe("The agent request failed for an unknown reason.");
+  });
 });

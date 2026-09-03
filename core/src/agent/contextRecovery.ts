@@ -46,7 +46,7 @@ const OVERFLOW_PATTERNS = [
 
 /** Pull every string an error might be carrying its reason in. Providers bury it variously in
  *  `message`, a raw `responseBody`, a parsed `data`, or a `cause`. */
-function errorText(err: unknown): string {
+export function errorText(err: unknown): string {
   if (err == null) return "";
   if (typeof err === "string") return err;
   const parts: string[] = [];
@@ -67,6 +67,66 @@ function errorText(err: unknown): string {
 export function isContextOverflowError(err: unknown): boolean {
   const text = errorText(err);
   return text.length > 0 && OVERFLOW_PATTERNS.some((p) => p.test(text));
+}
+
+// --- surfacing a provider rejection (BASED-CHAT-UI) ---
+
+/** Cap on the provider body appended to a run error — enough for the reason, not a wall of JSON. */
+const MAX_PROVIDER_DETAIL_CHARS = 600;
+
+/**
+ * A run error worth showing the user. An AI SDK `APICallError` stringifies to little more than the
+ * HTTP status ("AI_APICallError: Bad Request"); the reason the provider actually gave — an
+ * unsupported parameter, an unknown model, a rejected tool schema — is in `responseBody`/`data`,
+ * which the bare message throws away. This appends that body when it adds something the message
+ * doesn't already say. Pure — unit-tested.
+ */
+export function describeProviderError(err: unknown): string {
+  const message = String((err as { message?: unknown } | null)?.message ?? err ?? "").trim();
+  const detail = providerDetail(err);
+  if (!detail) return message || "The agent request failed for an unknown reason.";
+  // Some providers already inline the body in the message; don't print it twice.
+  if (message.includes(detail)) return message;
+  return message ? `${message} — ${detail}` : detail;
+}
+
+/** The provider's own words for the rejection, from wherever the error stashed them. */
+function providerDetail(err: unknown): string {
+  const e = err as { responseBody?: unknown; data?: unknown; cause?: unknown } | null;
+  if (e == null || typeof e !== "object") return "";
+  let raw = "";
+  if (typeof e.responseBody === "string" && e.responseBody.trim()) raw = e.responseBody.trim();
+  else if (e.data != null) {
+    try {
+      raw = JSON.stringify(e.data);
+    } catch {
+      raw = "";
+    }
+  }
+  if (!raw) return e.cause != null && e.cause !== err ? providerDetail(e.cause) : "";
+  return truncate(unwrapErrorJson(raw), MAX_PROVIDER_DETAIL_CHARS);
+}
+
+/** `{"error":{"message":"..."}}` (or `{"message":"..."}`) is the OpenAI-compatible shape every
+ *  provider echoes; reduce it to the sentence rather than showing the envelope. */
+function unwrapErrorJson(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const node = (parsed as { error?: unknown })?.error ?? parsed;
+    if (typeof node === "string") return node;
+    const msg = (node as { message?: unknown })?.message;
+    if (typeof msg === "string" && msg.trim()) {
+      const param = (node as { param?: unknown })?.param;
+      return typeof param === "string" && param && !msg.includes(param) ? `${msg} (param: ${param})` : msg;
+    }
+  } catch {
+    // not JSON — the raw body is the best we have
+  }
+  return raw;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
 // Structural shapes for the bits of a Mastra message we touch. Declared here rather than imported

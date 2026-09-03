@@ -8,7 +8,7 @@ import {
   resolveModel,
   resolveExecutionDefaults,
   resolveAiTimeouts,
-  stripEmptyModelFromBody,
+  sanitizeRequestBody,
   DEFAULT_AI_TIMEOUT_SECONDS,
   AI_RUN_TIMEOUT_MULTIPLIER,
 } from "@based/core";
@@ -63,20 +63,61 @@ describe("BASED-AI-PROVIDER-WIRED: resolveModel branches", () => {
 
   test("an empty model key is stripped from the request body", () => {
     const body = JSON.stringify({ model: "", messages: [{ role: "user", content: "hi" }], stream: true });
-    expect(JSON.parse(stripEmptyModelFromBody(body))).toEqual({ messages: [{ role: "user", content: "hi" }], stream: true });
+    expect(JSON.parse(sanitizeRequestBody(body))).toEqual({ messages: [{ role: "user", content: "hi" }], stream: true });
   });
 
   test("a whitespace-only model key is stripped too", () => {
-    expect(JSON.parse(stripEmptyModelFromBody(JSON.stringify({ model: "  ", stream: false })))).toEqual({ stream: false });
+    expect(JSON.parse(sanitizeRequestBody(JSON.stringify({ model: "  ", stream: false })))).toEqual({ stream: false });
   });
 
   test("a non-empty model key is left untouched", () => {
     const body = JSON.stringify({ model: "local-model", messages: [] });
-    expect(stripEmptyModelFromBody(body)).toBe(body);
+    expect(sanitizeRequestBody(body)).toBe(body);
   });
 
   test("a non-JSON body passes through verbatim", () => {
-    expect(stripEmptyModelFromBody("not json")).toBe("not json");
+    expect(sanitizeRequestBody("not json")).toBe("not json");
+    expect(sanitizeRequestBody("[1,2,3]")).toBe("[1,2,3]");
+  });
+
+  // The bug: turn 1 of a Cerebras conversation succeeded and turn 2 died with HTTP 400
+  // "property 'messages.2.assistant.reasoning_content' is unsupported". A reasoning model returns
+  // its thinking as `reasoning_content`, the SDK keeps it, and then sends it straight back.
+  test("reasoning_content is stripped from assistant messages, leaving everything else intact", () => {
+    const body = JSON.stringify({
+      model: "qwen-3-32b",
+      messages: [
+        { role: "system", content: "you are based" },
+        { role: "user", content: "how many rows?" },
+        { role: "assistant", content: "12", reasoning_content: "the user wants a count…", tool_calls: [{ id: "t1" }] },
+        { role: "user", content: "and columns?" },
+      ],
+      stream: true,
+    });
+    expect(JSON.parse(sanitizeRequestBody(body))).toEqual({
+      model: "qwen-3-32b",
+      messages: [
+        { role: "system", content: "you are based" },
+        { role: "user", content: "how many rows?" },
+        { role: "assistant", content: "12", tool_calls: [{ id: "t1" }] },
+        { role: "user", content: "and columns?" },
+      ],
+      stream: true,
+    });
+  });
+
+  test("reasoning_content on a non-assistant message is left alone, and a clean body is byte-identical", () => {
+    // Only the assistant slot is rejected; nothing else is ours to rewrite.
+    const userReasoning = JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi", reasoning_content: "x" }] });
+    expect(sanitizeRequestBody(userReasoning)).toBe(userReasoning);
+
+    const clean = JSON.stringify({ model: "m", messages: [{ role: "assistant", content: "hi" }] });
+    expect(sanitizeRequestBody(clean)).toBe(clean);
+  });
+
+  test("a blank model and reasoning_content are both fixed in one pass", () => {
+    const body = JSON.stringify({ model: " ", messages: [{ role: "assistant", content: "hi", reasoning_content: "…" }] });
+    expect(JSON.parse(sanitizeRequestBody(body))).toEqual({ messages: [{ role: "assistant", content: "hi" }] });
   });
 });
 

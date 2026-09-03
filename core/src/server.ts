@@ -46,7 +46,7 @@ import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeout
 import { AuditStore } from "./agent/audit";
 import { createAgentMemory } from "./agent/memory";
 import { threadTitle, isDerivableTitle } from "./agent/threadTitle";
-import { isContextOverflowError } from "./agent/contextRecovery";
+import { describeProviderError, isContextOverflowError } from "./agent/contextRecovery";
 import { buildAgent, AGENT_ID } from "./agent/agent";
 import { createSubagentRunner } from "./agent/subagent";
 import { SUBAGENT_CONCURRENCY } from "./agent/tools/delegate";
@@ -1387,7 +1387,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
                 // error codes) tells them nothing they can use.
                 const message = isContextOverflowError(err)
                   ? "This conversation no longer fits the model's context window. Start a new chat, or switch to a profile with a larger context."
-                  : String((err as { message?: string })?.message ?? err);
+                  : describeProviderError(err);
                 controller.enqueue(aguiEncoder.encode({ type: "RUN_ERROR", message } as unknown as BaseEvent));
               } catch {
                 // controller already torn down

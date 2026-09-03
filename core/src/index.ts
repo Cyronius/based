@@ -60,7 +60,7 @@ export {
   AiConfigStore,
   resolveModel,
   resolveExecutionDefaults,
-  stripEmptyModelFromBody,
+  sanitizeRequestBody,
   providerOptionsNamespace,
   resolveAiTimeouts,
   DEFAULT_AI_TIMEOUT_SECONDS,
@@ -134,6 +134,7 @@ export {
 } from "./agent/toolPayload";
 export {
   contextRecoveryProcessor,
+  describeProviderError,
   isContextOverflowError,
   shedLargestToolResult,
   CONTEXT_RECOVERY_MAX_ATTEMPTS,
