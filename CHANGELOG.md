@@ -7,6 +7,36 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.5] - 2026-09-04
+
+### macOS and Linux ports (experimental), LanceDB table creation, per-window sessions
+
+* **macOS (Apple Silicon) — experimental.** The Tauri shell now runs on macOS: native file dialogs,
+  a real menu bar, platform-correct accelerators (Cmd instead of Ctrl), window lifecycle and
+  Apple Events handling, and platform-resolved data/credential paths (Application Support +
+  Keychain). Packaged as an unsigned `.dmg` with a Homebrew cask. Treat it as a preview — it is
+  younger and far less exercised than the Windows build.
+* **Linux — in progress.** Not shipped and not buildable yet. Most of the shared groundwork landed
+  with the macOS port; the remaining work is XDG paths and a secret store.
+* **Release pipeline.** Pushing a `v*` tag now typechecks, tests, builds both the Windows installer
+  and the macOS `.dmg` on pinned runners, publishes one GitHub release with both artifacts and
+  their SHA-256s, and bumps the Homebrew tap. Windows releases no longer depend on one machine's
+  local toolchain.
+* **Electrobun shell removed.** `bun run dev` launches the Tauri shell; the old shell and its
+  packaging are gone.
+* **LanceDB:** create databases and tables from the app, including an agent tool that proposes a
+  table and lets you review it before it is created.
+* **Sessions are per window, not per tab.** Agent sessions and the connection API now scope to the
+  window, which is what multi-window use actually implied.
+* **SQL file opening:** multi-file `.sql` opens are coalesced into one window, and a new setting
+  controls whether files open in the current window or a new one.
+* **Agent profiles:** `model` is now optional for OpenAI-compatible providers (fixes Cerebras and
+  similar endpoints that reject or ignore it), and a newly created profile activates on save.
+* **UI:** results and output panes collapse to a thin bottom bar via chevrons; pill contrast fixed.
+* **Fixes:** the core process no longer dies silently on startup failure, and a flaky thread-list
+  test was stabilized.
+
+
 ## [0.1.4] - 2026-08-05
 
 ### Tauri desktop shell, agent resilience, and text zoom

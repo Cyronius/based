@@ -10,6 +10,8 @@ running entirely on your machine.
 [![Latest release](https://img.shields.io/github/v/release/Cyronius/based?style=flat-square)](https://github.com/Cyronius/based/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 ![Windows x64](https://img.shields.io/badge/platform-Windows%20x64-informational?style=flat-square)
+![macOS arm64 experimental](https://img.shields.io/badge/macOS%20arm64-experimental-orange?style=flat-square)
+![Linux in progress](https://img.shields.io/badge/Linux-in%20progress-lightgrey?style=flat-square)
 
 <img src="docs/screenshots/hero.png" width="900" alt="based, showing the object explorer, a query tab with results, and the agent answering in the right rail">
 
@@ -141,7 +143,11 @@ Download the latest `based-<version>-Setup.exe` from
 
 Uninstalling leaves your data (`%APPDATA%\based`) and your saved credentials alone.
 
-### macOS (Apple Silicon)
+### macOS (Apple Silicon) — experimental
+
+> **Preview build.** The macOS port works, but it is much younger than the Windows build and
+> has seen a fraction of the use. Expect rough edges, and please
+> [file them](https://github.com/Cyronius/based/issues).
 
 The recommended path is Homebrew, which skips the Gatekeeper friction entirely:
 
@@ -167,6 +173,12 @@ Applications.
 
 Data lives in `~/Library/Application Support/based`; credentials go to the macOS Keychain.
 Intel Macs aren't supported.
+
+### Linux — in progress
+
+Not shipped yet, and there is no build to download. Most of the shared groundwork landed with
+the macOS port; what remains is XDG paths and a secret store. Track it in
+[specs/based/plans/macos-port.md](specs/based/plans/macos-port.md).
 
 ## Getting started
 
@@ -552,7 +564,11 @@ set (SQL Server keeps counting the true total past that point; DuckDB/LanceDB si
 **Alpha, and young.** based is useful enough to be a daily driver and is being used as one, but it's
 weeks old, not years. Specifically:
 
-- **Windows x64 only.** Secrets go through Windows Credential Manager and packaging is Windows-only.
+- **Windows x64 is the supported platform.** It is the build that gets daily use, and the only
+  one treated as done.
+- **macOS (Apple Silicon) is experimental.** It builds, ships as an unsigned `.dmg` and a
+  Homebrew cask, and works — but it is a preview, not a finished port. Intel Macs are out.
+- **Linux is in progress**, not released. See the install section above.
 - **SQL Server / Azure SQL, Snowflake, and LanceDB.** The engine registry is built for more —
   adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.
