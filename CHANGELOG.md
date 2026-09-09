@@ -7,6 +7,19 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.6] - 2026-09-09
+
+### Capi avatar redesign
+
+* **Art:** Capi is redrawn from scratch with shading, layered eyes, a glossy muzzle, and rotatable
+  ears, in `bust` (chat row) and `full` (rail) framings. Chibi proportions and a bigger head keep
+  the face readable at the small chat size, where the old flat-fill art was basically invisible.
+* **Motion:** breathing, head bob, blinking, and ear twitches all read at 96px now (the old 1%
+  breathe scale was under a pixel), and pose crossfades dropped from 700ms to 220ms so expression
+  changes actually register. `prefers-reduced-motion` still turns off the idle animation.
+* **Reactive moods:** Capi's expression is now driven by real agent/chat state instead of picked
+  at random every 30-90s.
+
 ## [0.1.5] - 2026-09-04
 
 ### macOS and Linux ports (experimental), LanceDB table creation, per-window sessions
