@@ -27,7 +27,8 @@ import {
   type ChatThreadSummary,
 } from "../agent/threads";
 import { downloadTranscript } from "../agent/transcriptDownload";
-import { CapiAvatar } from "./CapiAvatar";
+import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { SLEEPY_AFTER_MS } from "../agent/capiMood";
 import { CapiChat } from "./CapiChat";
 import { relativeTime } from "./HistoryPanel";
 import { IconButton } from "./IconButton";
@@ -371,8 +372,12 @@ export function RightRail() {
     };
   }, [dragging]);
 
+  // BASED-CAPI-AVATAR: the disconnected rail's full-body Capi dozes off when nobody is around.
+  const { idleMs, touch } = useIdleMs(connected);
+
   return (
     <aside
+      onPointerMove={touch}
       className={`relative shrink-0 flex border-l border-line-soft bg-ink-950 ${dragging ? "" : "transition-[width]"}`}
       style={{ width: open ? width : 32 }}
     >
@@ -408,7 +413,7 @@ export function RightRail() {
           <div className="flex flex-1 min-w-0 flex-col fade-up">
             <CapiHeader toggle={toggle} />
             <div className="p-4 pr-5">
-              <CapiAvatar className="w-36 h-auto mb-3" />
+              <CapiAvatar className="w-36 h-auto mb-3" variant="full" mood={idleMs >= SLEEPY_AFTER_MS ? "sleepy" : "idle"} />
               <div className="ledger-label mb-3">Capi</div>
               <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">Connect to a database to chat with the agent.</p>
             </div>

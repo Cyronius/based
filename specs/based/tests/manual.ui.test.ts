@@ -362,3 +362,15 @@ describe.skip("BASED-LANCE-CONN-DEFAULT-PROFILES: manual verification", () => {
 describe.skip("BASED-EDITOR-VIM: manual verification", () => {
   it.todo("see spec.md procedure");
 });
+
+// Traces: BASED-CAPI-AVATAR (canonical spec: specs/based/spec.md)
+// Verification: manual (the mood precedence is unit-tested in unit.capiMood.test.ts) — the capybara
+// in the chat prompt row reacts to the run: tilts toward the textarea while you type, shows thought
+// dots while thinking, squints and nods during a tool call, flaps his mouth as the answer streams,
+// hops and smiles when it settles, shakes his head and frowns on an error or stall, leans in
+// wide-eyed while an approval card is up, and dozes off after 3 idle minutes. Pupils follow the
+// cursor when idle. /?capi renders every mood side by side. Reduced-motion keeps the expressions and
+// drops the movement.
+describe.skip("BASED-CAPI-AVATAR: manual verification", () => {
+  it.todo("see spec.md procedure");
+});
