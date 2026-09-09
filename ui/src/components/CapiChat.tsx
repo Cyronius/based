@@ -17,7 +17,8 @@ import {
 } from "../agent/aiTimeouts";
 import { parseSqlBlocks } from "../lib/sqlBlocks";
 import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
-import { CapiAvatar } from "./CapiAvatar";
+import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { deriveMood, HAPPY_WINDOW_MS } from "../agent/capiMood";
 
 function SendIcon() {
   return (
@@ -42,6 +43,22 @@ function ToolIcon() {
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6a2 2 0 1 0 3 3l6-6a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6Z" />
     </svg>
   );
+}
+
+// Traces: BASED-CAPI-AVATAR — true while `currentMessage` is growing; clears 250 ms after the last
+// delta so the avatar's mouth flaps with the text and stops when the model pauses.
+function useSpeaking(text: string | undefined, streaming: boolean): boolean {
+  const [speaking, setSpeaking] = useState(false);
+  useEffect(() => {
+    if (!streaming || !text) {
+      setSpeaking(false);
+      return;
+    }
+    setSpeaking(true);
+    const t = setTimeout(() => setSpeaking(false), 250);
+    return () => clearTimeout(t);
+  }, [text, streaming]);
+  return speaking;
 }
 
 // Backend tool names are snake_case; render them as readable labels without shouting (project UI
@@ -174,6 +191,14 @@ export function CapiChat() {
   // Wall-clock of the most recently completed turn; cleared at the start of each new send so the
   // readout only ever belongs to the last answer.
   const [lastTurnMs, setLastTurnMs] = useState<number | null>(null);
+  // BASED-CAPI-AVATAR: the post-answer smile lasts a few seconds, then Capi settles back to idle.
+  const [answeredAt, setAnsweredAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (answeredAt == null) return;
+    const t = setTimeout(() => setAnsweredAt(null), HAPPY_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [answeredAt]);
+  const [inputFocused, setInputFocused] = useState(false);
   const open = useStore((s) => s.rightRailOpen);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // React state updates (isStreaming) aren't visible to a second `send()` call that
@@ -217,6 +242,7 @@ export function CapiChat() {
     if (isStreaming || sendingRef.current) return;
     sendingRef.current = true;
     setLastTurnMs(null);
+    setAnsweredAt(null);
     const startedAt = performance.now();
     try {
       const userMsg: Message = { id: `msg_${Date.now()}`, role: "user", content: text };
@@ -233,6 +259,7 @@ export function CapiChat() {
       );
       // runAgent resolves at turn end (after any chained tool runs) — wall-clock from send to answer.
       setLastTurnMs(performance.now() - startedAt);
+      setAnsweredAt(Date.now());
     } catch (err) {
       // Traces: BASED-CHAT-UI — a run that dies before the stream opens (HTTP error, unreachable
       // server, no AI profile) rejects here instead of emitting RUN_ERROR; without this catch the
@@ -308,8 +335,27 @@ export function CapiChat() {
     });
   }, [messages]);
 
+  // BASED-CAPI-AVATAR: mood from the signals above. Pointer/keyboard activity in the rail resets the
+  // sleepy clock; so does any change in the thread or the run state.
+  const { idleMs, touch } = useIdleMs(`${messages.length}:${isStreaming}`);
+  const speaking = useSpeaking(currentMessage, isStreaming);
+  const lastStep = activitySteps[activitySteps.length - 1];
+  const mood = deriveMood({
+    isStreaming,
+    streamingText: !!currentMessage,
+    lastStepKind: lastStep?.kind ?? null,
+    lastStepTool: lastStep?.kind === "tool" ? lastStep.label : null,
+    hasError: !!lastNonTool?.id.startsWith("error_"),
+    stalled,
+    needsContinue: showContinue,
+    justAnswered: answeredAt != null,
+    inputFocused,
+    inputText: input,
+    idleMs,
+  });
+
   return (
-    <div className="flex flex-1 min-h-0 min-w-0 flex-col">
+    <div className="flex flex-1 min-h-0 min-w-0 flex-col" onPointerMove={touch} onKeyDown={touch}>
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         <div ref={contentRef} className="pl-3 pr-4 py-2 space-y-3">
         {messages.length === 0 && !isStreaming && (
@@ -436,8 +482,8 @@ export function CapiChat() {
       </div>
       <div className="border-t border-line-soft pl-2 pr-3 py-2">
         <div className="flex items-stretch gap-2">
-          <div className="flex w-24 shrink-0 items-center justify-center">
-            <CapiAvatar className="h-24 w-auto" />
+          <div className="flex w-20 shrink-0 items-center justify-center">
+            <CapiAvatar className="h-20 w-auto" mood={mood} speaking={speaking} variant="full" />
           </div>
           <div className="relative flex-1 min-w-0">
             <textarea
@@ -454,6 +500,8 @@ export function CapiChat() {
                 }
               }}
               disabled={isStreaming}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
             />
             <button
               className="absolute right-1.5 bottom-1.5 rounded p-1 text-brass hover:text-brass-soft disabled:opacity-40"

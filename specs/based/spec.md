@@ -1882,14 +1882,14 @@ the mutation gate).
 **Applies to:** based (ui)
 **Test category:** manual
 
-The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
+The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` (full body, ~80 px tall, mood-driven — `BASED-CAPI-AVATAR`) sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
 1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
 2. Ask for SQL → a highlighted SQL block appears with Insert / Run, labeled with the agent's purpose comment and the first statement line → Run opens a results tab
 3. Ask for an update → approval card renders; Reject = nothing runs; Approve = runs via the endpoint and an audit row appears
 4. Kill the app mid-thread, reopen, same connection → the window's prior turns are restored from server memory (per-window restore — BASED-AGENT-THREADS)
-5. Capi's avatar renders to the left of the prompt textarea at the textarea's full height; clicking the send icon inside the textarea (or pressing Enter) sends the message; the icon dims while streaming
+5. Capi's avatar (full body, reacting to the run per `BASED-CAPI-AVATAR`) renders to the left of the prompt textarea at the textarea's full height; clicking the send icon inside the textarea (or pressing Enter) sends the message; the icon dims while streaming
 6. After an answer settles, a subtle wall-clock readout of that turn (send→answer, e.g. `3.1s`) shows at the bottom of the thread; it clears when the next message is sent and is not persisted across reload (front-end only, `performance.now()` bracket around `runAgent`)
 7. Ask something that takes several rounds of tool calls ("exercise every query tool and report what breaks") → with the browser console open, no `Encountered two children with the same key` warning and no `Maximum update depth exceeded`; each narration paragraph and each tool card appears exactly once in the transcript. Message ids are not unique — the Mastra bridge pins every post-tool text segment of a run to one `-agui-text` continuation id — so the rail numbers repeated ids into distinct React keys; without that the reconciler mismatches fibers and replays whole blocks on screen
 8. With no AI profile configured (Settings → Agent, all profiles removed), send a message → an error block appears in the thread reading "No agent profile configured — add one in Settings → Agent." (not silence, not a raw `HTTP 400: {...}` dump), and the chat stays usable. Same with the model backend down: send → a readable error block, no dead spinner, no unhandled rejection in the console
@@ -2086,6 +2086,59 @@ in-chat prompt:
 - Tool call limit 2 → tool-heavy question ends after 2 rounds → continue prompt; Keep going sends "Continue." and the new run has a fresh budget; Dismiss hides the prompt for that ending
 - Tool call limit 30 → the same question completes with a final assistant summary and no prompt
 - Active profile's base URL pointed at a path the backend does not serve → send → empty-turn prompt, not silence; Try again resends the original message; Dismiss hides it
+
+### BASED-CAPI-MOOD: Avatar mood derived from chat state
+**Applies to:** based (ui)
+**Test category:** unit
+
+The Capi avatar's mood is a pure function of signals the chat rail already tracks — never chosen at random. `deriveMood(signals)` (`ui/src/agent/capiMood.ts`) maps `{ isStreaming, streamingText, lastStepKind, lastStepTool, hasError, stalled, needsContinue, justAnswered, inputFocused, inputText, idleMs }` to one of `idle | sleepy | listening | thinking | working | waiting | talking | happy | concerned`, first match wins:
+
+1. `hasError`, `stalled` or `needsContinue` → **concerned**
+2. streaming with text on screen → **talking**
+3. streaming, last activity step is a tool → **waiting** when that tool is `run_mutation` (the approval card is up), else **working**
+4. streaming otherwise → **thinking**
+5. `justAnswered` (a turn settled with an answer within `HAPPY_WINDOW_MS`, 4 s) → **happy**
+6. textarea focused with non-blank text → **listening**
+7. not focused and `idleMs ≥ SLEEPY_AFTER_MS` (3 min) → **sleepy**
+8. else **idle**
+
+**Acceptance criteria (`unit.capiMood.test.ts`):**
+- streaming + tool step `run_mutation` → `waiting`; any other tool → `working`
+- streaming + thinking step (or no step yet) + no text → `thinking`; with text → `talking`, regardless of the step
+- `hasError` / `stalled` / `needsContinue` → `concerned` even while streaming or just answered
+- `justAnswered` and not streaming → `happy`, even with the textarea focused and filled
+- focused + non-blank text → `listening`; focused + whitespace, or text without focus → `idle`
+- `idleMs` at the threshold → `sleepy`; one below → `idle`; focus or streaming blocks sleepy
+
+### BASED-CAPI-AVATAR: Reactive capybara avatar
+**Applies to:** based (ui)
+**Test category:** manual
+
+`CapiAvatar` (`ui/src/components/CapiAvatar.tsx`) is a layered SVG capybara — shaded fur, large highlighted eyes with separate eyelids, muzzle, whiskers, ears on their own pivots, and an orange on his head (`orange` prop, default on). It takes a `mood` (`BASED-CAPI-MOOD`), a `speaking` flag, and a `variant`: `full` (whole body — the chat prompt row at 80 px and the disconnected rail at 144 px) or `bust` (head and shoulders; gallery only). Every moving part is a `<g>` with a fill-box transform origin animated from `index.css` ("Capi avatar"); poses crossfade in 220 ms.
+
+Behaviour per mood (transforms in SVG user units; the drawing is 520 units tall, so at 80 px one unit is about a sixth of a pixel):
+- **idle** — breathing (`scaleY` 3 %) and a head bob (8 units, ±2.5°); pupils follow the cursor anywhere on the page, saturating at ~250 px; blinks every 2.5–6 s (20 % double); one ear flicks every 5–12 s.
+- **sleepy** — lids at 62 %, head drooped, breathing slowed to 6.5 s, floating "z z z".
+- **listening** — brows raised, small smile, head tilted 5° toward the textarea, ears perked, gaze right.
+- **thinking** — one brow raised, small "o" mouth, gaze up-left, head sways, three pulsing thought dots above the head.
+- **working** — lids at 32 % (focused squint), gaze down, quick nod loop (0.75 s), ears back.
+- **waiting** — brows raised, eyes wide, leaning forward (`scale` 1.04), gaze straight at the user.
+- **talking** — smile, faster head bob; while `speaking` the open-mouth pose flaps at ~270 ms. `speaking` is true while `currentMessage` is growing and clears 250 ms after the last delta (`useSpeaking` in `CapiChat`).
+- **happy** — arched happy eyes, big smile, ears wiggle four times, and a one-shot hop (34 units) on entry.
+- **concerned** — concerned brows, frown, lids at 15 %, ears drooped 20°, head lowered, one-shot head shake (±5°, 600 ms) on entry; the mouth never flaps in this mood.
+
+`prefers-reduced-motion: reduce` disables breathing, bobbing, sway/nod, hop, shake, ear animation, the mouth flap and the dot/zzz loops; expressions, eyelids and gaze still change. The sleepy clock (`useIdleMs`) resets on pointer or keyboard activity inside the rail and on any thread/run-state change; it samples every 15 s. A dev gallery of every mood renders at `/?capi` (`CapiGallery`, mounted by `main.tsx`; not reachable from the app UI).
+
+**Verification procedure (requires a healthy model backend):**
+1. Open `http://localhost:5183/?capi` → nine avatars, one per mood, labelled; each blinks on its own schedule and an ear flicks now and then; the idle one's pupils follow the mouse; "replay entry" makes happy hop and concerned shake; the speaking toggle flaps every mouth except concerned's; variant "full" shows the body, "bust" the head
+2. In the app, open the rail before connecting → full-body Capi; leave the pointer outside the rail 3 min → lids half-close and "z"s float
+3. Connect, open the rail → full-body Capi, about 80 px tall, to the left of the textarea, not clipped; move the mouse around the window → pupils follow
+4. Focus the textarea and type → head tilts toward the textarea, brows up, ears up; clear the text → back to idle
+5. Send a question that needs a tool → thought dots and up-left gaze, then a squint and nod while the tool runs, then a flapping mouth while the answer streams, then a hop and smile that fades within ~4 s
+6. Ask for an update → approval card → Capi leans in wide-eyed until Approve/Reject
+7. Point the active profile at an unreachable URL and send → head shake, frown, drooped ears; stays until the next send
+8. Set the profile's response timeout to 5 s and ask a slow question → concerned when the stall prompt appears; Keep waiting → back to the run's mood
+9. OS reduced-motion on → no bob/hop/shake/flap, but expressions still change through the flow above
 
 ### BASED-CHAT-SQL-LABELS: Purpose-comment labels on SQL blocks
 **Applies to:** based (ui + core)

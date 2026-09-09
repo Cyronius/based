@@ -7,6 +7,7 @@ import { applyTheme, themeHint, applyFontScale, fontScaleHint, syncMonacoTheme }
 import { initLsp } from "./lsp/manager";
 import { registerLspProviders } from "./lsp/providers";
 import { App } from "./App";
+import { CapiGallery } from "./components/CapiGallery";
 
 // Paint the hinted theme onto <html> before React mounts (avoids a flash); the server value
 // reconciles it once App boots. Monaco's "based" theme is defined from the resulting variables.
@@ -18,8 +19,10 @@ syncMonacoTheme(monaco);
 initLsp();
 registerLspProviders();
 
+// Dev-only: `?capi` renders every avatar mood side by side so the art can be iterated without
+// driving the agent (BASED-CAPI-AVATAR).
+const capiGallery = new URLSearchParams(window.location.search).has("capi");
+
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+  <React.StrictMode>{capiGallery ? <CapiGallery /> : <App />}</React.StrictMode>,
 );
