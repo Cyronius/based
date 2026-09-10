@@ -4,9 +4,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, getSecret } from "@based/core";
-import { MssqlAdapter } from "@based/core/mssql";
-import type { ConnectionInput, ConnectionConfig } from "@based/core";
+import { startServer, getSecret } from "@cyronius/based-core";
+import { MssqlAdapter } from "@cyronius/based-core/mssql";
+import type { ConnectionInput, ConnectionConfig } from "@cyronius/based-core";
 import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const TOKEN = "spec-token";

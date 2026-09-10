@@ -25,7 +25,8 @@
     "build:ui": "bun run --cwd ui build",
     "shell": "bun run --cwd shell-tauri dev",
     "test": "bun run --cwd specs test",
-    "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell-tauri typecheck"
+    "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell-tauri typecheck",
+    "check": "bun scripts/check-boundaries.ts && bun scripts/check-private.ts --tree"
   },
   "overrides": {
     "zod": "3.25.76"

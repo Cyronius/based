@@ -4,8 +4,8 @@
 // no fallback: a real hostname must never be baked into the repo, and a silent default would make
 // a green run ambiguous about which database it actually hit. Unset env → every live suite skips.
 // See docs/development.md for the setup.
-import { testConnection } from "@based/core";
-import type { ConnectionConfig } from "@based/core";
+import { testConnection } from "@cyronius/based-core";
+import type { ConnectionConfig } from "@cyronius/based-core";
 
 const server = process.env.BASED_TEST_SERVER ?? "";
 const database = process.env.BASED_TEST_DB ?? "";

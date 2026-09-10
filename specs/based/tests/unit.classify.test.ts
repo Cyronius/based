@@ -1,6 +1,6 @@
 // Traces: BASED-AGENT-RUNQUERY (read-only classifier)
 import { describe, expect, test } from "bun:test";
-import { isReadOnly, firstKeyword } from "@based/core";
+import { isReadOnly, firstKeyword } from "@cyronius/based-core";
 
 describe("BASED-AGENT-RUNQUERY: isReadOnly classifier", () => {
   test("plain SELECT and leading CTE are read-only", () => {

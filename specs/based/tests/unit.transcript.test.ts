@@ -2,7 +2,7 @@
 // the save_chat_transcript tool (messages from agent memory) and the chat header's download button
 // (messages straight off the live AgentClient), so it is asserted against the shared AG-UI shape.
 import { describe, expect, test } from "bun:test";
-import { transcriptMarkdown } from "@based/core";
+import { transcriptMarkdown } from "@cyronius/based-core";
 import type { Message } from "@ag-ui/core";
 
 const AT = "2026-07-26T12:00:00.000Z";

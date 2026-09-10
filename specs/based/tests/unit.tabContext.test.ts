@@ -1,11 +1,11 @@
 // Traces: BASED-AGENT-TAB-CONTEXT — the server-side renderer for the client's workspace snapshot.
 // (The UI-side builders are covered in unit.uiTabContext.test.ts.)
 import { describe, expect, test } from "bun:test";
-import { renderTabContext, buildAgent, GENERIC_CORE, agentInstructions, MSSQL_PERSONA, mssqlBriefing, defaultCapabilitiesFor, createAgentMemory } from "@based/core";
+import { renderTabContext, buildAgent, GENERIC_CORE, agentInstructions, MSSQL_PERSONA, mssqlBriefing, defaultCapabilitiesFor, createAgentMemory } from "@cyronius/based-core";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolDeps } from "@based/core";
+import type { ToolDeps } from "@cyronius/based-core";
 
 describe("BASED-AGENT-TAB-CONTEXT: renderTabContext", () => {
   test("absent or garbage input renders nothing", () => {

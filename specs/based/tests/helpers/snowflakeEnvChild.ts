@@ -7,12 +7,12 @@
 // have set the variable already. A fresh process is what makes it meaningful — in the shared test
 // process another suite may already have loaded the driver.
 import { createRequire } from "node:module";
-import type { ConnectionConfig } from "@based/core";
+import type { ConnectionConfig } from "@cyronius/based-core";
 
 const driverLoaded = (): boolean =>
   Object.keys(require.cache).some((k) => /[\\/]node_modules[\\/].*snowflake-sdk/i.test(k));
 
-const { SnowflakeAdapter } = await import("@based/core/snowflake");
+const { SnowflakeAdapter } = await import("@cyronius/based-core/snowflake");
 // Importing the adapter must not pull the driver in (the value import is lazy); the env var is
 // therefore still untouched at this point, which is exactly why it can't be a module side effect.
 const lazyOnImport = !driverLoaded();
@@ -39,7 +39,7 @@ for (let i = 0; i < 150 && !driverLoaded(); i++) await Bun.sleep(100);
 // snowflake-sdk is a dependency of core, not of specs, so resolve it from the adapter module rather
 // than from here — no path arithmetic to rot. It is CJS, so this returns the very module instance
 // the driver itself is holding: the real detection result, not a second run of it.
-const pd = createRequire(import.meta.resolve("@based/core/snowflake"))(
+const pd = createRequire(import.meta.resolve("@cyronius/based-core/snowflake"))(
   "snowflake-sdk/dist/lib/telemetry/platform_detection",
 ) as { getDetectedPlatforms: () => Promise<string[]> };
 

@@ -9,8 +9,8 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as lancedb from "@lancedb/lancedb";
-import type { ConnectionConfig, QueryChunk, WireValue } from "@based/core";
-import { LanceDbAdapter } from "@based/core/lancedb";
+import type { ConnectionConfig, QueryChunk, WireValue } from "@cyronius/based-core";
+import { LanceDbAdapter } from "@cyronius/based-core/lancedb";
 
 const DIM = 8;
 const soloDir = mkdtempSync(join(tmpdir(), "based-lancesql-solo-"));
@@ -228,7 +228,7 @@ describe("Lance SQL (embedded DuckDB)", () => {
   }, 120_000);
 
   test("BASED-LANCE-SQL: bridge boot failure emits a descriptive error and later runs retry the boot", async () => {
-    const { LanceSqlBridge, LanceSqlSetupError } = await import("@based/core/lancedb-sql");
+    const { LanceSqlBridge, LanceSqlSetupError } = await import("@cyronius/based-core/lancedb-sql");
     // A folder name containing a double quote cannot be attached — a deterministic boot failure
     // (the INSTALL-offline variant carries the same LanceSqlSetupError copy but needs a blocked
     // network to reproduce; that path is exercised manually).
@@ -249,7 +249,7 @@ describe("Lance SQL (embedded DuckDB)", () => {
   }, 120_000);
 
   test("BASED-LANCE-SQL: querying a table in an unreadable attached dir errors gracefully", async () => {
-    const { LanceSqlBridge } = await import("@based/core/lancedb-sql");
+    const { LanceSqlBridge } = await import("@cyronius/based-core/lancedb-sql");
     // ATTACH of a nonexistent dir is lazy (no boot error); the failure surfaces at query time.
     const bridge = new LanceSqlBridge({ dir: join(soloDir, "does-not-exist-at-all"), folders: null }, 100);
     const chunks: QueryChunk[] = [];

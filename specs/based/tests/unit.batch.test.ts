@@ -1,6 +1,6 @@
 // Traces: BASED-BATCH-GO
 import { describe, expect, test } from "bun:test";
-import { splitBatches } from "@based/core";
+import { splitBatches } from "@cyronius/based-core";
 
 describe("BASED-BATCH-GO: GO batch splitting", () => {
   test("splits on GO lines", () => {

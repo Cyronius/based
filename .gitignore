@@ -26,3 +26,9 @@ shell-tauri/icons/ios/
 *.pem
 *.key
 *_rsa_key*
+
+# The paid product (based.ai) lives in a sibling repo, never here. Backstop for scripts/check-private.ts.
+based-ai/
+paid/
+private/
+*.private/

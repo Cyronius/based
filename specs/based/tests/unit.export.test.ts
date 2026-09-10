@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
-import { toCsv, writeXlsx } from "@based/core";
-import type { ColumnInfo, WireValue } from "@based/core";
+import { toCsv, writeXlsx } from "@cyronius/based-core";
+import type { ColumnInfo, WireValue } from "@cyronius/based-core";
 
 describe("BASED-EXPORT-CSV: CSV export", () => {
   const cols: ColumnInfo[] = [

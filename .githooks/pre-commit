@@ -1,0 +1,3 @@
+#!/bin/sh
+# One-time setup: git config core.hooksPath .githooks
+exec bun scripts/check-private.ts --staged

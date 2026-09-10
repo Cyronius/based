@@ -9,10 +9,13 @@ Start with [docs/development.md](docs/development.md) for setup and dev loops.
 
 ```sh
 bun run typecheck
+bun run check
 bun test
 ```
 
-Both must pass. Integration tests self-skip without a SQL Server — that's expected and fine.
+All three must pass. Integration tests self-skip without a SQL Server — that's expected and fine.
+`check` keeps `core/` and `ui/` from importing each other and keeps private paths out of the repo;
+run `git config core.hooksPath .githooks` once so the second half also runs before each commit.
 
 Match the surrounding code. This codebase has a consistent house style: comments explain *why*, not
 *what*, and non-obvious workarounds carry the diagnosis that justifies them. Several files

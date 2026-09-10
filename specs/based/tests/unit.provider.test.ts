@@ -11,7 +11,7 @@ import {
   sanitizeRequestBody,
   DEFAULT_AI_TIMEOUT_SECONDS,
   AI_RUN_TIMEOUT_MULTIPLIER,
-} from "@based/core";
+} from "@cyronius/based-core";
 
 const base = { id: "p1", baseUrl: "", model: "m", deployment: undefined as string | undefined };
 

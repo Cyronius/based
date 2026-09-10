@@ -3,7 +3,7 @@
 // guard) and response parsing (models wrap JSON in prose/fences; parsing must survive that and
 // fall back per-cluster to the TF-IDF hint).
 import { describe, expect, test } from "bun:test";
-import { buildLabelPrompt, clampClusters, parseLabelResponse } from "@based/core";
+import { buildLabelPrompt, clampClusters, parseLabelResponse } from "@cyronius/based-core";
 
 const clusters = [
   { id: 0, hint: "invoice, payment", samples: ["Invoice overdue for order 12", "Payment failed on retry"] },

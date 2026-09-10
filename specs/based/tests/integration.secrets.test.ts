@@ -1,14 +1,14 @@
 // Traces: BASED-SECRET-STORE, BASED-SNOWFLAKE-AUTH
 import { createRequire } from "node:module";
 import { describe, expect, test } from "bun:test";
-import { MAX_SECRET_BYTES, setSecret, getSecret, deleteSecret } from "@based/core";
+import { MAX_SECRET_BYTES, setSecret, getSecret, deleteSecret } from "@cyronius/based-core";
 
 const TEST_ID = `spec-test-${process.pid}`;
 const SERVICE = process.env.BASED_KEYRING_SERVICE ?? "based-db-client";
 
 // keyring is core's dependency, not specs'. Resolved the way core would, so the legacy-format test
 // can write a credential the old way — the one thing the public API deliberately cannot do.
-const { Entry } = createRequire(import.meta.resolve("@based/core"))("@napi-rs/keyring") as {
+const { Entry } = createRequire(import.meta.resolve("@cyronius/based-core"))("@napi-rs/keyring") as {
   Entry: new (service: string, account: string) => { setPassword(v: string): void };
 };
 

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as lancedb from "@lancedb/lancedb";
-import { startServer } from "@based/core";
+import { startServer } from "@cyronius/based-core";
 
 const dir = mkdtempSync(join(tmpdir(), "based-lsp-lance-"));
 const appDir = mkdtempSync(join(tmpdir(), "based-lsp-app-"));
@@ -107,9 +107,9 @@ class TestLsp {
 // Traces: BASED-LSP-MSSQL-NATIVE — the in-house MSSQL server driven as plain JSON-RPC against a
 // real dev-DB adapter over azure-cli auth: the exact configuration the old sqls bridge could
 // never serve (or test). Self-skips without the dev DB, like integration.mssql.
-import { MssqlAdapter } from "@based/core/mssql";
+import { MssqlAdapter } from "@cyronius/based-core/mssql";
 import { MssqlLspServer } from "../../../core/src/lsp/mssqlLsp";
-import type { ConnectionConfig, JsonRpcMessage } from "@based/core";
+import type { ConnectionConfig, JsonRpcMessage } from "@cyronius/based-core";
 import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const devCfg: ConnectionConfig = devConnection("spec-lsp-dev");

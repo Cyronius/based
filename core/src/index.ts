@@ -1,8 +1,8 @@
 export { APP_VERSION } from "./version";
 export { startServer, type ServerOptions, type RunningServer } from "./server";
 // Concrete adapter classes are deliberately NOT re-exported here (BASED-LAZY-ENGINES): importing
-// @based/core must not evaluate an engine's native stack. Use @based/core/mssql or
-// @based/core/lancedb to reach a concrete class (tests do); runtime code goes through createAdapter.
+// @cyronius/based-core must not evaluate an engine's native stack. Use @cyronius/based-core/mssql or
+// @cyronius/based-core/lancedb to reach a concrete class (tests do); runtime code goes through createAdapter.
 export { serializeLanceValue } from "./db/lanceSerialize";
 export { encodeVectorSample, decodeVectorSample } from "./db/vectorWire";
 export { createAdapter, engineOf, testConnection } from "./db/adapterFactory";

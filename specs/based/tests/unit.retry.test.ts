@@ -1,6 +1,6 @@
 // Traces: BASED-RECONNECT-RETRY
 import { describe, expect, test } from "bun:test";
-import { isRetryableError, MAX_RECONNECT_ATTEMPTS, withReconnect } from "@based/core";
+import { isRetryableError, MAX_RECONNECT_ATTEMPTS, withReconnect } from "@cyronius/based-core";
 
 // No-op delay so backoff tests run instantly instead of waiting out real timers.
 const noDelay = async () => {};

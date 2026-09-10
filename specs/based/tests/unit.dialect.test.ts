@@ -16,7 +16,7 @@ import {
   SNOWFLAKE_DIALECT,
   TSQL_DIALECT,
   type SqlDialect,
-} from "@based/core";
+} from "@cyronius/based-core";
 
 const ALL: SqlDialect[] = [TSQL_DIALECT, SNOWFLAKE_DIALECT, DUCKDB_DIALECT];
 

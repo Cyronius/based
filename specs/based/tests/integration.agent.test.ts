@@ -28,9 +28,9 @@ import {
   setAiKey,
   getAiKey,
   deleteAiKey,
-} from "@based/core";
-import { MssqlAdapter } from "@based/core/mssql";
-import type { ConnectionConfig } from "@based/core";
+} from "@cyronius/based-core";
+import { MssqlAdapter } from "@cyronius/based-core/mssql";
+import type { ConnectionConfig } from "@cyronius/based-core";
 import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const dir = mkdtempSync(join(tmpdir(), "based-spec-agent-"));
@@ -561,7 +561,7 @@ describe("BASED-AGENT-THREADS: thread history GET/DELETE", () => {
   const resourceId = "conn-1";
 
   test("seeded thread round-trips as AG-UI messages; DELETE empties it; unknown thread → []", async () => {
-    const { createAgentMemory } = await import("@based/core");
+    const { createAgentMemory } = await import("@cyronius/based-core");
     const memory = createAgentMemory(join(dir, "agent.db"));
     const now = new Date();
     await memory.saveThread({ thread: { id: threadId, resourceId, title: "t", createdAt: now, updatedAt: now } });
@@ -654,7 +654,7 @@ describe("BASED-CHAT-HISTORY-PICKER: thread list + lifecycle", () => {
   }
 
   async function seededMemory() {
-    const { createAgentMemory } = await import("@based/core");
+    const { createAgentMemory } = await import("@cyronius/based-core");
     return createAgentMemory(join(dir, "agent.db"));
   }
 
@@ -722,7 +722,7 @@ describe("BASED-AGENT-DELEGATE-ISOLATION: a delegated run leaves the parent thre
 
   test("thread history is unchanged across a delegated run, and the child's SQL is tagged", async () => {
     const { createAgentMemory, createSubagentRunner, defaultCapabilitiesFor: caps, AuditStore: Audit, openDb: open } =
-      await import("@based/core");
+      await import("@cyronius/based-core");
     const { MockLanguageModelV4 } = await import("ai/test");
 
     const memory = createAgentMemory(join(dir, "agent.db"));

@@ -1,7 +1,7 @@
 // Traces: BASED-AGENT-THREADS — Mastra DB messages → AG-UI messages for thread history restore.
 import { describe, expect, test } from "bun:test";
-import { mapDbMessagesToAgui } from "@based/core";
-import type { DbMessageLike } from "@based/core";
+import { mapDbMessagesToAgui } from "@cyronius/based-core";
+import type { DbMessageLike } from "@cyronius/based-core";
 
 function textMsg(id: string, role: string, text: string): DbMessageLike {
   return { id, role, content: { format: 2, parts: [{ type: "text", text }] } };

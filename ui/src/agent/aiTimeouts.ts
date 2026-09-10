@@ -1,5 +1,5 @@
 // Traces: BASED-AI-PROFILE-TIMEOUT, BASED-AI-PROFILE-STEPCAP
-// Mirror of core/src/agent/provider.ts's timeout resolution. The UI doesn't import @based/core
+// Mirror of core/src/agent/provider.ts's timeout resolution. The UI doesn't import @cyronius/based-core
 // (ui/src/api/types.ts duplicates the core shapes by the same convention), so the constants and the
 // fallback rule live here too — keep the two in step.
 import type { AiProfile } from "../api/types";

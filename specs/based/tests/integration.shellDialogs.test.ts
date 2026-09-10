@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { startServer } from "@based/core";
+import { startServer } from "@cyronius/based-core";
 
 const appDir = mkdtempSync(join(tmpdir(), "based-shelldialog-"));
 const TOKEN = "shell-dialog-spec-token";

@@ -6,8 +6,8 @@
 // their next save, so there is never a half-migrated table, and `settingStr`/`settingBool` fall back
 // to a legacy top-level field so a config that never passed through the store still resolves.
 import { describe, expect, test } from "bun:test";
-import { migrateConnection, settingBool, settingStr } from "@based/core";
-import type { ConnectionConfig } from "@based/core";
+import { migrateConnection, settingBool, settingStr } from "@cyronius/based-core";
+import type { ConnectionConfig } from "@cyronius/based-core";
 
 /** A row as it was written before the bag existed. */
 function legacyRow(): ConnectionConfig {

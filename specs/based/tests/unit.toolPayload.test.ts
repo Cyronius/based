@@ -7,8 +7,8 @@
 // The other half is honesty. A clipped value that doesn't say it was clipped is worse than no
 // value — the model quotes it back as the whole thing — so every cut has to show up in the result.
 import { describe, expect, test } from "bun:test";
-import { boundRows, payloadBudget, TOOL_CELL_CAP, TOOL_PAYLOAD_CAP } from "@based/core";
-import type { WireValue } from "@based/core";
+import { boundRows, payloadBudget, TOOL_CELL_CAP, TOOL_PAYLOAD_CAP } from "@cyronius/based-core";
+import type { WireValue } from "@cyronius/based-core";
 
 /** The real shape of the failure: a conversation-log column holding whole transcripts. */
 function wideRows(count: number, chars: number): WireValue[][] {

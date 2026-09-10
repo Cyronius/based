@@ -3,7 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer, openDb, AgentInstructionsStore, GENERIC_CORE, MSSQL_PERSONA, LANCE_PERSONA, SNOWFLAKE_PERSONA } from "@based/core";
+import { startServer, openDb, AgentInstructionsStore, GENERIC_CORE, MSSQL_PERSONA, LANCE_PERSONA, SNOWFLAKE_PERSONA } from "@cyronius/based-core";
 
 const TOKEN = "spec-instructions-token";
 const dbPath = join(mkdtempSync(join(tmpdir(), "based-spec-instructions-")), "app.db");

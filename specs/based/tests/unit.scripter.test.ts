@@ -13,7 +13,7 @@ import {
   scriptObject,
   scriptSelectTemplate,
 } from "../../../core/src/db/scripter";
-import type { ScriptTableColumn, TableDetails } from "@based/core";
+import type { ScriptTableColumn, TableDetails } from "@cyronius/based-core";
 
 function col(partial: Partial<ScriptTableColumn> & { name: string; type: string }): ScriptTableColumn {
   return {
