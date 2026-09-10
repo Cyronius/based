@@ -1,6 +1,30 @@
 # Development
 
-based is a Bun workspace with four packages:
+## Three projects
+
+based is really three projects. Two live in this repo, one does not.
+
+| Project | Where | Builds from |
+|---|---|---|
+| **core** (`@based/core`) | `core/` | its own deps only; published to npm at each release |
+| **frontend** (`@based/ui`) | `ui/` | its own deps only; talks to core over HTTP, never imports it |
+| **based.ai** (paid, hosted) | a sibling repo, `../based-ai` | `@based/core` from npm, or `bun link` locally |
+
+The desktop app is core plus ui in the Tauri shell. `bun run check` enforces the two rules that
+keep the projects separable: `scripts/check-boundaries.ts` fails if core and ui import each other,
+and `scripts/check-private.ts` fails if anything from the paid product lands in this tree. Both run
+in CI on every push; the second also runs as a pre-commit hook after a one-time
+
+```sh
+git config core.hooksPath .githooks
+```
+
+To work on based.ai against an unpublished core: `cd core && bun link`, then in the based-ai
+checkout `bun link @based/core`.
+
+## Packages
+
+This repo is a Bun workspace with four packages:
 
 | Package | What it is |
 |---|---|
@@ -51,6 +75,7 @@ bun run dev:ui         # Vite alone on 5183
 bun run build:ui       # -> ui/dist
 bun run shell          # Tauri window + core child over ui/dist
 bun run typecheck      # core, ui, shell-tauri
+bun run check          # package boundaries + private-path guard
 bun test               # specs
 ```
 

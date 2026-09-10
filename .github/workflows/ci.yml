@@ -1,0 +1,78 @@
+# Push/PR checks, one job per project so a red job names what broke. core, ui and the shell each
+# typecheck (and ui builds) on their own; boundaries and private-guard are what make "on their own"
+# true rather than assumed (BASED-PKG-BOUNDARIES, BASED-PRIVATE-GUARD). No Rust here - the Tauri
+# build is exercised by build-macos.yml and release.yml.
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd core typecheck
+
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd ui typecheck
+      - run: bun run --cwd ui build
+
+  shell-tauri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd shell-tauri typecheck
+
+  tests:
+    # Windows because the suite exercises keyring, platform paths and the native addons on the
+    # platform we actually ship first; integration tests self-skip without their databases.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run test
+
+  boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun scripts/check-boundaries.ts
+
+  private-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun scripts/check-private.ts --tree

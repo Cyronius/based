@@ -3307,10 +3307,65 @@ check that the tag matches `tauri.conf.json`'s version; a publish job then creat
 release carrying both artifacts, their SHA-256s, the CHANGELOG section for that version, and the
 per-platform unsigned-install instructions, then bumps the Homebrew cask (skipping with a
 warning when the `TAP_PUSH_TOKEN` secret is absent, so a missing tap never blocks the release).
+A `publish-core` job, gated on the Windows job, publishes `@based/core` at the same version
+(BASED-CORE-PUBLISH).
 
 **Verification procedure:** cut a release with `scripts/release.ps1`; confirm the workflow goes
 green, the release page shows both artifacts with install notes, and `Casks/based.rb` in the tap
 points at the new version with the DMG's real SHA-256.
+
+### BASED-CORE-PUBLISH: core is an npm package at the app's version
+**Applies to:** based (core, repo)
+**Test category:** manual
+
+`core/` is publishable as `@based/core` (MIT, public, TypeScript source under `src/`, Bun
+runtime). Its `package.json` version is rewritten by `scripts/bump-version.ps1` alongside
+`tauri.conf.json`, `Cargo.toml`, and `version.ts`, so the package version always equals the
+desktop release it shipped with. The `publish-core` job in `release.yml` refuses a tag whose
+number differs from `core/package.json` and publishes with npm provenance using the `NPM_TOKEN`
+secret. Consumers outside this repo (based.ai) depend on the published package or on a local
+`bun link`, never on a path into this tree.
+
+**Verification procedure:**
+1. `scripts/bump-version.ps1 patch -WhatIf` reports `core/package.json` among the files it would write.
+2. After a `v*` tag, the `publish-core` job is green and `npm view @based/core version` prints the tag's number.
+3. In a fresh Bun project, `bun add @based/core@<version>` resolves and `import { startServer } from "@based/core"` typechecks.
+
+### BASED-PKG-BOUNDARIES: core and ui build independently
+**Applies to:** based (core, ui, shell-tauri)
+**Test category:** unit
+
+`core/src` never imports from `ui` or `shell-tauri`; `ui/src` never imports from `core` or
+`shell-tauri`; the shell may import `@based/core` (it is the packaging of core plus ui). ui
+talks to core over HTTP only. `scripts/check-boundaries.ts` walks all three packages and fails on
+a violation, whether by package name or by a relative path that escapes the package; `bun run
+check` and the `boundaries` CI job run it.
+
+**Acceptance criteria:**
+- `crossesBoundary("ui/src/api/client.ts", "../../../core/src/db/types")` → `true`
+- `crossesBoundary("ui/src/App.tsx", "@based/core")` → `true`
+- `crossesBoundary("core/src/server.ts", "@based/ui")` → `true`
+- `crossesBoundary("shell-tauri/core-child.ts", "@based/core")` → `false`
+- `crossesBoundary("core/src/server.ts", "../db/types")` → `false`
+- Third-party and `bun:` specifiers are never violations; Windows separators are normalized
+
+### BASED-PRIVATE-GUARD: the paid product never enters this repo
+**Applies to:** based (repo)
+**Test category:** unit
+
+based.ai lives in its own private repository beside this one. As a backstop, `.gitignore` lists
+`based-ai/`, `paid/`, `private/`, and `*.private/`, and `scripts/check-private.ts` refuses any
+staged or tracked path under those directories, any `.env` / `.env.*` file, or any private key
+(`*.p8`, `*.pem`, `*.key`, `*_rsa_key*`). It runs as the tracked pre-commit hook in `.githooks/`
+(`git config core.hooksPath .githooks`, one-time) against the index, and as the `private-guard`
+CI job against `git ls-files`, so a bypassed hook still fails the build.
+
+**Acceptance criteria:**
+- `isPrivatePath("based-ai/src/index.ts")`, `isPrivatePath("paid/README.md")`, `isPrivatePath("x.private/a.ts")` → `true`
+- `isPrivatePath(".env.production")`, `isPrivatePath("based_rsa_key.p8")`, `isPrivatePath("certs/server.pem")` → `true`
+- `isPrivatePath("core/src/server.ts")`, `isPrivatePath("ui/vendor/lm-ag-ui/dist/index.js")` → `false`
+- A path that merely contains a private word (`docs/based-ai-roadmap.md`, `core/src/env.ts`) → `false`
+- Windows separators are normalized
 
 ### BASED-SQL-ASSOC-WIN: .sql "Open with" registration
 **Applies to:** based (installer)

@@ -1,8 +1,23 @@
 {
   "name": "@based/core",
-  "private": true,
+  "version": "0.1.6",
+  "description": "The based engine: database adapters, the agent, storage and the HTTP server, as a Bun package.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cyronius/based.git",
+    "directory": "core"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./mssql": "./src/db/mssqlAdapter.ts",

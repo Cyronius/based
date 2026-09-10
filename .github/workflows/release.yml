@@ -234,3 +234,40 @@ jobs:
           git add Casks/based.rb
           git commit -m "based $VERSION"
           git push
+
+  # BASED-CORE-PUBLISH: the same tag publishes @based/core at the same version, so based.ai and
+  # anyone else embedding core pin to a number that matches a desktop release. Gated on the
+  # Windows job because that is where typecheck and the test suite run.
+  publish-core:
+    needs: [windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check tag matches core/package.json version
+        run: |
+          VERSION=$(jq -r .version core/package.json)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Tag v$TAG does not match core/package.json version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Publish @based/core
+        working-directory: core
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
