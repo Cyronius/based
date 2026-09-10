@@ -1,5 +1,5 @@
 {
-  "name": "@based/core",
+  "name": "@cyronius/based-core",
   "version": "0.1.6",
   "description": "The based engine: database adapters, the agent, storage and the HTTP server, as a Bun package.",
   "license": "MIT",

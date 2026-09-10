@@ -3,7 +3,7 @@
 // boundary as single stdout lines the Rust shell parses (see shell-tauri/src/main.rs).
 import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { startServer } from "@based/core";
+import { startServer } from "@cyronius/based-core";
 
 /** Packaged layout: this bundle runs as <resources>/core/index.js with the UI beside it at
  *  <resources>/ui/dist. Dev fallback: walk up from cwd (the Rust shell sets cwd to the repo root). */

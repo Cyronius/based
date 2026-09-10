@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@based/core": "workspace:*"
+    "@cyronius/based-core": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

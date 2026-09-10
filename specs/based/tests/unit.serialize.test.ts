@@ -1,6 +1,6 @@
 // Traces: BASED-VALUE-SAFETY
 import { describe, expect, test } from "bun:test";
-import { serializeValue, formatSqlDate } from "@based/core";
+import { serializeValue, formatSqlDate } from "@cyronius/based-core";
 
 describe("BASED-VALUE-SAFETY: safe cell serialization", () => {
   test("SQL NULL → wire null; string 'null' stays a string", () => {

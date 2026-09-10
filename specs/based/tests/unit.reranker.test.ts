@@ -4,7 +4,7 @@
 // at every layer above: the adapter sorts by it, finds the order already "correct", and returns
 // confidently-ranked garbage. These assert the parse fails loudly instead.
 import { describe, expect, test } from "bun:test";
-import { parseCohereRerankResults, scoreFromTopLogprobs } from "@based/core";
+import { parseCohereRerankResults, scoreFromTopLogprobs } from "@cyronius/based-core";
 
 describe("BASED-LANCE-RERANK-PIPELINE: Cohere/TEI response parsing", () => {
   test("reads relevance_score, and score as the TEI alternative", () => {

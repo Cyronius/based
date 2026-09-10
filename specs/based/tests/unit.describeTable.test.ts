@@ -8,8 +8,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentSurfaceFor, AuditStore, openDb } from "@based/core";
-import type { DatabaseAdapter, EngineCapabilities, TableColumn, ToolDeps } from "@based/core";
+import { agentSurfaceFor, AuditStore, openDb } from "@cyronius/based-core";
+import type { DatabaseAdapter, EngineCapabilities, TableColumn, ToolDeps } from "@cyronius/based-core";
 
 const MSSQL: EngineCapabilities = {
   sql: true,

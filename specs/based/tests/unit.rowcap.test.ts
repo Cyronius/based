@@ -1,7 +1,7 @@
 // Traces: BASED-ROWCAP
 import { describe, expect, test } from "bun:test";
-import { RowCollector } from "@based/core";
-import type { WireValue } from "@based/core";
+import { RowCollector } from "@cyronius/based-core";
+import type { WireValue } from "@cyronius/based-core";
 
 describe("BASED-ROWCAP: display row cap", () => {
   test("caps forwarded rows, keeps counting, marks truncated", () => {

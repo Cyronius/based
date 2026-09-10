@@ -13,7 +13,7 @@
 // Neither test needs Snowflake credentials or a reachable account.
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import type { ConnectionConfig } from "@based/core";
+import type { ConnectionConfig } from "@cyronius/based-core";
 
 // A separate script file (not `bun -e`): multiline -e scripts break Windows argv quoting.
 const CHILD_SCRIPT_PATH = join(import.meta.dir, "helpers", "snowflakeEnvChild.ts");
@@ -69,7 +69,7 @@ describe("Snowflake connect", () => {
   }, 60_000);
 
   test("BASED-CONN-TEST: probe on an unreachable account fails with an error instead of hanging", async () => {
-    const { SnowflakeAdapter } = await import("@based/core/snowflake");
+    const { SnowflakeAdapter } = await import("@cyronius/based-core/snowflake");
     // A syntactically valid but non-existent account: the host does not resolve, so this exercises
     // the failure path end to end without touching anyone's real Snowflake.
     const adapter = new SnowflakeAdapter(
@@ -89,7 +89,7 @@ describe("Snowflake connect", () => {
   }, 90_000);
 
   test("BASED-SNOWFLAKE-AUTH: a 404 from the login endpoint is reported as a bad account identifier", async () => {
-    const { errMessage, snowflakeAccountNotFound } = await import("@based/core/snowflake");
+    const { errMessage, snowflakeAccountNotFound } = await import("@cyronius/based-core/snowflake");
     // Exactly what the driver hands back when the wildcard domain resolves but Snowflake's shared
     // load balancer hosts no such account — a legacy locator given without its region and cloud.
     const balancer404 = Object.assign(new Error("Request to Snowflake failed."), {

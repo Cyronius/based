@@ -10,8 +10,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentSurfaceFor, AuditStore, openDb } from "@based/core";
-import type { DatabaseAdapter, EngineCapabilities, TablePage, ToolDeps } from "@based/core";
+import { agentSurfaceFor, AuditStore, openDb } from "@cyronius/based-core";
+import type { DatabaseAdapter, EngineCapabilities, TablePage, ToolDeps } from "@cyronius/based-core";
 
 interface Call {
   schema: string;

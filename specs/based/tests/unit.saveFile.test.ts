@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_SAVE_FILE_BYTES, SAVE_FILE_EXTENSIONS, sanitizeSaveFileName, writeTextFileUnique } from "@based/core";
+import { MAX_SAVE_FILE_BYTES, SAVE_FILE_EXTENSIONS, sanitizeSaveFileName, writeTextFileUnique } from "@cyronius/based-core";
 
 const dir = mkdtempSync(join(tmpdir(), "based-savefile-"));
 

@@ -1,7 +1,7 @@
 // Traces: BASED-SCRIPT-OBJECT (LanceDB half) — pure schema description, no DB.
 import { describe, expect, test } from "bun:test";
-import { describeLanceSchema } from "@based/core";
-import type { TableColumn } from "@based/core";
+import { describeLanceSchema } from "@cyronius/based-core";
+import type { TableColumn } from "@cyronius/based-core";
 
 function col(over: Partial<TableColumn> & { name: string; type: string }): TableColumn {
   return {

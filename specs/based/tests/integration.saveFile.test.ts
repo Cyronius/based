@@ -6,8 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentSurfaceFor, AuditStore, MAX_SAVE_FILE_BYTES, openDb, type ToolDeps } from "@based/core";
-import type { EngineCapabilities } from "@based/core";
+import { agentSurfaceFor, AuditStore, MAX_SAVE_FILE_BYTES, openDb, type ToolDeps } from "@cyronius/based-core";
+import type { EngineCapabilities } from "@cyronius/based-core";
 import type { Message } from "@ag-ui/core";
 
 const MSSQL: EngineCapabilities = {

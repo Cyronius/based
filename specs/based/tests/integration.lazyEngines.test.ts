@@ -1,11 +1,11 @@
 // Traces: BASED-LAZY-ENGINES, BASED-LANCE-ENGINE
 // Engine adapters (and their native stacks — tedious, @lancedb napi, DuckDB) must not evaluate when
-// @based/core is imported; they load on demand inside createAdapter. The import-graph assertions run
+// @cyronius/based-core is imported; they load on demand inside createAdapter. The import-graph assertions run
 // in a child bun process because this test process itself loads adapters via sibling test files.
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createAdapter } from "@based/core";
-import type { ConnectionConfig } from "@based/core";
+import { createAdapter } from "@cyronius/based-core";
+import type { ConnectionConfig } from "@cyronius/based-core";
 
 // A separate script file (not `bun -e`): multiline -e scripts break Windows argv quoting.
 const CHILD_SCRIPT_PATH = join(import.meta.dir, "helpers", "lazyEnginesChild.ts");
@@ -27,7 +27,7 @@ function cfgFor(engine?: "mssql" | "lancedb" | "snowflake"): ConnectionConfig {
 }
 
 describe("lazy engine loading", () => {
-  test("BASED-LAZY-ENGINES: importing @based/core evaluates no engine module", async () => {
+  test("BASED-LAZY-ENGINES: importing @cyronius/based-core evaluates no engine module", async () => {
     const proc = Bun.spawn(["bun", CHILD_SCRIPT_PATH], {
       cwd: import.meta.dir,
       stdout: "pipe",
@@ -50,8 +50,8 @@ describe("lazy engine loading", () => {
   }, 30_000);
 
   test("BASED-LAZY-ENGINES: async createAdapter resolves the right class per engine", async () => {
-    const { MssqlAdapter } = await import("@based/core/mssql");
-    const { LanceDbAdapter } = await import("@based/core/lancedb");
+    const { MssqlAdapter } = await import("@cyronius/based-core/mssql");
+    const { LanceDbAdapter } = await import("@cyronius/based-core/lancedb");
     const noSecret = () => null;
 
     const mssql = await createAdapter(cfgFor("mssql"), noSecret);
@@ -60,7 +60,7 @@ describe("lazy engine loading", () => {
     const lance = await createAdapter(cfgFor("lancedb"), noSecret);
     expect(lance).toBeInstanceOf(LanceDbAdapter);
 
-    const { SnowflakeAdapter } = await import("@based/core/snowflake");
+    const { SnowflakeAdapter } = await import("@cyronius/based-core/snowflake");
     const snowflake = await createAdapter(cfgFor("snowflake"), noSecret);
     expect(snowflake).toBeInstanceOf(SnowflakeAdapter);
 

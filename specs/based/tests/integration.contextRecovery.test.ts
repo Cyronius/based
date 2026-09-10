@@ -27,7 +27,7 @@ import {
   SHED_TOOL_RESULT_NOTE,
   type DatabaseAdapter,
   type ToolDeps,
-} from "@based/core";
+} from "@cyronius/based-core";
 
 const MSSQL = defaultCapabilitiesFor("mssql");
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };

@@ -7,7 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { startServer } from "@based/core";
+import { startServer } from "@cyronius/based-core";
 
 const TOKEN = "spec-token";
 const server = startServer({ token: TOKEN, dbPath: join(mkdtempSync(join(tmpdir(), "based-spec-open-")), "app.db") });

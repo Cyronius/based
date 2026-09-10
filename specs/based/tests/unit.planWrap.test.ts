@@ -1,6 +1,6 @@
 // Traces: BASED-EXEC-PLAN, BASED-CLIENT-STATS
 import { describe, expect, test } from "bun:test";
-import { skipsWrap, wrapBatch } from "@based/core";
+import { skipsWrap, wrapBatch } from "@cyronius/based-core";
 
 describe("BASED-EXEC-PLAN, BASED-CLIENT-STATS: wrapBatch", () => {
   test("neither flag set: only the defensive OFF prefix is added", () => {

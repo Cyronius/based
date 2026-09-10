@@ -1,6 +1,6 @@
 // Traces: BASED-LAZY-ENGINES — child probe run by integration.lazyEngines.test.ts in a fresh bun
-// process: import the @based/core barrel, then report which engine modules got evaluated.
-await import("@based/core");
+// process: import the @cyronius/based-core barrel, then report which engine modules got evaluated.
+await import("@cyronius/based-core");
 const keys = Object.keys(require.cache);
 const hit = (re: RegExp) => keys.filter((k) => re.test(k));
 console.log(

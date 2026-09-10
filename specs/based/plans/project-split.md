@@ -2,7 +2,7 @@
 
 Written 2026-09-10. Phase 1 of the based.ai roadmap; later phases are sketched at the end so the split is made with them in view.
 
-**Status:** Phase 1 implemented 2026-09-10 on branch `project-split`. Private repo `Cyronius/based-ai` created and linked. Still open: confirm the `@based` npm scope (`npm publish --dry-run` from `core/` once logged in) and add the `NPM_TOKEN` repo secret before the next tag. Phases 2 to 7 remain.
+**Status:** Phase 1 implemented 2026-09-10 on branch `project-split`. Private repo `Cyronius/based-ai` created and linked. Package name is `@cyronius/based-core` under the existing npm org. Still open: add the `NPM_TOKEN` repo secret before the next tag. Phases 2 to 7 remain.
 
 ## Spec impact
 
@@ -17,9 +17,9 @@ Two git repos, three buildable projects.
 
 | Project | Where | Visibility | Depends on |
 |---|---|---|---|
-| core (`@based/core`) | `based/core/` (this repo) | public, MIT | nothing in-repo |
+| core (`@cyronius/based-core`) | `based/core/` (this repo) | public, MIT | nothing in-repo |
 | frontend (`@based/ui`) | `based/ui/` (this repo) | public, MIT | nothing in-repo (HTTP only) |
-| based.ai | `C:\code\based-ai\` (new repo, sibling directory) | private | `@based/core` from npm |
+| based.ai | `C:\code\based-ai\` (new repo, sibling directory) | private | `@cyronius/based-core` from npm |
 
 `shell-tauri/` stays in this repo as the desktop packaging of core plus ui. `specs/` stays as the home of `BASED-*` requirements and tests.
 
@@ -27,7 +27,7 @@ Two git repos, three buildable projects.
 
 **Why the paid piece is not a directory in this tree.** A gitignored or nested-repo directory is one `git add --force`, one stray `git add .` gitlink, or one badly written ignore rule away from leaking. A sibling directory cannot be committed to this repo by any command. The guard below is a backstop, not the mechanism.
 
-**How based.ai consumes core.** From npm at a pinned version in CI and production. Locally via `bun link`: `cd based/core && bun link`, then `cd based-ai && bun link @based/core`. Core is shipped as TypeScript source (its `exports` already point at `src/`), which is fine because every consumer runs under Bun and core needs `bun:sqlite` anyway.
+**How based.ai consumes core.** From npm at a pinned version in CI and production. Locally via `bun link`: `cd based/core && bun link`, then `cd based-ai && bun link @cyronius/based-core`. Core is shipped as TypeScript source (its `exports` already point at `src/`), which is fine because every consumer runs under Bun and core needs `bun:sqlite` anyway.
 
 ## Current state that makes this cheap
 
@@ -43,14 +43,14 @@ Two git repos, three buildable projects.
 - `core/package.json`: drop `private`, add `version` (kept in step by the bump script), `files: ["src"]`, `publishConfig.access: "public"`, `engines.bun`. Keep `exports` on `src/`.
 - `scripts/bump-version.ps1`: rewrite `core/package.json` version alongside `tauri.conf.json`, `Cargo.toml`, and `version.ts`. Still one source of truth.
 - `.github/workflows/release.yml`: add a `publish-core` job after the Windows job's typecheck and tests pass. `npm publish --provenance` with an `NPM_TOKEN` repo secret. Runs on the same `v*` tag; the desktop version and the core package version are the same number.
-- `BASED-CORE-PUBLISH` (manual): tagging `vX.Y.Z` publishes `@based/core@X.Y.Z`; `bun add @based/core@X.Y.Z` in a fresh Bun project resolves and `startServer` is importable.
+- `BASED-CORE-PUBLISH` (manual): tagging `vX.Y.Z` publishes `@cyronius/based-core@X.Y.Z`; `bun add @cyronius/based-core@X.Y.Z` in a fresh Bun project resolves and `startServer` is importable.
 
-Open item: `npm view @based/core` returns 404, which only says the package is unpublished. The `@based` scope may belong to someone. Confirm with `npm publish --dry-run` once logged in. Fallback name if the scope is taken: `@cyronius/based-core`.
+Name: `@cyronius/based-core`, under the npm org Josh already owns. `@based/core` was the first choice but the scope was unverifiable without an npm login, and an org we control is the safer home anyway.
 
 ### 2. Prove the builds are independent
 
-- `scripts/check-boundaries.ts`: exports `crossesBoundary(fromFile, importSpecifier)` and a CLI that walks `core/src`, `ui/src`, and `shell-tauri/*.ts`. Fails if ui imports core or shell, core imports ui or shell, or either imports a workspace sibling through a relative path. `shell-tauri` importing `@based/core` is allowed (that is its job).
-- `BASED-PKG-BOUNDARIES` (unit): `crossesBoundary("ui/src/x.ts", "../../core/src/y")` is true; `crossesBoundary("ui/src/x.ts", "./y")` is false; `crossesBoundary("shell-tauri/core-child.ts", "@based/core")` is false; `crossesBoundary("core/src/x.ts", "@based/ui")` is true.
+- `scripts/check-boundaries.ts`: exports `crossesBoundary(fromFile, importSpecifier)` and a CLI that walks `core/src`, `ui/src`, and `shell-tauri/*.ts`. Fails if ui imports core or shell, core imports ui or shell, or either imports a workspace sibling through a relative path. `shell-tauri` importing `@cyronius/based-core` is allowed (that is its job).
+- `BASED-PKG-BOUNDARIES` (unit): `crossesBoundary("ui/src/x.ts", "../../core/src/y")` is true; `crossesBoundary("ui/src/x.ts", "./y")` is false; `crossesBoundary("shell-tauri/core-child.ts", "@cyronius/based-core")` is false; `crossesBoundary("core/src/x.ts", "@based/ui")` is true.
 - New `.github/workflows/ci.yml` on push and pull request, one job per project so a red job names the project: `core` (typecheck), `ui` (typecheck plus `vite build`), `shell-tauri` (typecheck), `tests` (`bun test`), `boundaries`, `private-guard`. Rust is not needed for any of these, so the jobs stay fast.
 - Root `package.json`: add `check` script that runs boundaries and the private guard so `bun run check` locally matches CI.
 
@@ -66,7 +66,7 @@ Tests in `specs/` import both core and ui today (the grid, plan XML, font metric
 
 ### 4. Scaffold based-ai
 
-- `C:\code\based-ai\`: `git init`, `bun init`, `package.json` with `@based/core` pinned once published (linked until then), `README.md` stating what the project is and the link workflow, `specs/basedai/spec.md` with the `BASEDAI` prefix and no requirements yet, `.gitignore`.
+- `C:\code\based-ai\`: `git init`, `bun init`, `package.json` with `@cyronius/based-core` pinned once published (linked until then), `README.md` stating what the project is and the link workflow, `specs/basedai/spec.md` with the `BASEDAI` prefix and no requirements yet, `.gitignore`.
 - Private GitHub repo `Cyronius/based-ai`. This is the one outward-facing step; it is a `gh repo create --private` and I will ask before running it.
 - Nothing else. The control plane is Phase 5 below. A `src/index.ts` that imports `startServer` and boots one core on a temp data dir is enough to prove the dependency resolves.
 

@@ -573,7 +573,7 @@ weeks old, not years. Specifically:
   adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.
 - **No auto-update.** Watch releases, or check the version in the status bar against the latest.
-- **Core is a package.** `core/` publishes to npm as `@based/core` at each release, so the engine
+- **Core is a package.** `core/` publishes to npm as `@cyronius/based-core` at each release, so the engine
   can be embedded without the desktop shell. The frontend talks to it over HTTP only.
 - Expect rough edges, and please [file them](https://github.com/Cyronius/based/issues).
 

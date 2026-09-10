@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { CsvParser, parseCsv } from "../../../core/src/import/csvParse";
 import { coerceCsv } from "../../../core/src/import/coerce";
 import { buildInsertBatches } from "../../../core/src/import/csvImport";
-import type { TableColumn } from "@based/core";
+import type { TableColumn } from "@cyronius/based-core";
 
 function col(partial: Partial<TableColumn> & { name: string; type: string }): TableColumn {
   return {

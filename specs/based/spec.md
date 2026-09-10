@@ -2941,10 +2941,10 @@ Local LanceDB connections get a real SQL query tab — an embedded DuckDB (`@duc
 **Applies to:** based (core)
 **Test category:** integration
 
-Importing `@based/core` shall evaluate no engine module: `mssql`/tedious, `@lancedb/lancedb`, `@duckdb/node-api`, and `snowflake-sdk` load only when a connection of that engine is used. `createAdapter` is async and resolves through the registry, whose descriptors hold `loadAdapter`/`loadLsp` **loaders** — importing `core/src/engines/registry` must therefore stay free of native stacks. The barrel re-exports no concrete adapter class (tests import them via the `@based/core/mssql` / `@based/core/lancedb` / `@based/core/lancedb-sql` / `@based/core/snowflake` subpath exports).
+Importing `@cyronius/based-core` shall evaluate no engine module: `mssql`/tedious, `@lancedb/lancedb`, `@duckdb/node-api`, and `snowflake-sdk` load only when a connection of that engine is used. `createAdapter` is async and resolves through the registry, whose descriptors hold `loadAdapter`/`loadLsp` **loaders** — importing `core/src/engines/registry` must therefore stay free of native stacks. The barrel re-exports no concrete adapter class (tests import them via the `@cyronius/based-core/mssql` / `@cyronius/based-core/lancedb` / `@cyronius/based-core/lancedb-sql` / `@cyronius/based-core/snowflake` subpath exports).
 
 **Acceptance criteria:**
-- A fresh process that imports `@based/core` has no mssql/tedious, `@lancedb`, `@duckdb`, or `snowflake-sdk` module in `require.cache`
+- A fresh process that imports `@cyronius/based-core` has no mssql/tedious, `@lancedb`, `@duckdb`, or `snowflake-sdk` module in `require.cache`
 - `createAdapter` resolves the MSSQL class for `engine: "mssql"` and for an engine-less legacy config, the LanceDB class for `engine: "lancedb"`, and the Snowflake class for `engine: "snowflake"`
 - The full suite stays green
 
@@ -3307,7 +3307,7 @@ check that the tag matches `tauri.conf.json`'s version; a publish job then creat
 release carrying both artifacts, their SHA-256s, the CHANGELOG section for that version, and the
 per-platform unsigned-install instructions, then bumps the Homebrew cask (skipping with a
 warning when the `TAP_PUSH_TOKEN` secret is absent, so a missing tap never blocks the release).
-A `publish-core` job, gated on the Windows job, publishes `@based/core` at the same version
+A `publish-core` job, gated on the Windows job, publishes `@cyronius/based-core` at the same version
 (BASED-CORE-PUBLISH).
 
 **Verification procedure:** cut a release with `scripts/release.ps1`; confirm the workflow goes
@@ -3318,7 +3318,7 @@ points at the new version with the DMG's real SHA-256.
 **Applies to:** based (core, repo)
 **Test category:** manual
 
-`core/` is publishable as `@based/core` (MIT, public, TypeScript source under `src/`, Bun
+`core/` is publishable as `@cyronius/based-core` (MIT, public, TypeScript source under `src/`, Bun
 runtime). Its `package.json` version is rewritten by `scripts/bump-version.ps1` alongside
 `tauri.conf.json`, `Cargo.toml`, and `version.ts`, so the package version always equals the
 desktop release it shipped with. The `publish-core` job in `release.yml` refuses a tag whose
@@ -3328,24 +3328,24 @@ secret. Consumers outside this repo (based.ai) depend on the published package o
 
 **Verification procedure:**
 1. `scripts/bump-version.ps1 patch -WhatIf` reports `core/package.json` among the files it would write.
-2. After a `v*` tag, the `publish-core` job is green and `npm view @based/core version` prints the tag's number.
-3. In a fresh Bun project, `bun add @based/core@<version>` resolves and `import { startServer } from "@based/core"` typechecks.
+2. After a `v*` tag, the `publish-core` job is green and `npm view @cyronius/based-core version` prints the tag's number.
+3. In a fresh Bun project, `bun add @cyronius/based-core@<version>` resolves and `import { startServer } from "@cyronius/based-core"` typechecks.
 
 ### BASED-PKG-BOUNDARIES: core and ui build independently
 **Applies to:** based (core, ui, shell-tauri)
 **Test category:** unit
 
 `core/src` never imports from `ui` or `shell-tauri`; `ui/src` never imports from `core` or
-`shell-tauri`; the shell may import `@based/core` (it is the packaging of core plus ui). ui
+`shell-tauri`; the shell may import `@cyronius/based-core` (it is the packaging of core plus ui). ui
 talks to core over HTTP only. `scripts/check-boundaries.ts` walks all three packages and fails on
 a violation, whether by package name or by a relative path that escapes the package; `bun run
 check` and the `boundaries` CI job run it.
 
 **Acceptance criteria:**
 - `crossesBoundary("ui/src/api/client.ts", "../../../core/src/db/types")` → `true`
-- `crossesBoundary("ui/src/App.tsx", "@based/core")` → `true`
+- `crossesBoundary("ui/src/App.tsx", "@cyronius/based-core")` → `true`
 - `crossesBoundary("core/src/server.ts", "@based/ui")` → `true`
-- `crossesBoundary("shell-tauri/core-child.ts", "@based/core")` → `false`
+- `crossesBoundary("shell-tauri/core-child.ts", "@cyronius/based-core")` → `false`
 - `crossesBoundary("core/src/server.ts", "../db/types")` → `false`
 - Third-party and `bun:` specifiers are never violations; Windows separators are normalized
 

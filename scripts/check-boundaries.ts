@@ -10,7 +10,7 @@ const PACKAGES = ["core", "ui", "shell-tauri"] as const;
 type Pkg = (typeof PACKAGES)[number];
 
 const PACKAGE_NAMES: Record<string, Pkg> = {
-  "@based/core": "core",
+  "@cyronius/based-core": "core",
   "@based/ui": "ui",
   "@based/shell-tauri": "shell-tauri",
 };

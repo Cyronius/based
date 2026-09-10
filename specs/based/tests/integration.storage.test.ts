@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { openDb, ConnectionStore, TabStore, WindowStateStore, HistoryStore, settingStr } from "@based/core";
-import type { ConnectionInput } from "@based/core";
+import { openDb, ConnectionStore, TabStore, WindowStateStore, HistoryStore, settingStr } from "@cyronius/based-core";
+import type { ConnectionInput } from "@cyronius/based-core";
 
 function tempDbPath(): string {
   return join(mkdtempSync(join(tmpdir(), "based-spec-")), "app.db");

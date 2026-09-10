@@ -1,7 +1,7 @@
 // Traces: BASED-TABLE-DML (canonical spec: specs/based/spec.md)
 // Pure edit→SQL builder: parameterized, bracket-quoted, identifier-validated, PK-required for update/delete.
 import { describe, expect, test } from "bun:test";
-import { buildEditCommands, type TableChangeSet } from "@based/core";
+import { buildEditCommands, type TableChangeSet } from "@cyronius/based-core";
 
 const cols = [
   { name: "id", isPrimaryKey: true },

@@ -4,9 +4,9 @@
 // Runs against the Phase 0 dev DB via AzureCliCredential. Read-only suites need only connect; the
 // table-edit suite additionally needs CREATE/DROP TABLE and self-skips when that permission is absent.
 import { describe, expect, test } from "bun:test";
-import { buildEditCommands, testConnection } from "@based/core";
-import { MssqlAdapter } from "@based/core/mssql";
-import type { ConnectionConfig, ExecuteOptions, QueryChunk } from "@based/core";
+import { buildEditCommands, testConnection } from "@cyronius/based-core";
+import { MssqlAdapter } from "@cyronius/based-core/mssql";
+import type { ConnectionConfig, ExecuteOptions, QueryChunk } from "@cyronius/based-core";
 import { DEV_DB_AVAILABLE, devConnection, warnDevDbSkip } from "./_devDb";
 
 const cfg: ConnectionConfig = devConnection("spec-dev");
@@ -411,7 +411,7 @@ dw("table browse + transactional edit against a scratch table", () => {
       expect(plainDet.triggers).toEqual([]);
 
       // The scripted CREATE from these details is runnable against the same DB (round-trip)
-      const { scriptCreateTable } = await import("@based/core");
+      const { scriptCreateTable } = await import("@cyronius/based-core");
       const ddl = scriptCreateTable({ ...det, name: `${tbl}_rt` }).replaceAll(`[${tbl}]`, `[${tbl}_rt]`).replaceAll(`FK_${tbl}]`, `FK_${tbl}_rt]`).replaceAll(`CK_${tbl}]`, `CK_${tbl}_rt]`).replaceAll(`DF_${tbl}]`, `DF_${tbl}_rt]`).replaceAll(`PK_${tbl}]`, `PK_${tbl}_rt]`).replaceAll(`IX_${tbl}]`, `IX_${tbl}_rt]`);
       const rt = await collect(adapter, ddl);
       expect(rt.status).toBe("ok");

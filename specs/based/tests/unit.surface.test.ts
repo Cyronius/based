@@ -14,8 +14,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentInstructions, agentSurfaceFor, AuditStore, GENERIC_CORE, openDb, skills, type ToolDeps } from "@based/core";
-import type { EngineCapabilities } from "@based/core";
+import { agentInstructions, agentSurfaceFor, AuditStore, GENERIC_CORE, openDb, skills, type ToolDeps } from "@cyronius/based-core";
+import type { EngineCapabilities } from "@cyronius/based-core";
 
 function deps(): ToolDeps {
   return {

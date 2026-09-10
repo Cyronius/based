@@ -2,7 +2,7 @@
 // The output must survive the lancedb SDK's own sanitizer, so that (not our shape) is what the
 // round-trip assertions run through.
 import { describe, expect, test } from "bun:test";
-import { buildLanceSchema, type LanceColumnSpec } from "@based/core";
+import { buildLanceSchema, type LanceColumnSpec } from "@cyronius/based-core";
 // The SDK's sanitizer is the authority on whether a structural schema is valid.
 // eslint-disable-next-line import/no-relative-packages
 import { sanitizeSchema } from "../../../core/node_modules/@lancedb/lancedb/dist/sanitize.js";

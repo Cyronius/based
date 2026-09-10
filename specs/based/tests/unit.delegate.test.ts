@@ -32,7 +32,7 @@ import {
   type SubagentRunner,
   type SubagentTask,
   type ToolDeps,
-} from "@based/core";
+} from "@cyronius/based-core";
 
 const MSSQL = defaultCapabilitiesFor("mssql");
 const LANCE = defaultCapabilitiesFor("lancedb");

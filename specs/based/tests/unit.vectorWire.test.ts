@@ -3,8 +3,8 @@
 // 4-byte alignment][raw float32 block]. The alignment guarantee is what lets the client build a
 // Float32Array view directly over the response buffer without a copy.
 import { describe, expect, test } from "bun:test";
-import { encodeVectorSample, decodeVectorSample } from "@based/core";
-import type { VectorSampleResult } from "@based/core";
+import { encodeVectorSample, decodeVectorSample } from "@cyronius/based-core";
+import type { VectorSampleResult } from "@cyronius/based-core";
 
 function sample(overrides: Partial<VectorSampleResult> = {}): VectorSampleResult {
   return {

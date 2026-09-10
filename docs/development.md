@@ -6,9 +6,9 @@ based is really three projects. Two live in this repo, one does not.
 
 | Project | Where | Builds from |
 |---|---|---|
-| **core** (`@based/core`) | `core/` | its own deps only; published to npm at each release |
+| **core** (`@cyronius/based-core`) | `core/` | its own deps only; published to npm at each release |
 | **frontend** (`@based/ui`) | `ui/` | its own deps only; talks to core over HTTP, never imports it |
-| **based.ai** (paid, hosted) | a sibling repo, `../based-ai` | `@based/core` from npm, or `bun link` locally |
+| **based.ai** (paid, hosted) | a sibling repo, `../based-ai` | `@cyronius/based-core` from npm, or `bun link` locally |
 
 The desktop app is core plus ui in the Tauri shell. `bun run check` enforces the two rules that
 keep the projects separable: `scripts/check-boundaries.ts` fails if core and ui import each other,
@@ -20,7 +20,7 @@ git config core.hooksPath .githooks
 ```
 
 To work on based.ai against an unpublished core: `cd core && bun link`, then in the based-ai
-checkout `bun link @based/core`.
+checkout `bun link @cyronius/based-core`.
 
 ## Packages
 

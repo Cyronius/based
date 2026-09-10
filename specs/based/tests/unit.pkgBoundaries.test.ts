@@ -8,7 +8,7 @@ describe("BASED-PKG-BOUNDARIES: core and ui never import each other", () => {
   });
 
   test("ui importing the core package is a violation", () => {
-    expect(crossesBoundary("ui/src/App.tsx", "@based/core")).toBe(true);
+    expect(crossesBoundary("ui/src/App.tsx", "@cyronius/based-core")).toBe(true);
   });
 
   test("core importing ui is a violation", () => {
@@ -28,7 +28,7 @@ describe("BASED-PKG-BOUNDARIES: core and ui never import each other", () => {
   });
 
   test("the shell may import core, that is its job", () => {
-    expect(crossesBoundary("shell-tauri/core-child.ts", "@based/core")).toBe(false);
+    expect(crossesBoundary("shell-tauri/core-child.ts", "@cyronius/based-core")).toBe(false);
   });
 
   test("third-party packages are fine", () => {

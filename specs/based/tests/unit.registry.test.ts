@@ -20,7 +20,7 @@ import {
   engineProfiles,
   openDb,
   type ToolDeps,
-} from "@based/core";
+} from "@cyronius/based-core";
 
 function deps(): ToolDeps {
   return {

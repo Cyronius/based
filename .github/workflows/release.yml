@@ -235,7 +235,7 @@ jobs:
           git commit -m "based $VERSION"
           git push
 
-  # BASED-CORE-PUBLISH: the same tag publishes @based/core at the same version, so based.ai and
+  # BASED-CORE-PUBLISH: the same tag publishes @cyronius/based-core at the same version, so based.ai and
   # anyone else embedding core pin to a number that matches a desktop release. Gated on the
   # Windows job because that is where typecheck and the test suite run.
   publish-core:
@@ -266,7 +266,7 @@ jobs:
             exit 1
           fi
 
-      - name: Publish @based/core
+      - name: Publish @cyronius/based-core
         working-directory: core
         run: npm publish --provenance --access public
         env:

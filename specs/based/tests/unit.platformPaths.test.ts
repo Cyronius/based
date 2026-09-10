@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, existsSync } from "node:fs";
-import { appDataRoot, dataDir } from "@based/core";
+import { appDataRoot, dataDir } from "@cyronius/based-core";
 
 /** Compare by path segments so these assertions hold on any build host, not just the one
  *  whose separator matches the platform under test. */

@@ -7,7 +7,7 @@
     "test": "bun test ."
   },
   "dependencies": {
-    "@based/core": "workspace:*",
+    "@cyronius/based-core": "workspace:*",
     "exceljs": "^4.4.0"
   },
   "devDependencies": {

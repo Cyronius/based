@@ -51,7 +51,7 @@ free and MIT. **based.ai** is a hosted, paid service in a separate private repo;
 process per tenant and puts a web frontend in front of it. That is why `ui/` never imports `core/`
 (the frontend must be swappable), why `startServer` takes its data dir and token as options (a
 control plane must be able to run many), and why `core/` is published to npm at each release
-(`@based/core`, same version as the app). The boundary is enforced by `scripts/check-boundaries.ts`.
+(`@cyronius/based-core`, same version as the app). The boundary is enforced by `scripts/check-boundaries.ts`.
 
 ## The Ledger
 
@@ -98,7 +98,7 @@ Engine differences are expressed as **capabilities**, not as per-screen conditio
 `indexIntrospect`) that are wired end to end — the UI, the server routes, and the agent's toolset
 all light up or gray out from the same source of truth.
 
-Engine dependencies **load on demand**. Importing `@based/core` must not evaluate a native stack, so
+Engine dependencies **load on demand**. Importing `@cyronius/based-core` must not evaluate a native stack, so
 concrete adapter classes are reachable only through `createAdapterFor` or an explicit subpath
 import.
 

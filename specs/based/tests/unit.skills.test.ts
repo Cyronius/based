@@ -1,6 +1,6 @@
 // Traces: BASED-SKILL-REGISTRY (canonical spec: specs/based/spec.md)
 import { describe, expect, test } from "bun:test";
-import { skills } from "@based/core";
+import { skills } from "@cyronius/based-core";
 
 describe("BASED-SKILL-REGISTRY: registry & prompt catalog", () => {
   test("catalog() carries every skill's name + description and none of the body text", () => {
