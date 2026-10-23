@@ -1,0 +1,4 @@
+{
+  "prompt": "Extract the actual Capi capybara artwork from this screenshot crop into a clean production PNG with a transparent background. Preserve the exact flat tan/orange capybara identity and pose: round ears, broad muzzle, small dark eyes and gentle smile, upright seated stocky body, arms and tiny feet, dark brown outlines. Remove the dark gray application background and every UI line. Keep the entire character including ears and feet, centered, with modest transparent padding. Faithfully clean and upscale the screenshot artwork; do not redesign, add props, add a fruit, recolor it mint, create a robot, introduce 3D shading, or turn it into a realistic animal. Request a crisp 600px-tall character cutout. The screenshot is the identity reference, not a style suggestion. Transparent background is required.\n",
+  "createdAt": "2026-10-23T19:09:25.195Z"
+}

@@ -1,0 +1,535 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-23T19:21:26.739Z",
+  "title": "Design System: Based",
+  "extensions": {
+    "colorMeta": {
+      "mint": {
+        "role": "primary",
+        "displayName": "Mint",
+        "tonalRamp": [
+          "oklch(15% 0.0370 161.54)",
+          "oklch(26% 0.0370 161.54)",
+          "oklch(38% 0.0370 161.54)",
+          "oklch(49% 0.0370 161.54)",
+          "oklch(61% 0.0370 161.54)",
+          "oklch(72% 0.0370 161.54)",
+          "oklch(84% 0.0370 161.54)",
+          "oklch(95% 0.0370 161.54)"
+        ]
+      },
+      "mint-deep": {
+        "role": "primary",
+        "displayName": "Mint Deep",
+        "tonalRamp": [
+          "oklch(15% 0.0410 166.97)",
+          "oklch(26% 0.0410 166.97)",
+          "oklch(38% 0.0410 166.97)",
+          "oklch(49% 0.0410 166.97)",
+          "oklch(61% 0.0410 166.97)",
+          "oklch(72% 0.0410 166.97)",
+          "oklch(84% 0.0410 166.97)",
+          "oklch(95% 0.0410 166.97)"
+        ]
+      },
+      "forest": {
+        "role": "primary",
+        "displayName": "Forest",
+        "tonalRamp": [
+          "oklch(15% 0.0524 169.69)",
+          "oklch(26% 0.0524 169.69)",
+          "oklch(38% 0.0524 169.69)",
+          "oklch(49% 0.0524 169.69)",
+          "oklch(61% 0.0524 169.69)",
+          "oklch(72% 0.0524 169.69)",
+          "oklch(84% 0.0524 169.69)",
+          "oklch(95% 0.0524 169.69)"
+        ]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15% 0.0228 174.75)",
+          "oklch(26% 0.0228 174.75)",
+          "oklch(38% 0.0228 174.75)",
+          "oklch(49% 0.0228 174.75)",
+          "oklch(61% 0.0228 174.75)",
+          "oklch(72% 0.0228 174.75)",
+          "oklch(84% 0.0228 174.75)",
+          "oklch(95% 0.0228 174.75)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0504 179.19)",
+          "oklch(26% 0.0504 179.19)",
+          "oklch(38% 0.0504 179.19)",
+          "oklch(49% 0.0504 179.19)",
+          "oklch(61% 0.0504 179.19)",
+          "oklch(72% 0.0504 179.19)",
+          "oklch(84% 0.0504 179.19)",
+          "oklch(95% 0.0504 179.19)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15% 0.0044 179.74)",
+          "oklch(26% 0.0044 179.74)",
+          "oklch(38% 0.0044 179.74)",
+          "oklch(49% 0.0044 179.74)",
+          "oklch(61% 0.0044 179.74)",
+          "oklch(72% 0.0044 179.74)",
+          "oklch(84% 0.0044 179.74)",
+          "oklch(95% 0.0044 179.74)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "tonalRamp": [
+          "oklch(15% 0.0148 175.70)",
+          "oklch(26% 0.0148 175.70)",
+          "oklch(38% 0.0148 175.70)",
+          "oklch(49% 0.0148 175.70)",
+          "oklch(61% 0.0148 175.70)",
+          "oklch(72% 0.0148 175.70)",
+          "oklch(84% 0.0148 175.70)",
+          "oklch(95% 0.0148 175.70)"
+        ]
+      },
+      "yellow": {
+        "role": "secondary",
+        "displayName": "Yellow",
+        "tonalRamp": [
+          "oklch(15% 0.0968 105.55)",
+          "oklch(26% 0.0968 105.55)",
+          "oklch(38% 0.0968 105.55)",
+          "oklch(49% 0.0968 105.55)",
+          "oklch(61% 0.0968 105.55)",
+          "oklch(72% 0.0968 105.55)",
+          "oklch(84% 0.0968 105.55)",
+          "oklch(95% 0.0968 105.55)"
+        ]
+      },
+      "active": {
+        "role": "secondary",
+        "displayName": "Active",
+        "tonalRamp": [
+          "oklch(15% 0.0658 105.71)",
+          "oklch(26% 0.0658 105.71)",
+          "oklch(38% 0.0658 105.71)",
+          "oklch(49% 0.0658 105.71)",
+          "oklch(61% 0.0658 105.71)",
+          "oklch(72% 0.0658 105.71)",
+          "oklch(84% 0.0658 105.71)",
+          "oklch(95% 0.0658 105.71)"
+        ]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "action": {
+        "role": "primary",
+        "displayName": "Action",
+        "tonalRamp": [
+          "oklch(15% 0.0500 169.48)",
+          "oklch(26% 0.0500 169.48)",
+          "oklch(38% 0.0500 169.48)",
+          "oklch(49% 0.0500 169.48)",
+          "oklch(61% 0.0500 169.48)",
+          "oklch(72% 0.0500 169.48)",
+          "oklch(84% 0.0500 169.48)",
+          "oklch(95% 0.0500 169.48)"
+        ]
+      },
+      "action-hover": {
+        "role": "primary",
+        "displayName": "Action Hover",
+        "tonalRamp": [
+          "oklch(15% 0.0665 164.94)",
+          "oklch(26% 0.0665 164.94)",
+          "oklch(38% 0.0665 164.94)",
+          "oklch(49% 0.0665 164.94)",
+          "oklch(61% 0.0665 164.94)",
+          "oklch(72% 0.0665 164.94)",
+          "oklch(84% 0.0665 164.94)",
+          "oklch(95% 0.0665 164.94)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Focus",
+        "tonalRamp": [
+          "oklch(15% 0.0895 162.75)",
+          "oklch(26% 0.0895 162.75)",
+          "oklch(38% 0.0895 162.75)",
+          "oklch(49% 0.0895 162.75)",
+          "oklch(61% 0.0895 162.75)",
+          "oklch(72% 0.0895 162.75)",
+          "oklch(84% 0.0895 162.75)",
+          "oklch(95% 0.0895 162.75)"
+        ]
+      },
+      "tab-mint": {
+        "role": "primary",
+        "displayName": "Tab Mint",
+        "tonalRamp": [
+          "oklch(15% 0.0432 164.55)",
+          "oklch(26% 0.0432 164.55)",
+          "oklch(38% 0.0432 164.55)",
+          "oklch(49% 0.0432 164.55)",
+          "oklch(61% 0.0432 164.55)",
+          "oklch(72% 0.0432 164.55)",
+          "oklch(84% 0.0432 164.55)",
+          "oklch(95% 0.0432 164.55)"
+        ]
+      },
+      "fold": {
+        "role": "primary",
+        "displayName": "Fold",
+        "tonalRamp": [
+          "oklch(15% 0.0668 162.83)",
+          "oklch(26% 0.0668 162.83)",
+          "oklch(38% 0.0668 162.83)",
+          "oklch(49% 0.0668 162.83)",
+          "oklch(61% 0.0668 162.83)",
+          "oklch(72% 0.0668 162.83)",
+          "oklch(84% 0.0668 162.83)",
+          "oklch(95% 0.0668 162.83)"
+        ]
+      },
+      "landscape": {
+        "role": "primary",
+        "displayName": "Landscape",
+        "tonalRamp": [
+          "oklch(15% 0.0636 166.55)",
+          "oklch(26% 0.0636 166.55)",
+          "oklch(38% 0.0636 166.55)",
+          "oklch(49% 0.0636 166.55)",
+          "oklch(61% 0.0636 166.55)",
+          "oklch(72% 0.0636 166.55)",
+          "oklch(84% 0.0636 166.55)",
+          "oklch(95% 0.0636 166.55)"
+        ]
+      },
+      "sql-keyword": {
+        "role": "primary",
+        "displayName": "Sql Keyword",
+        "tonalRamp": [
+          "oklch(15% 0.2434 263.54)",
+          "oklch(26% 0.2434 263.54)",
+          "oklch(38% 0.2434 263.54)",
+          "oklch(49% 0.2434 263.54)",
+          "oklch(61% 0.2434 263.54)",
+          "oklch(72% 0.2434 263.54)",
+          "oklch(84% 0.2434 263.54)",
+          "oklch(95% 0.2434 263.54)"
+        ]
+      },
+      "sql-string": {
+        "role": "primary",
+        "displayName": "Sql String",
+        "tonalRamp": [
+          "oklch(15% 0.1377 39.82)",
+          "oklch(26% 0.1377 39.82)",
+          "oklch(38% 0.1377 39.82)",
+          "oklch(49% 0.1377 39.82)",
+          "oklch(61% 0.1377 39.82)",
+          "oklch(72% 0.1377 39.82)",
+          "oklch(84% 0.1377 39.82)",
+          "oklch(95% 0.1377 39.82)"
+        ]
+      },
+      "sql-function": {
+        "role": "primary",
+        "displayName": "Sql Function",
+        "tonalRamp": [
+          "oklch(15% 0.1291 63.94)",
+          "oklch(26% 0.1291 63.94)",
+          "oklch(38% 0.1291 63.94)",
+          "oklch(49% 0.1291 63.94)",
+          "oklch(61% 0.1291 63.94)",
+          "oklch(72% 0.1291 63.94)",
+          "oklch(84% 0.1291 63.94)",
+          "oklch(95% 0.1291 63.94)"
+        ]
+      },
+      "sql-comment": {
+        "role": "primary",
+        "displayName": "Sql Comment",
+        "tonalRamp": [
+          "oklch(15% 0.0406 171.55)",
+          "oklch(26% 0.0406 171.55)",
+          "oklch(38% 0.0406 171.55)",
+          "oklch(49% 0.0406 171.55)",
+          "oklch(61% 0.0406 171.55)",
+          "oklch(72% 0.0406 171.55)",
+          "oklch(84% 0.0406 171.55)",
+          "oklch(95% 0.0406 171.55)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Heavy Inter display",
+        "purpose": "Wide-screen hero; responsive sizes are documented in DESIGN.md."
+      },
+      "headline": {
+        "displayName": "Proof headline",
+        "purpose": "Compact emphatic proof heading."
+      },
+      "body": {
+        "displayName": "Introductory prose",
+        "purpose": "Centered product description."
+      },
+      "navigation": {
+        "displayName": "Navigation",
+        "purpose": "Header links."
+      },
+      "button": {
+        "displayName": "Action label",
+        "purpose": "Download links."
+      },
+      "ui": {
+        "displayName": "Workbench label",
+        "purpose": "Compact native demonstration controls."
+      },
+      "code": {
+        "displayName": "SQL",
+        "purpose": "Preformatted queries with syntax colors."
+      }
+    },
+    "shadows": [
+      {
+        "name": "workbench",
+        "value": "0 12px 32px #133f3214",
+        "purpose": "Ambient support beneath the forest frame."
+      },
+      {
+        "name": "primary-action",
+        "value": "0 4px 10px #113b3212",
+        "purpose": "Subtle download-button lift."
+      },
+      {
+        "name": "proof-message",
+        "value": "0 5px 12px #173d3112",
+        "purpose": "Speech action."
+      },
+      {
+        "name": "proof-rear-tab",
+        "value": "0 8px 15px #113b3010",
+        "purpose": "Raised proof tab."
+      }
+    ],
+    "motion": [
+      {
+        "name": "action-transition",
+        "value": "background .18s ease-out, transform .18s ease-out",
+        "purpose": "Download hover."
+      },
+      {
+        "name": "tab-arrive",
+        "value": ".5s cubic-bezier(.16,1,.3,1)",
+        "purpose": "New query enters from translateY(10px)."
+      },
+      {
+        "name": "capi-nod",
+        "value": ".6s ease-out",
+        "purpose": "Working feedback."
+      },
+      {
+        "name": "proof-lift",
+        "value": ".45s cubic-bezier(.16,1,.3,1)",
+        "purpose": "Rear proof tab lifts 12px."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "wide",
+        "value": "min-width: 1600px"
+      },
+      {
+        "name": "display-wide",
+        "value": "min-width: 1401px"
+      },
+      {
+        "name": "compact-desktop",
+        "value": "max-width: 1400px"
+      },
+      {
+        "name": "two-pane",
+        "value": "max-width: 1120px"
+      },
+      {
+        "name": "tablet",
+        "value": "max-width: 820px"
+      },
+      {
+        "name": "phone",
+        "value": "max-width: 600px"
+      }
+    ],
+    "borders": {
+      "workbench": "6px solid var(--forest), 10px top",
+      "workbenchPhone": "4px solid var(--forest), 7px top",
+      "pane": "1px solid var(--line)",
+      "focus": "3px solid #2a7556; outline-offset: 4px"
+    },
+    "accessibility": {
+      "focus": "Visible outline on buttons, links, inputs and tabindex targets.",
+      "reducedMotion": "All CSS animation and transitions disabled, scrolling auto, simulated Capi wait zero.",
+      "semantics": "Links navigate. Buttons act. Tab sets use roving tabindex and ARIA panel relationships. Results use a table, sortable headers, and a labeled focusable scroll region. Local changes are announced politely."
+    },
+    "evidence": {
+      "sources": [
+        "site/styles.css",
+        "site/index.html",
+        "site/app.js",
+        "PRODUCT.md",
+        ".impeccable/surfaces/site-index-html.md"
+      ],
+      "selectedReference": ".impeccable/mocks/decision/10-mint-tabscape-capi-v2.png",
+      "captures": [
+        ".impeccable/review/desktop.png",
+        ".impeccable/review/tablet.png",
+        ".impeccable/review/mobile.png"
+      ],
+      "assetMapping": ".impeccable/review/asset-mapping.json",
+      "capi": {
+        "identitySource": "docs/screenshots/hero.png",
+        "crop": "96x112+2185+1295",
+        "method": "Screenshot-referenced generated cleanup and upscale, followed by lossless WebP conversion resized within 320x480 with alpha.",
+        "prompt": ".impeccable/capi-asset-prompt.txt",
+        "provenance": "site/assets/capi.webp.json",
+        "shippingAsset": "site/assets/capi.webp",
+        "placements": [
+          ".agent-response .capi",
+          ".proof-capi"
+        ]
+      },
+      "status": "Implementation documentation; supplemental component-review approval. No automated lifecycle gate success is asserted.",
+      "tonalRampNote": "Preview-only synthetic OKLCH ramps retain each extracted hue/chroma with lightness steps from 15% to 95%; these ramps are not shipped CSS tokens."
+    }
+  },
+  "components": [
+    {
+      "name": "Download for Windows",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary filled download link; the release destination is a real link.",
+      "html": "<a class=\"ds-primary\" href=\"https://github.com/Cyronius/based/releases/latest\"><svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"m2 4 9-1v8H2Zm11-1 9-1v9h-9ZM2 13h9v8l-9-1Zm11 0h9v9l-9-1Z\"/></svg>Download for Windows</a>",
+      "css": ".ds-primary{font-family:Inter,sans-serif;font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:11px;min-height:46px;padding:0 20px;border-radius:10px;white-space:nowrap;background:var(--action,#0a3327);color:var(--white,#fff);box-shadow:0 4px 10px #113b3212;text-decoration:none;transition:background .18s ease-out,transform .18s ease-out}.ds-primary:hover{background:var(--action-hover,#174d39);transform:translateY(-1px)}.ds-primary:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}@media(prefers-reduced-motion:reduce){button,a{transition:none;animation:none}}"
+    },
+    {
+      "name": "macOS preview",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Outlined secondary platform download link.",
+      "html": "<a class=\"ds-secondary\" href=\"https://github.com/Cyronius/based/releases/latest\">macOS preview</a>",
+      "css": ".ds-secondary{font-family:Inter,sans-serif;font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 20px;border-radius:10px;white-space:nowrap;box-shadow:inset 0 0 0 1px #7da998;background:transparent;color:var(--ink,#071612);text-decoration:none;transition:background .18s ease-out,transform .18s ease-out}.ds-secondary:hover{background:#c8ebd9;transform:translateY(-1px)}.ds-secondary:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}@media(prefers-reduced-motion:reduce){button,a{transition:none;animation:none}}"
+    },
+    {
+      "name": "New Query",
+      "kind": "button",
+      "refersTo": "small-button",
+      "description": "Compact native-workbench action.",
+      "html": "<button class=\"ds-small\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg>New Query</button>",
+      "css": ".ds-small{font-family:Inter,sans-serif;font-size:12px;font-weight:500;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:7px 11px;border:1px solid #d3e2dd;border-radius:5px;background:#fbfdfc;color:var(--ink,#071612);white-space:nowrap;cursor:pointer}.ds-small:hover{background:#e2f1e9}.ds-small:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}"
+    },
+    {
+      "name": "Object search",
+      "kind": "input",
+      "description": "Transparent compact search field from the explorer.",
+      "html": "<label class=\"ds-search\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6\"/><path d=\"m15 15 6 6\"/></svg><input type=\"search\" placeholder=\"Search\" aria-label=\"Search illustrative tables\"></label>",
+      "css": ".ds-search{font-family:Inter,sans-serif;display:inline-flex;gap:5px;align-items:center;min-width:0;color:#2b4149}.ds-search input{font-family:Inter,sans-serif;border:0;background:transparent;width:90px;min-width:0;font-size:12px;color:inherit}.ds-search input::placeholder{color:#546b68;opacity:1}.ds-search input:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px;outline-offset:1px}"
+    },
+    {
+      "name": "Main navigation",
+      "kind": "nav",
+      "description": "Compact navigation with a yellow current-section underline.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a class=\"ds-current\" href=\"#workbench\">Workbench</a><a href=\"https://github.com/Cyronius/based#guide\">Guide</a><a href=\"https://github.com/Cyronius/based\">GitHub</a></nav>",
+      "css": ".ds-nav{font-family:Inter,sans-serif;display:flex;gap:44px;align-items:center;color:var(--ink,#071612)}.ds-nav a{font-size:14px;font-weight:550;padding:11px 0;position:relative;color:inherit;text-decoration:none;text-underline-offset:5px}.ds-nav a:hover{text-decoration:underline}.ds-nav a:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}.ds-current::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;background:#dace38}"
+    },
+    {
+      "name": "Selected engine tab",
+      "kind": "custom",
+      "refersTo": "engine-tab-selected",
+      "description": "Oversized tab face, skewed lip, and dark rear fold; this isolated sample shows desktop geometry.",
+      "html": "<div class=\"ds-engine-stage\"><button class=\"ds-engine\" role=\"tab\" aria-selected=\"true\"><svg width=\"27\" height=\"27\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" aria-hidden=\"true\"><ellipse cx=\"12\" cy=\"5\" rx=\"8\" ry=\"3\"/><path d=\"M4 5v14c0 4 16 4 16 0V5M4 10c0 4 16 4 16 0M4 15c0 4 16 4 16 0\"/></svg><span>SQL Server</span></button></div>",
+      "css": ".ds-engine-stage{position:relative;padding:4px 40px 0 4px;isolation:isolate}.ds-engine{font-family:Inter,sans-serif;position:relative;display:flex;align-items:center;gap:17px;border:0;border-radius:18px 20px 0 0;height:58px;width:278px;padding:0 24px;font-size:16px;font-weight:600;color:var(--ink,#071612);background:var(--yellow,#fbf7aa);box-shadow:inset 2px 2px 0 #173d2d;text-align:left;z-index:4;cursor:pointer}.ds-engine::after{content:'';position:absolute;right:-16px;top:0;height:100%;width:32px;border-radius:0 13px 0 0;background:inherit;transform:skew(20deg);box-shadow:inset -2px 1px 0 #1e4333;z-index:-1}.ds-engine::before{content:'';position:absolute;right:-30px;top:9px;bottom:0;width:39px;border-radius:0 16px 0 0;background:var(--fold,#245741);transform:skew(23deg);z-index:-2}.ds-engine:hover{background:#fcf7b6}.ds-engine:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}"
+    },
+    {
+      "name": "Selected query tab",
+      "kind": "custom",
+      "refersTo": "query-tab-selected",
+      "description": "Quiet selected tab inside the workbench, with index and visual close mark.",
+      "html": "<button class=\"ds-query\" role=\"tab\" aria-selected=\"true\"><span class=\"ds-number\">3</span>High value products (agent)<span class=\"ds-close\" aria-hidden=\"true\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\"><path d=\"m6 6 12 12M18 6 6 18\"/></svg></span></button>",
+      "css": ".ds-query{font-family:Inter,sans-serif;display:flex;align-items:center;gap:10px;font-size:12px;white-space:nowrap;padding:0 11px;height:47px;border:0;border-right:1px solid #e6eeeb;flex-shrink:0;background:var(--active,#f7f5c2);border-radius:7px 7px 0 0;color:#17251a;cursor:pointer}.ds-query:hover{background:var(--yellow,#fbf7aa)}.ds-query:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}.ds-number{color:#6d817a;font-variant-numeric:tabular-nums}.ds-close{display:inline-flex;align-items:center;justify-content:center;min-width:18px;min-height:22px;border-radius:3px}.ds-close:hover{background:#d0dfce}"
+    },
+    {
+      "name": "Agent query action",
+      "kind": "card",
+      "refersTo": "agent-query",
+      "description": "Pale query card that opens the illustrative Capi result.",
+      "html": "<button class=\"ds-agent\"><svg width=\"21\" height=\"21\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" aria-hidden=\"true\"><path d=\"M6 3h9l4 4v14H6ZM14 3v5h5M9 12h7M9 16h7\"/></svg><span><strong>High value products (agent)</strong><code>SELECT …</code></span><svg class=\"ds-arrow\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.65\" aria-hidden=\"true\"><path d=\"M4 12h16m-6-6 6 6-6 6\"/></svg></button>",
+      "css": ".ds-agent{font-family:Inter,sans-serif;display:flex;gap:14px;align-items:center;text-align:left;background:#eff7f3;border:1px solid #d9e8e0;border-radius:7px;padding:12px;font-size:11px;color:#243e34;min-width:0;transition:background .18s ease-out;cursor:pointer}.ds-agent:hover{background:#e0f0e6}.ds-agent:focus-visible{outline:3px solid var(--focus,#2a7556);outline-offset:4px}.ds-agent:disabled{cursor:wait;opacity:.65}.ds-agent strong{font-weight:600;display:block;margin-bottom:8px}.ds-agent code{font:11px Consolas,monospace}.ds-arrow{margin-left:auto}@media(prefers-reduced-motion:reduce){button,a{transition:none;animation:none}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Mint Tabscape",
+    "overview": "The implemented marketing world combines a spacious mint field, heavy forest and ink typography, pale yellow active tabs, and cool white working surfaces. Oversized engine tabs make the shared database workspace tangible; fine labels, SQL, and real HTML tables retain the density of a desktop database client.\n\nCapi supplies the warm tan illustration within this green world. Preserve the existing lowercase `based` identity and Capi's screenshot-derived character. This record describes the static marketing surface under `site/`; it does not redefine the separate desktop application's theme.",
+    "keyCharacteristics": [
+      "Oversized layered tabs with dark rear folds.",
+      "Heavy Inter headlines beside compact functional UI.",
+      "Mint surroundings, forest structure, yellow selection, cool white content.",
+      "One shared transparent Capi asset in the workbench and proof illustration.",
+      "Local, semantic demonstration controls that expose the workspace mechanism."
+    ],
+    "rules": [
+      {
+        "name": "The Selection Rule",
+        "body": "Use yellow to identify the active tab; keep the surrounding workspace cool and quiet.",
+        "section": "colors"
+      },
+      {
+        "name": "The Scale Rule",
+        "body": "Keep expressive headlines and dense functional labels distinct; preserve readable code and horizontal scrolling instead of shrinking whole workbench artwork.",
+        "section": "typography"
+      },
+      {
+        "name": "The Layer Rule",
+        "body": "Establish the silhouette and dark outline first; use shadows as a subtle supporting cue.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the mint field, forest structure, yellow selected tabs, and cool white working surfaces.",
+      "Do use self-hosted Inter with heavy headlines and compact functional labels.",
+      "Do preserve native semantic controls, visible focus, local feedback, and reduced-motion behavior.",
+      "Do reflow the agent below the query area on phones and contain code, tabs, and result overflow.",
+      "Do reuse the shared transparent Capi asset and retain its provenance."
+    ],
+    "donts": [
+      "Don't replace Capi with a robot, recolor it mint, or add new character props.",
+      "Don't flatten the engine tabs into generic pills or let rear folds obscure their labels.",
+      "Don't substitute a screenshot for the functional workbench demonstration.",
+      "Don't present browser-local sample interactions as a live database or remote AI connection."
+    ]
+  }
+}

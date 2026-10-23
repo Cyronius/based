@@ -4,6 +4,8 @@
 
 **A database client where the AI is a participant in your workspace — not a chat box bolted to the side.**
 
+[Website](https://cyronius.github.io/based/) · [Download](https://github.com/Cyronius/based/releases/latest)
+
 SQL Server, Snowflake, and LanceDB — vector, hybrid, and keyword search included — one workbench,
 running entirely on your machine.
 

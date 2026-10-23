@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#daf7e7">
+  <meta name="description" content="An open-source local database workbench for SQL Server, Snowflake and LanceDB, with an AI agent that works in your tabs. Your model. Your machine. Your approval.">
+  <meta property="og:title" content="based — Make room for better queries.">
+  <meta property="og:description" content="SQL Server, Snowflake and LanceDB. One local workbench. Meet Capi, the agent that works in your tabs.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cyronius.github.io/based/">
+  <title>based — Make room for better queries.</title>
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="preload" href="assets/fonts/inter-variable.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 10c0 4 16 4 16 0M4 15c0 4 16 4 16 0"/></symbol>
+    <symbol id="i-snow" viewBox="0 0 24 24"><path d="M12 2v20M3.34 7l17.32 10M3.34 17 20.66 7M8 4l4 4 4-4M8 20l4-4 4 4M3 11l5-1-1-5M21 13l-5 1 1 5M3 13l5 1-1 5M21 11l-5-1 1-5"/></symbol>
+    <symbol id="i-lance" viewBox="0 0 24 24"><path d="m12 3 9 17H3Z"/><path d="m12 10 5 10H7Z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M3 14h18M9 4v16M15 4v16"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 3h9v11H3Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-document" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6ZM14 3v5h5M9 12h7M9 16h7"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="m12 2 2.6 7.4L22 12l-7.4 2.6L12 22l-2.6-7.4L2 12l7.4-2.6Z"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path d="m2 4 9-1v8H2Zm11-1 9-1v9h-9ZM2 13h9v8l-9-1Zm11 0h9v9l-9-1Z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+  </defs></svg>
+
+  <header class="site-header">
+    <a class="wordmark" href="./" aria-label="based home">based</a>
+    <nav class="main-nav" aria-label="Main navigation">
+      <a class="current" href="#workbench">Workbench</a>
+      <a href="https://github.com/Cyronius/based#guide">Guide</a>
+      <a href="https://github.com/Cyronius/based">GitHub</a>
+    </nav>
+    <div class="download-actions">
+      <a class="button button-primary download-windows" href="https://github.com/Cyronius/based/releases/latest"><svg class="icon windows"><use href="#i-windows"/></svg>Download for Windows</a>
+      <a class="button button-secondary download-macos" href="https://github.com/Cyronius/based/releases/latest">macOS preview</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="headline">
+      <div class="intro">
+        <h1 id="headline">Make room for better queries.</h1>
+        <p>An open-source local desktop database workbench for SQL Server, Snowflake and LanceDB,<br class="desktop-break"> with an AI agent that reads your open tabs, opens query tabs, and puts results in real grids.<br class="desktop-break"> You stay in control — database changes always need your approval.</p>
+      </div>
+
+      <div class="workbench-wrap" id="workbench">
+        <div class="engine-tabs" role="tablist" aria-label="Database engine">
+          <button class="engine-tab selected" id="engine-mssql" role="tab" aria-selected="true" aria-controls="workspace-panel" data-engine="mssql"><svg class="icon"><use href="#i-database"/></svg><span>SQL Server</span><svg class="icon tab-mark"><use href="#i-close"/></svg></button>
+          <button class="engine-tab" id="engine-snowflake" role="tab" aria-selected="false" aria-controls="workspace-panel" tabindex="-1" data-engine="snowflake"><svg class="icon"><use href="#i-snow"/></svg><span>Snowflake</span><svg class="icon tab-mark"><use href="#i-close"/></svg></button>
+          <button class="engine-tab" id="engine-lance" role="tab" aria-selected="false" aria-controls="workspace-panel" tabindex="-1" data-engine="lance"><svg class="icon"><use href="#i-lance"/></svg><span>LanceDB</span><svg class="icon tab-mark"><use href="#i-close"/></svg></button>
+          <a class="engine-more" href="https://github.com/Cyronius/based#getting-started" aria-label="Read about database connections"><svg class="icon"><use href="#i-plus"/></svg></a>
+        </div>
+
+        <div class="workbench" id="workspace-panel" role="tabpanel" aria-labelledby="engine-mssql">
+          <div class="workbench-toolbar">
+            <span class="app-wordmark">based</span>
+            <span class="connection-name"><svg class="icon"><use href="#i-database"/></svg><span id="connection-label">SQL Server</span><svg class="icon tiny down"><use href="#i-chevron"/></svg></span>
+            <div class="breadcrumbs"><span id="connection-host">localhost</span><svg class="icon tiny"><use href="#i-chevron"/></svg><span id="connection-db">AdventureWorks</span><svg class="icon tiny"><use href="#i-chevron"/></svg><span id="connection-schema">dbo</span></div>
+            <button class="small-button new-query" id="new-query"><svg class="icon"><use href="#i-plus"/></svg>New Query</button>
+            <button class="icon-button run-query" id="run-query" aria-label="Run illustrative query" title="Run illustrative query"><svg class="icon"><use href="#i-play"/></svg></button>
+          </div>
+
+          <div class="workbench-body">
+            <aside class="explorer" aria-label="Illustrative database objects">
+              <div class="explorer-heading"><span>Explorer</span><label class="search-label"><svg class="icon"><use href="#i-search"/></svg><input id="object-search" type="search" placeholder="Search" aria-label="Search illustrative tables"></label></div>
+              <div class="object-tree">
+                <div class="tree-row"><svg class="icon tiny down"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-database"/></svg><span id="tree-host">localhost</span></div>
+                <div class="tree-row indent-1"><svg class="icon tiny down"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-database"/></svg><span id="tree-db">AdventureWorks</span></div>
+                <div class="tree-row indent-2"><svg class="icon tiny down"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-folder"/></svg><span id="tree-schema">dbo</span></div>
+                <div id="table-objects"></div>
+                <p id="empty-search" class="empty-search" hidden>No matching tables.</p>
+                <div class="tree-row indent-2"><svg class="icon tiny"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-folder"/></svg>Views</div>
+                <div class="tree-row indent-2"><svg class="icon tiny"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-folder"/></svg><span id="extra-folder">Stored Procedures</span></div>
+                <div class="tree-row indent-2"><svg class="icon tiny"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-folder"/></svg>Functions</div>
+                <div class="tree-row tree-secondary"><svg class="icon tiny"><use href="#i-chevron"/></svg><svg class="icon"><use href="#i-database"/></svg><span id="secondary-db">master</span></div>
+              </div>
+            </aside>
+
+            <div class="query-area">
+              <div class="query-tabs" role="tablist" aria-label="Illustrative query tabs" id="query-tabs"></div>
+              <div class="sql-editor" role="tabpanel" id="query-panel" aria-label="Illustrative SQL query"><pre id="sql-query"></pre></div>
+              <div class="results-toolbar"><span class="results-label">Results</span><span class="result-count" id="result-count">6 rows</span><button class="icon-button" id="export-results" aria-label="Export illustrative results as CSV" title="Export illustrative results as CSV"><svg class="icon"><use href="#i-download"/></svg></button><svg class="icon"><use href="#i-grid"/></svg></div>
+              <div class="results-scroll" tabindex="0" aria-label="Illustrative query results, scroll to see all columns"><table id="results-table"><thead></thead><tbody></tbody></table></div>
+            </div>
+
+            <aside class="agent-panel" aria-label="Capi workspace demonstration">
+              <div class="agent-heading"><span>Agent</span><span class="agent-name">Capi</span></div>
+              <div class="agent-response"><div class="capi-wrap"><img class="capi" src="assets/capi.webp" width="80" height="112" alt="Capi, Based's capybara agent"><svg class="icon sparkle"><use href="#i-sparkle"/></svg></div><p id="agent-message">I found high value products from your open tabs and added a new query with the results.</p></div>
+              <ul class="agent-checklist"><li><svg class="icon check"><use href="#i-check"/></svg>Read your open tabs</li><li><svg class="icon check"><use href="#i-check"/></svg>Wrote and opened a new query tab</li><li><svg class="icon check"><use href="#i-check"/></svg>Ran the query and loaded results</li></ul>
+              <button class="agent-query" id="ask-capi"><svg class="icon"><use href="#i-document"/></svg><span><strong id="agent-query-label">High value products (agent)</strong><code>SELECT …</code></span><svg class="icon tiny"><use href="#i-arrow"/></svg></button>
+              <p class="approval-note">This query only reads data.<br> Database changes run only with your approval.</p>
+            </aside>
+          </div>
+        </div>
+        <svg class="workspace-wave" viewBox="0 0 1536 70" preserveAspectRatio="none" aria-hidden="true"><path d="M0 4 Q768 94 1536 4 V70 H0Z" fill="#daf7e7" stroke="#edf9f2" stroke-width="8"/></svg>
+        <p class="demo-caption">Illustrative workspace <span>· try the engine tabs or ask Capi</span></p>
+        <p class="sr-only" id="demo-status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="workspace-proof" aria-labelledby="proof-heading">
+      <div class="proof-demo">
+        <div class="proof-message"><img src="assets/capi.webp" width="82" height="112" alt="" class="proof-capi"><button id="proof-action">I’m opening a new query tab<br>based on your current work.</button><svg class="proof-arrow" viewBox="0 0 100 44" aria-hidden="true"><path d="M2 15Q55-12 94 36m-13-5 13 5-2-13"/></svg></div>
+        <div class="proof-tab-peek" aria-hidden="true">3 <span>Customers by region (agent)</span><svg class="icon tiny"><use href="#i-close"/></svg></div>
+        <div class="proof-tab-row" aria-hidden="true"><span>1 <span>Orders by month</span><svg class="icon tiny"><use href="#i-close"/></svg></span><span>2 <span>Top customers</span><svg class="icon tiny"><use href="#i-close"/></svg></span><span>3 <span>High value products</span><svg class="icon tiny"><use href="#i-close"/></svg></span><span class="active">4 <strong>Customers by region (agent)</strong><svg class="icon tiny"><use href="#i-close"/></svg></span></div>
+      </div>
+      <div class="proof-copy"><h2 id="proof-heading">Real tabs. Real grids. Your approval.</h2><p>The AI agent reads your open tabs, opens new query tabs, and puts results in real grids. When a query changes your database, you’ll see the plan and approve it before anything runs.</p></div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><a class="wordmark" href="./">based</a><p>Your model. Your machine. Your approval.</p><div><a href="https://github.com/Cyronius/based/blob/main/LICENSE">MIT license</a><a href="https://github.com/Cyronius/based">GitHub<svg class="icon tiny"><use href="#i-arrow"/></svg></a></div></footer>
+</body>
+</html>
