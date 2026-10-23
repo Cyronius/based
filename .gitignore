@@ -26,3 +26,4 @@ shell-tauri/icons/ios/
 *.pem
 *.key
 *_rsa_key*
+.impeccable
