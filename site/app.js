@@ -234,12 +234,12 @@ $('#export-results').addEventListener('click', () => {
 
 selectEngine('mssql');
 
-// The release page remains a working fallback if GitHub's public API is unavailable.
+// Static links remain usable if GitHub's public API is unavailable.
 fetch('https://api.github.com/repos/Cyronius/based/releases/latest', { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(6000) })
   .then(response => response.ok ? response.json() : null)
   .then(release => {
     if (!release?.assets) return;
-    for (const [selector, pattern] of [['.download-windows', /-Setup\.exe$/i], ['.download-macos', /macos-arm64\.dmg$/i]]) {
+    for (const [selector, pattern] of [['.download-windows', /-Setup\.exe$/i], ['.download-linux', /-fedora-x86_64\.rpm$/i], ['.download-macos', /macos-arm64\.dmg$/i]]) {
       const asset = release.assets.find(asset => pattern.test(asset.name));
       if (!asset || !asset.browser_download_url.startsWith('https://github.com/Cyronius/based/releases/download/')) continue;
       document.querySelectorAll(selector).forEach(link => { link.href = asset.browser_download_url; });
