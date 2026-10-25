@@ -11,15 +11,25 @@ based is a Bun workspace with four packages:
 
 ## Prerequisites
 
-- **Bun** (a recent 1.x)
+- **Bun 1.4.4** (the release/CI version; Bun 1.3.14 crashes in Linux native-keyring tests)
 - **The Rust toolchain** (`rustup`) — the shell is Rust, so `bun run dev` builds it. The first
   `bun run dev` on a clean checkout compiles it and takes a few minutes; after that it is
   near-instant. If you are only working on `core` or `ui`, the `dev:core` + `dev:ui` browser loop
   below needs no Rust at all.
-- **Windows 11 x64** for the shell and installer. `core` and `ui` are platform-agnostic enough to
-  develop on, but secrets go through Windows Credential Manager and packaging is Windows-only.
+- **Windows 11 x64, macOS arm64, or Fedora 43+ x86_64** for the native shell. Secrets use
+  Credential Manager, Keychain, or Linux Secret Service respectively.
 - For the installer: **Inno Setup 6** (`winget install JRSoftware.InnoSetup`) and .NET Framework
-  4.x (for `csc.exe`, which builds the `.sql` association stub).
+  4.x.
+- On Fedora, install the native build dependencies:
+
+  ```sh
+  sudo dnf install gcc gcc-c++ make rust cargo pkgconf-pkg-config webkit2gtk4.1-devel \
+    openssl-devel libxdo-devel libsecret-devel librsvg2-devel curl unzip file
+  ```
+
+  Run an unlocked Secret Service (GNOME Keyring or KWallet with Secret Service enabled) to save
+  credentials. Browser-only development uses `zenity` or `kdialog` for file dialogs; the native
+  shell uses its own dialogs.
 
 ```sh
 bun install
@@ -123,6 +133,22 @@ The port work this workflow existed to de-risk has landed: dialogs are relayed t
 shortcuts are platform-correct. What remains is verification on real hardware — Phase 7 of
 [specs/based/plans/macos-port.md](../specs/based/plans/macos-port.md).
 
+## Building for Fedora
+
+```sh
+bun install --frozen-lockfile
+bun run package:linux
+# dist/based-<version>-fedora-x86_64.rpm and .rpm.sha256
+```
+
+Build on Fedora 43 for compatibility with Fedora 43 and later. The script builds the UI, bundles
+core and its native libraries, and builds the Tauri RPM using `tauri.linux.conf.json`. It bundles
+the host's Bun runtime, so build on the target architecture. No globally installed Tauri CLI is
+needed. The RPM registers an SQL file handler without changing the default application.
+
+The **build (Fedora)** workflow can be run manually and is also called by the release workflow.
+Its tests run under an isolated D-Bus session with an unlocked GNOME Keyring.
+
 ## Cutting a release
 
 ```powershell
@@ -133,8 +159,8 @@ shortcuts are platform-correct. What remains is verification on real hardware �
 The local half: preflight (clean tree, on `main`) → bump → draft a `CHANGELOG.md` section from the
 commit log and **stop for you to rewrite it** → commit, tag, push. The tag push triggers
 [release.yml](../.github/workflows/release.yml), which typechecks, tests, builds the Windows
-installer (Inno Setup via choco) and the macOS `.dmg` on pinned runners, publishes one GitHub
-release with both artifacts + SHA-256s + per-platform install notes, and bumps the
+installer (Inno Setup via choco), macOS `.dmg`, and Fedora RPM on pinned runners, publishes one GitHub
+release with all three artifacts + SHA-256s + per-platform install notes, and bumps the
 `Cyronius/homebrew-based` cask (needs the `TAP_PUSH_TOKEN` secret; skips with a warning if absent).
 
 Version bumping alone:
@@ -152,7 +178,7 @@ without running the script first. The version reaches the status bar via `/api/h
 **Builds happen in CI, not locally.** `release.ps1` used to build the installer on this machine
 (Inno Setup + Rust toolchain required locally); Phase 6 of the
 [macOS port plan](../specs/based/plans/macos-port.md) split it at the build boundary, so releases
-are reproducible from the repository alone and both platforms build from the same tag.
+are reproducible from the repository alone and all three platforms build from the same tag.
 
 ### Note on PowerShell scripts
 

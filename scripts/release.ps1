@@ -1,6 +1,6 @@
 # Cuts a release: bump -> changelog -> commit -> tag -> push. The tag push triggers
-# .github/workflows/release.yml, which typechecks, tests, builds BOTH platforms (Windows installer
-# via Inno Setup, macOS .dmg), and publishes the GitHub release with both artifacts plus the
+# .github/workflows/release.yml, which typechecks, tests, builds Windows, macOS, and Fedora
+# packages, and publishes the GitHub release with all artifacts plus the
 # Homebrew cask bump. This script owns only the local, human-in-the-loop half.
 #
 #   .\scripts\release.ps1 patch            # 0.1.0 -> 0.1.1
@@ -118,7 +118,7 @@ $($commits -join "`n")
     Run "git tag" { git tag -a $tag -m "based $newVersion" }
     Run "git push" { git push --follow-tags }
     Write-Host "`nDone: based $newVersion tagged." -ForegroundColor Green
-    Write-Host "The release workflow is now building both platforms:" -ForegroundColor DarkGray
+    Write-Host "The release workflow is now building Windows, macOS, and Fedora:" -ForegroundColor DarkGray
     Write-Host "  gh run watch --repo Cyronius/based" -ForegroundColor DarkGray
   }
 } finally {

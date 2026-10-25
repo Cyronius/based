@@ -1,5 +1,5 @@
 // Traces: BASED-SECRET-STORE
-// Windows Credential Manager via @napi-rs/keyring (napi prebuild; Bun napi loading validated in spike 5).
+// OS credential store via @napi-rs/keyring: Credential Manager, Keychain, or Linux Secret Service.
 import { Entry } from "@napi-rs/keyring";
 
 const SERVICE = process.env.BASED_KEYRING_SERVICE ?? "based-db-client";
@@ -46,7 +46,7 @@ function readSecret(account: string): string | null {
   const isV2 = blob.length >= V2_MARKER.length && V2_MARKER.every((b, i) => blob[i] === b);
   return isV2
     ? new TextDecoder().decode(blob.subarray(V2_MARKER.length))
-    : new TextDecoder("utf-16le").decode(blob);
+    : new TextDecoder(process.platform === "win32" ? "utf-16le" : "utf-8").decode(blob);
 }
 
 function removeSecret(account: string): void {

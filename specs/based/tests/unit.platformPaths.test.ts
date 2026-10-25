@@ -26,6 +26,26 @@ describe("BASED-PLATFORM-PATHS: per-platform app-data root", () => {
     expect(appDataRoot("win32", { APPDATA: appdata })).toBe(appdata);
   });
 
+  test("linux uses an absolute XDG_DATA_HOME", () => {
+    expect(appDataRoot("linux", { HOME: "/home/ada", XDG_DATA_HOME: "/data/my apps" })).toBe("/data/my apps");
+  });
+
+  test("linux defaults to ~/.local/share and ignores APPDATA", () => {
+    expect(seg(appDataRoot("linux", { HOME: "/home/ada", APPDATA: "/windows" })))
+      .toEqual(["home", "ada", ".local", "share"]);
+  });
+
+  test("linux ignores relative or empty XDG_DATA_HOME", () => {
+    for (const XDG_DATA_HOME of ["relative/data", ""]) {
+      expect(seg(appDataRoot("linux", { HOME: "/home/ada", XDG_DATA_HOME })))
+        .toEqual(["home", "ada", ".local", "share"]);
+    }
+  });
+
+  test("linux without HOME still uses the user's home directory", () => {
+    expect(seg(appDataRoot("linux", {})).slice(-2)).toEqual([".local", "share"]);
+  });
+
   test("win32 with no APPDATA falls back to the cwd, not to a darwin path", () => {
     expect(appDataRoot("win32", {})).toBe(".");
   });

@@ -227,8 +227,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "based-shell"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
+ "dirs",
  "serde",
  "serde_json",
  "tauri",

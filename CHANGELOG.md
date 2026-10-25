@@ -7,6 +7,23 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.7] - 2026-10-25
+
+### Added
+
+- Fedora 43+ x86_64 RPM with the Bun runtime, UI, native database libraries, application-menu
+  launcher, and SQL file association. Install with `sudo dnf install ./based-0.1.7-fedora-x86_64.rpm`.
+- Linux release builds and checks alongside Windows and macOS, plus `bun run package:linux`
+  for local packaging and a SHA-256 checksum for each RPM.
+
+### Fixed
+
+- Linux stores application data under `$XDG_DATA_HOME/based` (default `~/.local/share/based`)
+  instead of the current directory; development uses the separate `based-dev` directory.
+- Standalone Linux file dialogs use Zenity or KDialog, including file filters and cancellation.
+- Legacy credential values decode using the native platform's encoding on Linux and macOS.
+- Release builds use Bun 1.4.4, avoiding a native-keyring test crash in Bun 1.3.14 on Linux.
+
 ## [0.1.6] - 2026-09-09
 
 ### Capi avatar redesign

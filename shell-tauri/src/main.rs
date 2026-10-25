@@ -29,7 +29,8 @@ struct ShellState {
 struct CoreChild(Mutex<Option<Child>>);
 
 /// BASED-PLATFORM-PATHS: mirror of core's appDataRoot()/dataDir() (core/src/storage/db.ts).
-/// %APPDATA%\based on Windows, ~/Library/Application Support/based on macOS, unless overridden.
+/// %APPDATA%\based on Windows, ~/Library/Application Support/based on macOS,
+/// $XDG_DATA_HOME/based (default ~/.local/share/based) on Linux, unless overridden.
 /// Change this and the TypeScript side together — the shell reads pending-open.txt from the
 /// directory core writes it to, so a drift between them silently breaks file-open-at-launch.
 ///
@@ -39,11 +40,18 @@ fn data_dir() -> PathBuf {
         return PathBuf::from(d);
     }
     if cfg!(target_os = "macos") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        Path::new(&home)
-            .join("Library")
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join("Library")
             .join("Application Support")
             .join("based")
+    } else if cfg!(target_os = "linux") {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            if Path::new(&xdg).is_absolute() {
+                return Path::new(&xdg).join("based");
+            }
+        }
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".local").join("share").join("based")
     } else {
         let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
         Path::new(&appdata).join("based")

@@ -5,17 +5,22 @@ import { homedir } from "node:os";
 
 /**
  * BASED-PLATFORM-PATHS: the OS's per-user application-data root — `%APPDATA%` on Windows,
- * `~/Library/Application Support` on macOS. `data_dir()` in shell-tauri/src/main.rs mirrors this
+ * `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` (or `~/.local/share`) on Linux.
+ * `data_dir()` in shell-tauri/src/main.rs mirrors this
  * (the shell reads pending-open.txt out of the same directory); the two must be changed together.
  *
  * Parameterized rather than reading `process.platform`/`process.env` directly so both branches are
- * testable from either build host. No Linux branch yet — a Linux port would add XDG here.
+ * testable from any build host. XDG requires absolute paths; ignore empty or relative values.
  */
 export function appDataRoot(
   platform: string = process.platform,
   env: Record<string, string | undefined> = process.env,
 ): string {
   if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Application Support");
+  if (platform === "linux") {
+    if (env.XDG_DATA_HOME?.startsWith("/")) return env.XDG_DATA_HOME;
+    return join(env.HOME || homedir(), ".local", "share");
+  }
   return env.APPDATA ?? ".";
 }
 

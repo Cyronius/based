@@ -1,6 +1,6 @@
 [package]
 name = "based-shell"
-version = "0.1.6"
+version = "0.1.7"
 description = "based — Tauri shell"
 edition = "2021"
 
@@ -8,6 +8,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+dirs = "6"
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"

@@ -2,7 +2,7 @@
 #
 # The tag-triggered half of the release pipeline. scripts/release.ps1 owns the local half
 # (bump → changelog edit → commit → tag → push); pushing the v* tag lands here, which verifies,
-# builds both platforms, and publishes one GitHub release with both artifacts. Secondary benefit:
+# builds all three platforms, and publishes one GitHub release with all artifacts. Secondary benefit:
 # Windows releases stop depending on whatever is installed on one machine (docs/development.md
 # tracked that as future work).
 #
@@ -25,7 +25,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -73,7 +73,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -128,8 +128,11 @@ jobs:
           path: based-*-macos-arm64.dmg
           if-no-files-found: error
 
+  fedora:
+    uses: ./.github/workflows/build-fedora.yml
+
   publish:
-    needs: [windows, macos]
+    needs: [windows, macos, fedora]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -146,9 +149,11 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           EXE="artifacts/based-$VERSION-Setup.exe"
           DMG="artifacts/based-$VERSION-macos-arm64.dmg"
-          test -f "$EXE" && test -f "$DMG"
+          RPM="artifacts/based-$VERSION-fedora-x86_64.rpm"
+          test -f "$EXE" && test -f "$DMG" && test -f "$RPM"
           EXE_SHA=$(sha256sum "$EXE" | cut -d' ' -f1)
           DMG_SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
+          RPM_SHA=$(sha256sum "$RPM" | cut -d' ' -f1)
 
           # The CHANGELOG section for this version (written and edited locally by release.ps1
           # before the tag was pushed), minus its "## [x.y.z] - date" heading.
@@ -196,6 +201,20 @@ jobs:
           # verify the download: shasum -a 256 based-$VERSION-macos-arm64.dmg
           # $DMG_SHA
           \`\`\`
+
+          ### Install — Fedora 43+ (x86_64)
+
+          Download \`based-$VERSION-fedora-x86_64.rpm\`, then install it with DNF:
+
+          \`\`\`bash
+          sudo dnf install ./based-$VERSION-fedora-x86_64.rpm
+          sha256sum based-$VERSION-fedora-x86_64.rpm
+          # $RPM_SHA
+          \`\`\`
+
+          Launch **based** from the application menu. Credentials use the desktop's Secret Service
+          (GNOME Keyring or KWallet with its Secret Service enabled). Data lives in
+          \`\$XDG_DATA_HOME/based\`, defaulting to \`~/.local/share/based\`.
           EOF
 
       - name: Create GitHub release
@@ -206,6 +225,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "artifacts/based-$VERSION-Setup.exe" \
             "artifacts/based-$VERSION-macos-arm64.dmg" \
+            "artifacts/based-$VERSION-fedora-x86_64.rpm" \
+            "artifacts/based-$VERSION-fedora-x86_64.rpm.sha256" \
             --title "based $VERSION" \
             --notes-file notes.md
 

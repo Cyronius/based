@@ -26,7 +26,7 @@ Connections (name, server, initial database, auth type, options) shall persist i
 **Test category:** integration
 
 SQL-login passwords and service-principal client secrets shall be stored in the OS credential
-store — Windows Credential Manager / macOS Keychain, via the same `@napi-rs/keyring` API — keyed
+store — Windows Credential Manager / macOS Keychain / Linux Secret Service, via the same `@napi-rs/keyring` API — keyed
 by connection id, retrievable by the core process, and deleted when the connection is deleted.
 
 Secrets shall be stored as UTF-8 **bytes**, not as a keyring "password". The 2560-byte blob cap and the UTF-16 halving below are **Credential Manager limits, not Keychain limits** — but the byte encoding and the over-cap guard apply on every platform, both so a secret saved on one OS is sized the same on the other and because Windows is where the guard bites: Credential Manager caps a credential blob at 2560 bytes, and the password API encodes to UTF-16 first, halving the usable room to ~1280 characters — below a 2048-bit PKCS#8 PEM (1704 characters), which made key-pair auth impossible to save. A secret exceeding the cap shall be refused with a message naming the limit, not with the driver's own error. Blobs written by the earlier password path (Windows-only history — no macOS build ever shipped it) shall still read back, and shall be upgraded in place on their next write; nothing is rewritten in bulk.
@@ -558,7 +558,9 @@ and answers via `POST /api/shell/dialog-result { id, path }`. All dialog endpoin
 (open-file/save-sql/save-transcript/export/folder) ride the same channel; filters cross the wire
 structured (`{ name, extensions[] }`), never as a platform filter string. When no shell is
 attached (browser dev, standalone core), core falls back to a per-OS subprocess dialog
-(PowerShell WinForms on Windows, `osascript` on macOS). A shell that detaches mid-dialog resolves
+(PowerShell WinForms on Windows, `osascript` on macOS, Zenity or KDialog on Linux).
+Linux filters and filenames are passed as separate arguments; cancel returns null and missing
+dialog tools produce an actionable error. A shell that detaches mid-dialog resolves
 the request as cancelled (`{ path: null }`), never hangs it.
 
 **Acceptance criteria (integration — the relay, with a fake shell subscriber):**
@@ -3169,11 +3171,11 @@ Record: PASS/FAIL + date below.
 **Test category:** unit
 
 `appDataRoot(platform?, env?)` in `core/src/storage/db.ts` resolves the OS's per-user
-application-data root: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS (falling
-back to `homedir()` when `HOME` is unset). `dataDir()` appends `based` to it and creates the
+application-data root: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS, and
+`$XDG_DATA_HOME` on Linux (default `~/.local/share`; empty and relative XDG values are ignored).
+Home paths fall back to `homedir()` when `HOME` is unset. `dataDir()` appends `based` and creates the
 directory, unless `BASED_DATA_DIR` overrides the whole path — which `core/src/dev.ts` uses to point
-dev sessions at a `based-dev` sibling so they never pollute the real `app.db`/`agent.db`. There is
-no Linux branch; a Linux port would add XDG here.
+dev sessions at a `based-dev` sibling so they never pollute the real `app.db`/`agent.db`.
 
 Both parameters are injectable specifically so each platform's branch is testable from either build
 host — the packaged app only ever exercises one of them.
@@ -3188,6 +3190,8 @@ than failing loudly.
 - `appDataRoot("win32", { APPDATA: "C:\\Users\\ada\\AppData\\Roaming" })` → that value verbatim
 - `appDataRoot("win32", {})` → `"."` (never a darwin path)
 - `appDataRoot("darwin", {})` → still ends in `Library/Application Support`
+- `appDataRoot("linux", { HOME: "/home/ada" })` → `/home/ada/.local/share`
+- Linux honors an absolute `XDG_DATA_HOME`, ignoring relative/empty values and Windows `APPDATA`
 - `BASED_DATA_DIR` set → `dataDir()` returns it exactly, and the directory exists afterwards
 
 ### BASED-PACKAGE-WIN: Packaged app bundle is self-contained
@@ -3233,6 +3237,34 @@ randomized read-only path).
 1. Install from the DMG onto a path with no repo checkout → launch → the full UI renders.
 2. Run a LanceDB query (exercises the DuckDB native stack + `libduckdb.dylib`).
 3. Repeat 1–2 with the quarantine flag still set (translocated run) after Open Anyway.
+
+### BASED-PACKAGE-LINUX: Self-contained Fedora RPM
+**Applies to:** based (core + shell-tauri + repo)
+**Test category:** manual
+
+`bun run package:linux` builds the UI, bundles core with its native addons and `libduckdb.so`,
+and builds a Tauri RPM. The package includes an executable Bun runtime and installs its resources
+under `/usr/lib/based`; it runs without a repo checkout or a separately installed Bun. Fedora 43
+is the build baseline for Fedora 43+ x86_64. Runtime libraries are declared as RPM dependencies.
+The application-menu entry offers an SQL file handler without replacing the user's default.
+Credentials use the session's unlocked Secret Service; data uses BASED-PLATFORM-PATHS.
+
+**Verification procedure:**
+1. On Fedora 43, install the build dependencies from `docs/development.md`, run
+   `bun install --frozen-lockfile`, `bun run typecheck`, and `bun run test` with an unlocked keyring.
+2. `bun run package:linux` produces `dist/based-<version>-fedora-x86_64.rpm` and `.rpm.sha256`;
+   verify with `sha256sum -c` and inspect resources and dependencies with `rpm -qlp` / `rpm -qpR`.
+3. Install the RPM in a clean Fedora environment, launch from outside the checkout with no Bun
+   on PATH, and confirm the full UI renders. Create a local LanceDB table and run a SQL query
+   against it (exercises LanceDB, DuckDB, and the companion shared library).
+4. Save/read/delete a secret with the isolated test keyring. Open/cancel native file dialogs;
+   confirm last-window-close exits the shell and its core child. Open an SQL file by argv.
+
+- 2026-10-25 PASS: Fedora 43 build and typecheck; 674 tests passed, 75 skipped (live DB/manual).
+  Installed UI, XDG paths, credential write/delete, LanceDB table creation and DuckDB SQL passed.
+  Clean Fedora 44 installation under a normal user also passed those checks, single-instance
+  forwarding, native open-file dialog/cancellation, normal last-window-close, and core-child
+  cleanup. Desktop entry validated with `%F`.
 
 ### BASED-INSTALLER-WIN: Windows installer
 **Applies to:** based (repo `scripts/`)
@@ -3293,7 +3325,7 @@ default, matching BASED-SQL-ASSOC-WIN's non-destructive stance.
 3. Right-click a `.sql` → Open With lists based; the previous default handler is unchanged;
    double-click with based as chosen handler opens it as a tab (BASED-OPEN-SQL-ARGV).
 
-### BASED-RELEASE-CI: Tag-triggered two-platform release pipeline
+### BASED-RELEASE-CI: Tag-triggered three-platform release pipeline
 **Applies to:** based (repo)
 **Test category:** manual
 
@@ -3302,14 +3334,15 @@ default, matching BASED-SQL-ASSOC-WIN's non-destructive stance.
 drafted from the commit log and **stopped for human editing** → commit, tag, push. The pushed
 `v*` tag triggers `.github/workflows/release.yml`: a Windows job (pinned image; typecheck, full
 test suite, `package-win.ps1` with Inno Setup from choco) and a macOS job (pinned image; the
-BASED-PACKAGE-MAC bundle-layout verification, `tauri build`, DMG) build in parallel; both jobs
+BASED-PACKAGE-MAC bundle-layout verification, `tauri build`, DMG), and a Fedora 43 container job
+(typecheck, tests with an isolated Secret Service, `package:linux`, RPM) build in parallel; all jobs
 check that the tag matches `tauri.conf.json`'s version; a publish job then creates ONE GitHub
-release carrying both artifacts, their SHA-256s, the CHANGELOG section for that version, and the
+release carrying all three artifacts, their SHA-256s, the CHANGELOG section for that version, and the
 per-platform unsigned-install instructions, then bumps the Homebrew cask (skipping with a
 warning when the `TAP_PUSH_TOKEN` secret is absent, so a missing tap never blocks the release).
 
 **Verification procedure:** cut a release with `scripts/release.ps1`; confirm the workflow goes
-green, the release page shows both artifacts with install notes, and `Casks/based.rb` in the tap
+green, the release page shows all three artifacts with install notes, and `Casks/based.rb` in the tap
 points at the new version with the DMG's real SHA-256.
 
 ### BASED-SQL-ASSOC-WIN: .sql "Open with" registration

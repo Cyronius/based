@@ -13,7 +13,7 @@ running entirely on your machine.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 ![Windows x64](https://img.shields.io/badge/platform-Windows%20x64-informational?style=flat-square)
 ![macOS arm64 experimental](https://img.shields.io/badge/macOS%20arm64-experimental-orange?style=flat-square)
-![Linux in progress](https://img.shields.io/badge/Linux-in%20progress-lightgrey?style=flat-square)
+![Fedora x86_64](https://img.shields.io/badge/platform-Fedora%2043%2B%20x86__64-informational?style=flat-square)
 
 <img src="docs/screenshots/hero.png" width="900" alt="based, showing the object explorer, a query tab with results, and the agent answering in the right rail">
 
@@ -114,7 +114,8 @@ gateway. If you already run LM Studio with something loaded, pointing a profile 
 address (`http://localhost:1234/v1`) needs no API key; the others are the same two fields at their
 own address. OpenAI, Azure OpenAI, and Anthropic work this way too if you'd rather point at a hosted
 model instead.
-Connection secrets and API keys live in **Windows Credential Manager**, never in a config file; core
+Connection secrets and API keys live in the **OS credential store** (Credential Manager, Keychain,
+or Linux Secret Service), never in a config file; core
 listens on loopback behind a per-launch token; there is no telemetry. See
 [docs/local-models.md](docs/local-models.md) for a local setup that works well on modest hardware.
 
@@ -176,11 +177,20 @@ Applications.
 Data lives in `~/Library/Application Support/based`; credentials go to the macOS Keychain.
 Intel Macs aren't supported.
 
-### Linux — in progress
+### Fedora Linux (43+, x86_64)
 
-Not shipped yet, and there is no build to download. Most of the shared groundwork landed with
-the macOS port; what remains is XDG paths and a secret store. Track it in
-[specs/based/plans/macos-port.md](specs/based/plans/macos-port.md).
+Download `based-<version>-fedora-x86_64.rpm` from
+**[Releases](https://github.com/Cyronius/based/releases/latest)**, then install it with DNF:
+
+```sh
+sudo dnf install ./based-<version>-fedora-x86_64.rpm
+```
+
+Launch **based** from your application menu, or run `based-shell`. The RPM includes Bun, the UI,
+and the native database libraries. DNF installs the system dependencies. Credentials use a running,
+unlocked Secret Service (GNOME Keyring, or KWallet with its Secret Service integration enabled).
+Data lives in `$XDG_DATA_HOME/based`, defaulting to `~/.local/share/based`; uninstalling preserves it.
+Each RPM has a `.sha256` file: run `sha256sum -c based-<version>-fedora-x86_64.rpm.sha256` beside it.
 
 ## Getting started
 
@@ -217,11 +227,11 @@ authentication modes:
 |---|---|
 | **Entra ID interactive** | Opens your system browser to sign in; a local loopback listener captures the redirect |
 | **Azure CLI credential** | Reuses your existing `az login` session — no extra prompt |
-| **SQL login** | Username + password, stored in Windows Credential Manager |
+| **SQL login** | Username + password, stored in the OS credential store |
 | **Service principal** | Client ID + secret for automated/service accounts |
 
 Connection metadata (name, server, auth type) is stored locally; the secret itself never touches
-that store — it goes straight to Windows Credential Manager, keyed by connection ID, and is deleted
+that store — it goes straight to the OS credential store, keyed by connection ID, and is deleted
 when the connection is.
 
 **LanceDB**, local or cloud:
@@ -236,7 +246,7 @@ when the connection is.
 
 | Auth mode | How it works |
 |---|---|
-| **Password** | Username + password, stored in Windows Credential Manager |
+| **Password** | Username + password, stored in the OS credential store |
 | **Key pair (JWT)** | Paste a PEM private key (for an encrypted key, `{"key": "<PEM>", "pass": "<passphrase>"}`). Also how a service account satisfies Snowflake's MFA policy, which blocks password sign-in |
 | **SSO (external browser)** | Opens your system browser to your identity provider — no stored secret at all |
 
@@ -530,7 +540,7 @@ with no server round-trip, and flushes any unsaved editor edits first rather tha
 **Security posture, concretely:**
 
 - Every secret — SQL passwords, service principal secrets, every provider API key — is stored in
-  **Windows Credential Manager**, never in the local app database or any config file, and is deleted
+  the **OS credential store**, never in the local app database or any config file, and is deleted
   when its connection or profile is.
 - Core listens only on `127.0.0.1`, behind a **bearer token minted fresh per launch**; every request
   needs it.
@@ -570,7 +580,7 @@ weeks old, not years. Specifically:
   one treated as done.
 - **macOS (Apple Silicon) is experimental.** It builds, ships as an unsigned `.dmg` and a
   Homebrew cask, and works — but it is a preview, not a finished port. Intel Macs are out.
-- **Linux is in progress**, not released. See the install section above.
+- **Fedora 43+ x86_64** ships as an RPM. Other Linux distributions are not yet packaged.
 - **SQL Server / Azure SQL, Snowflake, and LanceDB.** The engine registry is built for more —
   adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.

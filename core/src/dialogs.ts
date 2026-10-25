@@ -6,7 +6,7 @@
 // exist at all on macOS.
 //
 // Fallback when no shell is attached (browser dev, core run standalone): a per-OS subprocess dialog
-// — PowerShell WinForms on Windows, osascript on macOS. Tests never hit either path: endpoints take
+// — PowerShell WinForms on Windows, osascript on macOS, Zenity/KDialog on Linux. Endpoints take
 // an explicit `path` that skips the dialog, and the relay itself is exercised by
 // integration.shellDialogs.test.ts with a fake shell subscriber.
 
@@ -104,17 +104,53 @@ export function createDialogs(broker: ShellDialogBroker): Dialogs {
   return {
     openFile(filters) {
       if (broker.connected) return broker.request({ kind: "open-file", filters });
+      if (process.platform === "linux") return linuxDialog({ kind: "open-file", filters });
       return process.platform === "darwin" ? osaOpenFile() : pwshOpenFile(filters);
     },
     saveFile(defaultName, filters) {
       if (broker.connected) return broker.request({ kind: "save-file", filters, defaultName });
+      if (process.platform === "linux") return linuxDialog({ kind: "save-file", filters, defaultName });
       return process.platform === "darwin" ? osaSaveFile(defaultName) : pwshSaveFile(defaultName, filters);
     },
     openFolder(startingFolder) {
       if (broker.connected) return broker.request({ kind: "folder", startingFolder });
+      if (process.platform === "linux") return linuxDialog({ kind: "folder", startingFolder });
       return process.platform === "darwin" ? osaOpenFolder(startingFolder) : pwshOpenFolder(startingFolder);
     },
   };
+}
+
+// Linux browser-dev fallback. Pass every path and filter as an argv element: filenames may
+// contain spaces, quotes, or shell metacharacters. Packaged builds use the shell's native dialog.
+export function linuxDialogCommand(req: ShellDialogRequest, tool: "zenity" | "kdialog"): string[] {
+  const patterns = (f: FileFilter) => f.extensions.map((ext) => ext === "*" ? "*" : `*.${ext}`).join(" ");
+  if (tool === "kdialog") {
+    if (req.kind === "folder") return [tool, "--getexistingdirectory", req.startingFolder || "."];
+    const filters = req.filters.map((f) => `${patterns(f)}|${f.name}`).join("\n");
+    return [tool, req.kind === "save-file" ? "--getsavefilename" : "--getopenfilename",
+      req.kind === "save-file" ? req.defaultName : ".", filters];
+  }
+  const args = [tool, "--file-selection"];
+  if (req.kind === "folder") {
+    args.push("--directory");
+    if (req.startingFolder) args.push(`--filename=${req.startingFolder.replace(/\/$/, "")}/`);
+  } else {
+    if (req.kind === "save-file") args.push("--save", "--confirm-overwrite", `--filename=${req.defaultName}`);
+    for (const f of req.filters) args.push(`--file-filter=${f.name} | ${patterns(f)}`);
+  }
+  return args;
+}
+
+async function linuxDialog(req: ShellDialogRequest): Promise<string | null> {
+  const tool = Bun.which("zenity") ? "zenity" : Bun.which("kdialog") ? "kdialog" : null;
+  if (!tool) throw new Error("File dialogs need Zenity or KDialog. Install one, or run the based native shell.");
+  const proc = Bun.spawn(linuxDialogCommand(req, tool), { stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+  ]);
+  if (code === 1) return null; // user cancelled
+  if (code !== 0) throw new Error(`${tool} file dialog failed: ${err.trim() || `exit ${code}`}`);
+  return out.replace(/[\r\n]+$/, "") || null;
 }
 
 /** Shell-open a file with its default app (e.g. .xlsx → Excel). */

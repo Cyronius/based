@@ -1,6 +1,7 @@
 {
   "name": "based",
   "private": true,
+  "packageManager": "bun@1.4.4",
   "description": "AI-first database client for SQL Server, Snowflake, and LanceDB — the agent is a participant in your workspace, not a chat box.",
   "license": "MIT",
   "author": "Cyrus Attoun",
@@ -23,6 +24,7 @@
     "dev:core": "bun run --cwd core dev",
     "dev:ui": "bun run --cwd ui dev",
     "build:ui": "bun run --cwd ui build",
+    "package:linux": "bun run scripts/package-linux.ts",
     "shell": "bun run --cwd shell-tauri dev",
     "test": "bun run --cwd specs test",
     "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell-tauri typecheck"
