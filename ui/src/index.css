@@ -558,3 +558,23 @@ body {
     animation: none !important;
   }
 }
+
+/* Traces: BASED-RUN-SCOPE — brief highlight of the text a run sent. */
+.run-flash {
+  background-color: color-mix(in srgb, var(--color-brass) 32%, transparent);
+  animation: run-flash-fade 700ms ease-in forwards;
+}
+@keyframes run-flash-fade {
+  0%,
+  55% {
+    background-color: color-mix(in srgb, var(--color-brass) 32%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-flash {
+    animation: none;
+  }
+}

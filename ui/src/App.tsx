@@ -15,6 +15,8 @@ import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { NewTableDialog } from "./components/NewTableDialog";
+import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
+import { runFromEditor } from "./editorRun";
 import { IconButton } from "./components/IconButton";
 
 // BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries one `open=<path>` hash param
@@ -171,7 +173,7 @@ export function App() {
       const tab = activeQueryTab(state);
       if (e.key === "F5" || (e.key === "Enter" && isAccel(e))) {
         e.preventDefault();
-        if (tab) void state.runQuery(tab.id);
+        if (tab) runFromEditor(tab.id, e.key === "F5" ? "all" : "statement");
       } else if (e.key.toLowerCase() === "s" && isAccel(e)) {
         e.preventDefault();
         if (tab) void state.saveTab(tab.id, { as: e.shiftKey });
@@ -184,6 +186,9 @@ export function App() {
       } else if (e.key.toLowerCase() === "j" && isAccel(e)) {
         e.preventDefault();
         state.toggleRightRail();
+      } else if (e.key.toLowerCase() === "t" && isAccel(e) && e.shiftKey) {
+        e.preventDefault();
+        void state.reopenClosedTabs();
       } else if (e.key.toLowerCase() === "t" && isAccel(e)) {
         e.preventDefault();
         if (state.activeConnectionId) state.newQueryTab();
@@ -284,6 +289,7 @@ export function App() {
       <StatusBar />
       {dialog.mode !== "closed" && <ConnectionDialog />}
       <NewTableDialog />
+      <CloseConfirmDialog />
     </div>
   );
 }

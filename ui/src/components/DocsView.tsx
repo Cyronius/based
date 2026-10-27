@@ -32,12 +32,8 @@ function Rows({ rows }: { rows: Array<[ReactNode, ReactNode]> }) {
 }
 
 const SHORTCUTS: Array<[ReactNode, ReactNode]> = [
-  [
-    <>
-      <Kbd>F5</Kbd> / <Kbd>{accel("Enter")}</Kbd>
-    </>,
-    "Run the active query tab",
-  ],
+  [<Kbd>F5</Kbd>, "Run the selection, or the whole query tab when nothing is selected"],
+  [<Kbd>{accel("Enter")}</Kbd>, "Run the selection, or the statement at the cursor"],
   [<Kbd>{cancelLabel}</Kbd>, "Cancel the running query"],
   [
     <Kbd>{accel("S")}</Kbd>,
@@ -59,6 +55,7 @@ const SHORTCUTS: Array<[ReactNode, ReactNode]> = [
   ],
   [<Kbd>{accel("T")}</Kbd>, "New query tab"],
   [<Kbd>{accel("W")}</Kbd>, "Close the active tab"],
+  [<Kbd>{accel("Shift+T")}</Kbd>, "Reopen the last closed tab (or the whole batch from Close All)"],
   [
     <>
       <Kbd>Ctrl+PageUp</Kbd> / <Kbd>Ctrl+PageDown</Kbd>

@@ -4,6 +4,7 @@ import { getModel } from "../editorModels";
 import { useStore } from "../store";
 import { monoFont, syncMonacoTheme } from "../theme";
 import { attachVim, VIM_STATUS_NODE_ID, type VimAttachment } from "../vimMode";
+import { registerEditor, runFromEditor } from "../editorRun";
 
 export function EditorPane({ tabId, initialContent }: { tabId: string; initialContent: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -32,6 +33,7 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
       tabSize: 4,
     });
     editorRef.current = editor;
+    const unregister = registerEditor(tabId, editor);
 
     // Traces: BASED-EDITOR-CARET-METRICS — Monaco measures a fixed character width for fontFamily
     // at creation time; if the mono webfont (loaded via <link display=swap>) hasn't finished
@@ -44,8 +46,9 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
       useStore.getState().setContent(tabId, model.getValue());
     });
 
-    editor.addCommand(monaco.KeyCode.F5, () => void useStore.getState().runQuery(tabId));
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => void useStore.getState().runQuery(tabId));
+    editor.addCommand(monaco.KeyCode.F5, () => runFromEditor(tabId, "all"));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runFromEditor(tabId, "statement"));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyT, () => void useStore.getState().reopenClosedTabs());
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void useStore.getState().saveTab(tabId));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => void useStore.getState().saveTab(tabId, { as: true }));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO, () => void useStore.getState().openSqlFile());
@@ -53,6 +56,7 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
     editor.focus();
     return () => {
       sub.dispose();
+      unregister();
       editor.dispose(); // model survives in the cache
       editorRef.current = null;
     };

@@ -450,6 +450,8 @@ export interface AppSettings {
   editorKeymap: "default" | "vim";
   /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
   sqlFileOpenTarget: "current-window" | "new-window";
+  /** BASED-TAB-CLOSE-CONFIRM: opt-in, off by default. */
+  confirmCloseUnsaved: boolean;
 }
 
 // Traces: BASED-HISTORY-UI — mirrors core/src/storage/history.ts

@@ -32,6 +32,7 @@ import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } 
 import { disposeModel, getModel } from "./editorModels";
 import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
+import { popClosed, pushClosed } from "./lib/closedTabs";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
   AiProfile,
@@ -105,6 +106,8 @@ export interface QueryTabState {
   parentTabId?: string;
   /** BASED-AGENT-TAB-MARK: Capi's show_results created this tab. */
   openedBy?: "capi";
+  /** BASED-RUN-SCOPE: editor line where the last run's text starts (1 for a whole-buffer run). */
+  runStartLine?: number;
 }
 
 export interface TableTabState {
@@ -216,6 +219,10 @@ export interface AppState {
   editorKeymap: "default" | "vim";
   /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
   sqlFileOpenTarget: "current-window" | "new-window";
+  /** BASED-TAB-CLOSE-CONFIRM: opt-in, off by default. */
+  confirmCloseUnsaved: boolean;
+  /** Tabs waiting on the opt-in close confirmation, or null. */
+  closeConfirm: { ids: string[]; titles: string[] } | null;
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -227,6 +234,7 @@ export interface AppState {
   setExplorerActions(table: AppState["explorerTableAction"], routine: AppState["explorerRoutineAction"]): void;
   setEditorKeymap(k: AppState["editorKeymap"]): void;
   setSqlFileOpenTarget(t: AppState["sqlFileOpenTarget"]): void;
+  setConfirmCloseUnsaved(on: boolean): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
   loadConnections(): Promise<void>;
@@ -264,12 +272,20 @@ export interface AppState {
   setTableView(id: string, view: TableViewId): void;
   openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<string>;
   closeTab(id: string): void;
-  closeTabs(ids: string[]): void;
+  /** `force` skips the opt-in unsaved-changes confirmation (BASED-TAB-CLOSE-CONFIRM). */
+  closeTabs(ids: string[], opts?: { force?: boolean }): void;
+  /** BASED-TAB-REOPEN: restore the most recent batch of closed tabs for this connection. */
+  reopenClosedTabs(): Promise<void>;
+  /** True when this connection has a closed-tab batch to restore. */
+  canReopenTabs(): boolean;
+  cancelCloseConfirm(): void;
   activateTab(id: string): void;
   reorderTab(draggedId: string, targetId: string, position: "before" | "after"): void;
   setContent(id: string, content: string): void;
   setActiveResult(id: string, index: number): void;
-  runQuery(id: string): Promise<void>;
+  /** BASED-RUN-SCOPE: `sql` runs that text instead of the whole buffer; `startLine` is the
+   *  editor line it starts on, so error lines can be mapped back. */
+  runQuery(id: string, opts?: { sql?: string; startLine?: number }): Promise<void>;
   cancelQuery(id: string): Promise<void>;
   /** `as: true` always pops the save dialog (Save As), even on a file-backed tab. */
   saveTab(id: string, opts?: { as?: boolean }): Promise<void>;
@@ -367,6 +383,32 @@ interface ConnectionSnapshot {
   activeTabId: string | null;
 }
 const connectionCache = new Map<string, ConnectionSnapshot>();
+
+/** BASED-TAB-REOPEN: what a closed tab needs to come back; results are not kept. */
+type ClosedTab =
+  | { kind: "query"; title: string; content: string; filePath: string | null; dirty: boolean; openedBy?: "capi" }
+  | { kind: "table"; schema: string; table: string; objectType: "table" | "view"; view: TableViewId }
+  | { kind: "routine"; schema: string; name: string; routineType: "procedure" | "function" }
+  | { kind: "diagram"; schemaScope: string }
+  | { kind: "docs" };
+
+function closedSnapshot(t: TabState): ClosedTab {
+  switch (t.kind) {
+    case "query":
+      return { kind: "query", title: t.title, content: t.content, filePath: t.filePath, dirty: t.dirty, openedBy: t.openedBy };
+    case "table":
+      return { kind: "table", schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+    case "routine":
+      return { kind: "routine", schema: t.schema, name: t.name, routineType: t.routineType };
+    case "diagram":
+      return { kind: "diagram", schemaScope: t.schemaScope };
+    case "docs":
+      return { kind: "docs" };
+  }
+}
+
+/** Closed-tab batches per connection id ("" = no connection), in-session only. */
+const closedTabStacks = new Map<string, ClosedTab[][]>();
 
 // BASED-UI-SESSION-RESUME backoff — mirrors core's MAX_RECONNECT_ATTEMPTS/backoff shape (separate
 // runtime, so not literally shared code): capped exponential delay, ~23s total before giving up.
@@ -679,6 +721,8 @@ export const useStore = create<AppState>((set, get) => {
     explorerRoutineAction: "details",
     editorKeymap: "default",
     sqlFileOpenTarget: "current-window",
+    confirmCloseUnsaved: false,
+    closeConfirm: null,
     capturePlan: false,
     captureStats: false,
 
@@ -698,6 +742,7 @@ export const useStore = create<AppState>((set, get) => {
           explorerRoutineAction: s.explorerRoutineAction ?? "details",
           editorKeymap: s.editorKeymap ?? "default",
           sqlFileOpenTarget: s.sqlFileOpenTarget ?? "current-window",
+          confirmCloseUnsaved: s.confirmCloseUnsaved ?? false,
         });
       } catch {
         // keep the hinted theme if the server is unreachable
@@ -733,6 +778,11 @@ export const useStore = create<AppState>((set, get) => {
     setEditorKeymap(k) {
       set({ editorKeymap: k });
       void saveSettings({ editorKeymap: k }).catch(() => {});
+    },
+
+    setConfirmCloseUnsaved(on) {
+      set({ confirmCloseUnsaved: on });
+      void saveSettings({ confirmCloseUnsaved: on }).catch(() => {});
     },
 
     setSqlFileOpenTarget(t) {
@@ -1071,7 +1121,7 @@ export const useStore = create<AppState>((set, get) => {
       get().closeTabs([id]);
     },
 
-    closeTabs(ids) {
+    closeTabs(ids, opts) {
       if (ids.length === 0) return;
       const { tabs, activeTabId } = get();
       const idSet = new Set(ids);
@@ -1080,6 +1130,17 @@ export const useStore = create<AppState>((set, get) => {
       }
       const remaining = tabs.filter((t) => !idSet.has(t.id));
       if (remaining.length === tabs.length) return;
+      const closing = tabs.filter((t) => idSet.has(t.id) && !(t.kind === "query" && t.parentTabId));
+      if (!opts?.force && get().confirmCloseUnsaved) {
+        const unsaved = closing.filter((t): t is QueryTabState => t.kind === "query" && t.dirty && t.content.trim() !== "");
+        if (unsaved.length > 0) {
+          set({ closeConfirm: { ids, titles: unsaved.map((t) => t.title) } });
+          return;
+        }
+      }
+      set({ closeConfirm: null });
+      const key = get().activeConnectionId ?? "";
+      closedTabStacks.set(key, pushClosed(closedTabStacks.get(key) ?? [], closing.map(closedSnapshot)));
       let nextActive = activeTabId;
       if (activeTabId && idSet.has(activeTabId)) {
         const idx = tabs.findIndex((t) => t.id === activeTabId);
@@ -1091,6 +1152,50 @@ export const useStore = create<AppState>((set, get) => {
       }
       // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
       // query), so restore no longer accumulates every table ever opened.
+      persistTabsSoon();
+    },
+
+    cancelCloseConfirm() {
+      set({ closeConfirm: null });
+    },
+
+    canReopenTabs() {
+      return (closedTabStacks.get(get().activeConnectionId ?? "")?.length ?? 0) > 0;
+    },
+
+    async reopenClosedTabs() {
+      const key = get().activeConnectionId ?? "";
+      const { batch, stack } = popClosed(closedTabStacks.get(key) ?? []);
+      closedTabStacks.set(key, stack);
+      if (!batch) return;
+      for (const snap of batch) {
+        switch (snap.kind) {
+          case "query": {
+            const tab: QueryTabState = {
+              ...freshQueryTab(snap.title),
+              content: snap.content,
+              filePath: snap.filePath,
+              dirty: snap.dirty,
+              ...(snap.openedBy ? { openedBy: snap.openedBy } : {}),
+            };
+            set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+            getModel(tab.id, snap.content);
+            break;
+          }
+          case "table":
+            await get().openTableTab(snap.schema, snap.table, snap.objectType, snap.view);
+            break;
+          case "routine":
+            await get().openRoutineTab(snap.schema, snap.name, snap.routineType);
+            break;
+          case "diagram":
+            get().openDiagramTab(snap.schemaScope);
+            break;
+          case "docs":
+            get().openDocsTab();
+            break;
+        }
+      }
       persistTabsSoon();
     },
 
@@ -1123,11 +1228,12 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: updateTab(get().tabs, id, { activeResult: index }) });
     },
 
-    async runQuery(id) {
+    async runQuery(id, opts) {
       const tab = get().tabs.find((t) => t.id === id);
       if (!tab || tab.kind !== "query" || tab.running) return;
       if (get().status === "disconnected" || get().status === "connecting") return;
-      if (!tab.content.trim()) return;
+      const sql = opts?.sql ?? tab.content;
+      if (!sql.trim()) return;
 
       set({
         tabs: updateTab(get().tabs, id, {
@@ -1139,6 +1245,7 @@ export const useStore = create<AppState>((set, get) => {
           stats: null,
           plan: null,
           version: 0,
+          runStartLine: opts?.startLine ?? 1,
         }),
       });
 
@@ -1148,7 +1255,7 @@ export const useStore = create<AppState>((set, get) => {
 
       try {
         await streamQuery(
-          tab.content,
+          sql,
           (chunk) => {
             const t = current();
             if (!t) return;
@@ -1204,7 +1311,7 @@ export const useStore = create<AppState>((set, get) => {
                 // run, from the SQL that actually ran. Only default "Query N" titles qualify, so
                 // file-backed, manually renamed, and already-auto-named tabs are never touched.
                 if (chunk.status === "ok" && !t.filePath && /^Query \d+$/.test(t.title)) {
-                  const title = deriveTabTitle(tab.content);
+                  const title = deriveTabTitle(sql);
                   if (title) patch({ title });
                 }
                 break;

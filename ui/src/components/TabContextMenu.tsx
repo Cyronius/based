@@ -12,6 +12,8 @@ interface Props {
 
 export function TabContextMenu({ tabId, x, y, onClose }: Props) {
   const closeTabs = useStore((s) => s.closeTabs);
+  const reopenClosedTabs = useStore((s) => s.reopenClosedTabs);
+  const canReopen = useStore((s) => s.canReopenTabs());
   // Subscribe to the stable `tabs` array, not `visibleTabs` — that selector allocates a new array
   // per call and zustand v5 compares snapshots with Object.is, so selecting it directly re-renders
   // forever ("Maximum update depth exceeded").
@@ -69,6 +71,17 @@ export function TabContextMenu({ tabId, x, y, onClose }: Props) {
       {item("Close Tabs to the Right", idx === visible.length - 1, visible.slice(idx + 1).map((t) => t.id))}
       {item("Close Other Tabs", visible.length <= 1, visible.filter((_, i) => i !== idx).map((t) => t.id))}
       {item("Close All Tabs", false, visible.map((t) => t.id))}
+      <div className="my-1 border-t border-line-soft" />
+      <button
+        className="w-full text-left px-3 py-1.5 text-[length:var(--fs-base)] text-paper-dim hover:bg-ink-900 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-default"
+        disabled={!canReopen}
+        onClick={() => {
+          void reopenClosedTabs();
+          onClose();
+        }}
+      >
+        Reopen Closed Tab
+      </button>
     </div>
   );
 }

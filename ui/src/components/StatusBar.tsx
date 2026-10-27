@@ -50,10 +50,10 @@ export function StatusBar() {
       {conn && (
         <span className="flex items-center gap-2 min-w-0">
           {engineLabel && <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0">{engineLabel}</span>}
-          <span className="font-sans font-bold text-paper truncate" title={conn.name}>
+          <span className="font-sans font-bold text-paper truncate shrink-0 max-w-80" title={conn.name}>
             {conn.name}
           </span>
-          <span className="text-muted truncate">
+          <span className="text-muted truncate min-w-0">
             {connTarget(conn, engines)}
             {database ? ` · ${database}` : ""}
           </span>
@@ -69,9 +69,9 @@ export function StatusBar() {
           contents are written by monaco-vim, never by React (see vimMode.ts). */}
       {editorKeymap === "vim" && <span id={VIM_STATUS_NODE_ID} className="vim-status min-w-0 text-muted" />}
       <div className="flex-1" />
-      {tab?.running && <span className="text-brass pulse-soft">executing…</span>}
+      {tab?.running && <span className="shrink-0 text-brass pulse-soft">executing…</span>}
       {tab?.stats && !tab.running && (
-        <span className={tab.stats.status === "ok" ? "text-muted" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"}>
+        <span className={`shrink-0 whitespace-nowrap ${tab.stats.status === "ok" ? "text-muted" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"}`}>
           last run: {tab.stats.status} in {tab.stats.durationMs.toLocaleString()} ms
         </span>
       )}

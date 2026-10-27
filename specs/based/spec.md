@@ -323,6 +323,7 @@ App-wide user preferences (the active theme id; `fontScale`, the app-wide text-s
 - `POST { theme: "chillwave" }` → returns `{ theme: "chillwave", rowPageSize: 500 }`; a subsequent `GET` (after store reopen) still returns `chillwave`
 - `POST { rowPageSize: 1000 }` → returns `rowPageSize: 1000` with `theme` unchanged; persists across store reopen
 - A partial patch merges over existing settings rather than replacing the row
+- Fresh store → `confirmCloseUnsaved: false` (BASED-TAB-CLOSE-CONFIRM is opt-in); `POST { confirmCloseUnsaved: true }` round-trips
 
 ### BASED-THEME: Theme switching
 **Applies to:** based (ui)
@@ -1661,7 +1662,7 @@ tab. Engines lacking the needed capability degrade to `details`.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 / Ctrl+Enter run; Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
+Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
 
 **Verification procedure:**
 1. Open 2 tabs, type SQL, close app, reopen → both tabs restored with content
@@ -1669,6 +1670,67 @@ Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save
 3. On that file-backed tab: edit → Ctrl+S overwrites with no dialog; Ctrl+Shift+S (or "Save As…") → dialog seeded with the current file name → saves to the new path and re-titles the tab
 4. F5 runs; run `WAITFOR DELAY '00:00:30'` → Cancel button (and Ctrl+Break) stops it with "cancelled" in Output
 5. Drag both pane dividers; collapse/expand Output
+
+### BASED-RUN-SCOPE: What a run sends
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+A run sends the editor selection when one exists. With no selection, F5 and the toolbar Run send
+the whole tab, and Ctrl+Enter sends the statement at the cursor. `statementAt(sql, offset)`
+(`ui/src/lib/sqlText.ts`) splits at depth-0 `;` and at `GO` lines; strings, `[identifiers]`,
+comments, parentheses, and `BEGIN`/`CASE … END` blocks do not split (`BEGIN TRAN` opens no block).
+A cursor just past a `;`, or in spaces after it on the same line, belongs to that statement; a
+cursor on a blank stretch belongs to the next statement, or the previous one at the end of the
+text. When the statement is the whole text, the run is a whole-tab run. The text that ran flashes
+briefly (no animation under reduced motion). The tab's auto-name (`BASED-TAB-AUTONAME-APPLY`) uses
+the text that ran.
+
+**Acceptance criteria (unit — `unit.sqlText.test.ts`):**
+- Three `;`-terminated statements on three lines, cursor (`|`) in the second → `SELECT 2;`
+- `SELECT 1;|` and `SELECT 1;   |` (then a newline and another statement) → `SELECT 1;`
+- `GO` lines (any case, optional trailing `--` comment, CRLF) separate statements
+- `;` inside `'…'`, `[…]`, comments, and `( … )` does not split
+- A `CREATE PROCEDURE … BEGIN … END;` with inner `;` stays whole; `BEGIN TRAN;` does not open a block
+- A blank line between statements → the next one; trailing blank lines → the last one
+- Comment-only text → no statement
+
+**Verification procedure (manual):**
+1. Type three statements separated by `;` → put the cursor in the second → Ctrl+Enter → only the
+   second runs and flashes
+2. Select part of a statement → F5 → only the selection runs
+3. No selection → F5 → the whole tab runs
+
+### BASED-TAB-REOPEN: Reopen closed tabs
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+Each close action (one tab, Close Others/Left/Right/All, Ctrl+W, middle-click) pushes one batch of
+closed-tab snapshots onto an in-session stack kept per connection, capped at 20 batches (the
+oldest is dropped). Query snapshots keep title, text, file path, dirty flag, and the Capi mark;
+object tabs keep what identifies them. Ctrl+Shift+T, or "Reopen Closed Tab" on the tab context
+menu, restores the newest batch whole. Results are not kept. The stack does not survive restart.
+
+**Acceptance criteria (unit — `unit.closedTabs.test.ts`):**
+- Push `["a"]`, push `["b","c","d"]` → pop gives `["b","c","d"]`, then `["a"]`, then nothing
+- An empty batch adds nothing
+- Past the cap, the oldest batch is dropped
+
+**Verification procedure (manual):** open four tabs with text → Close All Tabs → Ctrl+Shift+T →
+all four come back with their text; close one table tab → Reopen Closed Tab → it reopens on the
+same view.
+
+### BASED-TAB-CLOSE-CONFIRM: Opt-in unsaved-changes confirmation
+**Applies to:** based (ui)
+**Test category:** manual
+
+Setting `confirmCloseUnsaved` (Settings → General → "Ask before closing tabs with unsaved
+changes"), **off by default**. When on, a close action that includes query tabs with unsaved,
+non-empty text asks once, listing those tabs; Cancel keeps every tab. When off, tabs close at once
+and `BASED-TAB-REOPEN` is the safety net.
+
+**Verification procedure:** with the setting off, close a dirty tab → it closes with no question;
+turn the setting on → Close All with two dirty tabs → one dialog lists both → Cancel keeps them →
+repeat and confirm → they close and Ctrl+Shift+T restores them.
 
 ### BASED-TAB-AUTONAME-DERIVE: Derive tab title from SQL text
 **Applies to:** based (ui)
@@ -2273,13 +2335,15 @@ Pause/Break key so cancel is the macOS-conventional ⌘. instead.
 
 | Windows | macOS | Action |
 |---|---|---|
-| F5 / Ctrl+Enter | F5 / ⌘Enter | Run the active query tab |
+| F5 | F5 | Run the selection, or the whole query tab when nothing is selected (BASED-RUN-SCOPE) |
+| Ctrl+Enter | ⌘Enter | Run the selection, or the statement at the cursor (BASED-RUN-SCOPE) |
 | Ctrl+Break | ⌘. | Cancel the running query |
 | Ctrl+S | ⌘S | Save tab to `.sql` (overwrites in place when file-backed) |
 | Ctrl+Shift+S | ⇧⌘S | Save to a new `.sql` file |
 | Ctrl+O | ⌘O | Open a `.sql` file |
 | Ctrl+T | ⌘T | New query tab |
 | Ctrl+W | ⌘W | Close the active tab (⌘W deliberately shadows the OS close-window meaning — tabs behave like browser tabs; the menu's Close Window is ⇧⌘W) |
+| Ctrl+Shift+T | ⇧⌘T | Reopen the last closed batch of tabs (BASED-TAB-REOPEN) |
 | Ctrl+PageUp / Ctrl+PageDown | same (Ctrl, not ⌘) | Previous / next tab |
 | Ctrl+J | ⌘J | Toggle the Capi rail |
 | Ctrl+N | ⌘N | New window (on macOS the menu's New Window item owns the ⌘N accelerator; same action) |

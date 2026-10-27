@@ -58,6 +58,8 @@ function GeneralTab() {
   const setEditorKeymap = useStore((s) => s.setEditorKeymap);
   const sqlFileOpenTarget = useStore((s) => s.sqlFileOpenTarget);
   const setSqlFileOpenTarget = useStore((s) => s.setSqlFileOpenTarget);
+  const confirmCloseUnsaved = useStore((s) => s.confirmCloseUnsaved);
+  const setConfirmCloseUnsaved = useStore((s) => s.setConfirmCloseUnsaved);
 
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
@@ -135,6 +137,21 @@ function GeneralTab() {
       <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
         Where a .sql file opened from Explorer lands. Selecting several files at once always opens them together in one
         window.
+      </p>
+
+      {/* Traces: BASED-TAB-CLOSE-CONFIRM — opt-in; Ctrl+Shift+T is the default safety net. */}
+      <div className="ledger-label pt-2">Closing tabs</div>
+      <label className="flex items-center gap-2 text-paper-dim">
+        <input
+          type="checkbox"
+          className="accent-(--color-brass)"
+          checked={confirmCloseUnsaved}
+          onChange={(e) => setConfirmCloseUnsaved(e.target.checked)}
+        />
+        Ask before closing tabs with unsaved changes
+      </label>
+      <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
+        Closed tabs can always come back with {accel("Shift+T")}, or Reopen Closed Tab on the tab menu.
       </p>
     </div>
   );

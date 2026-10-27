@@ -9,11 +9,11 @@ import { BottomTabPanel, type BottomTab } from "./BottomTabPanel";
 import { CellView } from "./CellView";
 import { ChevronUpIcon } from "./icons";
 import { accel, cancelLabel } from "../platform";
+import { runFromEditor } from "../editorRun";
 
 type BottomTabId = "output" | "cell";
 
 export function QueryTabView({ tab }: { tab: QueryTabState }) {
-  const runQuery = useStore((s) => s.runQuery);
   const cancelQuery = useStore((s) => s.cancelQuery);
   const saveTab = useStore((s) => s.saveTab);
   const openSqlFile = useStore((s) => s.openSqlFile);
@@ -103,9 +103,9 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         ) : (
           <button
             className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
-            title={`Run (F5 / ${accel("Enter")})`}
+            title={`Run selection or all (F5) · statement at cursor (${accel("Enter")})`}
             disabled={!canRun}
-            onClick={() => void runQuery(tab.id)}
+            onClick={() => runFromEditor(tab.id, "all")}
           >
             ▶ Run
           </button>
