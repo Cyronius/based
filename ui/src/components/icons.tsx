@@ -49,6 +49,17 @@ export function ChevronUpIcon() {
   );
 }
 
+/** BASED-AGENT-TAB-MARK: small static capybara head; the animated CapiAvatar is too heavy per tab. */
+export function CapiMark({ className }: { className?: string }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <circle cx="5" cy="4" r="1.6" fill="currentColor" />
+      <path d="M2.5 7.2C2.5 5.2 4.1 4 6.2 4h4.6c2.6 0 4.2 1.7 4.2 3.8v2c0 1.8-1.3 3.2-3.2 3.2H5.6c-1.8 0-3.1-1.3-3.1-3Z" fill="currentColor" />
+      <circle cx="7.2" cy="7" r="0.9" fill="var(--color-ink-950)" />
+    </svg>
+  );
+}
+
 export function TrashIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

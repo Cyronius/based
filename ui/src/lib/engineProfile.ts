@@ -14,12 +14,13 @@ export function authLabel(conn: ConnectionConfig, profiles: EngineProfile[]): st
   return profileFor(conn, profiles)?.authModes.find((m) => m.id === conn.authType)?.label ?? conn.authType;
 }
 
-/** The dim subtitle under a connection name: whichever field the engine nominates (server, uri,
- *  account …), plus the human label of its auth mode. */
+/** The dim subtitle under a connection name: the engine label, whichever field the engine
+ *  nominates (server, uri, account …), plus the human label of its auth mode. */
 export function connSubtitle(conn: ConnectionConfig, profiles: EngineProfile[]): string {
+  const engine = profileFor(conn, profiles)?.label;
   const target = connTarget(conn, profiles) || "local";
   const auth = authLabel(conn, profiles);
-  return auth ? `${target} · ${auth}` : target;
+  return [engine, target, auth].filter(Boolean).join(" · ");
 }
 
 /** The connection's primary target, for the status bar. */

@@ -152,6 +152,13 @@ export function App() {
     });
   }, []);
 
+  // Traces: BASED-WINDOW-IDENTITY — name first, so taskbar truncation keeps the part that matters.
+  const connectionName = useStore((s) => s.connections.find((c) => c.id === s.activeConnectionId)?.name ?? null);
+  const database = useStore((s) => s.database);
+  useEffect(() => {
+    document.title = connectionName ? `${connectionName}${database ? ` · ${database}` : ""} — based` : "based";
+  }, [connectionName, database]);
+
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.
   useEffect(() => {
     syncMonacoTheme(monaco);

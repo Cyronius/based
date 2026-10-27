@@ -1586,6 +1586,29 @@ Single active connection. "+ New connection" opens a form (name, server, auth ty
 3. Connect → database dropdown lists server databases; switching databases refreshes the explorer
 4. Schema dropdown "All schemas" shows `dbo.X` style names; choosing `dbo` drops the prefix and filters
 
+### BASED-WINDOW-IDENTITY: Each window names its connection
+**Applies to:** based (ui, shell-tauri)
+**Test category:** manual
+
+A window holds one connection (`BASED-UI-CONNECTIONS`), so connection identity lives at the window
+level, never per tab. The identity is the connection name the user chose; based adds no environment
+field, tag, or color, because environments differ for every user (they put that in the name).
+- **Window title:** `{connection name} · {database} — based`, or `based` with no active connection.
+  The name leads so taskbar truncation keeps it. The UI sets `document.title`; the Tauri shell
+  copies it to the native title (`on_document_title_changed` → `set_title`).
+- **Status bar:** engine label chip, the connection name in bold, then `target · database`, then a
+  `read-only` chip when `capabilities.write` is false.
+- **Connection selector:** each row's subtitle starts with the engine label; full names show on
+  hover.
+
+**Verification procedure:**
+1. Open two windows, connect them to two different connections → the taskbar and Alt-Tab show each
+   window's connection name first
+2. Change the database in the explorer → the title's database part changes
+3. Disconnect → the title is `based`
+4. Connect to a LanceDB Cloud (read-only) connection → the status bar shows the `read-only` chip
+5. A long connection name truncates in the selector and status bar, and its tooltip shows it whole
+
 ### BASED-UI-EXPLORER: Object explorer
 **Applies to:** based (ui)
 **Test category:** manual
@@ -1973,6 +1996,19 @@ The chat is window-scoped and tab-aware:
 5. Switch connections and back → each connection shows its own conversation, restored intact
 6. Switch connections while a run is streaming → a banner names the busy connection; when the run ends the rail follows to the new connection's thread
 7. Ask "what's in my other tab?" → the agent calls `list_tabs`/`get_tab` and answers from the other tab's SQL/results
+
+### BASED-AGENT-TAB-MARK: Tabs Capi opened carry a Capi mark
+**Applies to:** based (ui)
+**Test category:** manual
+
+A query or table tab that `show_results` creates gets `openedBy: "capi"`, saved in the tab's
+persisted `meta`. The tab strip shows a small capybara mark before its title (tooltip "Opened by
+Capi"). An existing tab that `show_results` reuses keeps its state; it does not get the mark.
+
+**Verification procedure:**
+1. Ask Capi to show the top 10 rows of a table → the new tab has the capybara mark
+2. Restart the app → the restored tab still has the mark
+3. Open a table yourself, then ask Capi to show that table → the reused tab has no mark
 
 ### BASED-CHAT-ACTIVITY: Live agent activity feed
 **Applies to:** based (ui)

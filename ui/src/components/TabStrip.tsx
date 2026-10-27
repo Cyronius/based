@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore } from "../store";
 import { TabContextMenu } from "./TabContextMenu";
 import { IconButton } from "./IconButton";
+import { CapiMark } from "./icons";
 import { accel } from "../platform";
 
 const MAX_FETCH_SIZE = 50_000;
@@ -109,6 +110,11 @@ export function TabStrip() {
             {t.kind === "routine" && <span className="text-faint text-[length:var(--fs-sm)]">{t.routineType === "function" ? "λ" : "≡"}</span>}
             {t.kind === "diagram" && <span className="text-faint text-[length:var(--fs-sm)]">⧉</span>}
             {t.kind === "docs" && <span className="text-faint text-[length:var(--fs-sm)]">?</span>}
+            {(t.kind === "query" || t.kind === "table") && t.openedBy === "capi" && (
+              <span className="text-brass shrink-0" title="Opened by Capi" aria-label="Opened by Capi">
+                <CapiMark />
+              </span>
+            )}
             {running && <span className="size-1.5 rounded-full bg-brass pulse-soft shrink-0" />}
             <span className="truncate text-[length:var(--fs-base)]">
               {t.title}

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchHealth } from "../api/client";
 import { activeQueryTab, useStore } from "../store";
 import { VIM_STATUS_NODE_ID } from "../vimMode";
-import { connTarget } from "../lib/engineProfile";
+import { connTarget, profileFor } from "../lib/engineProfile";
 
 export function StatusBar() {
   // The running build's version, so a bug report can name it. Fetched once; a failure just leaves
@@ -24,8 +24,10 @@ export function StatusBar() {
   const resumeSession = useStore((s) => s.resumeSession);
   const tab = useStore(activeQueryTab);
   const editorKeymap = useStore((s) => s.editorKeymap);
+  const capabilities = useStore((s) => s.capabilities);
 
   const conn = connections.find((c) => c.id === activeConnectionId);
+  const engineLabel = conn ? profileFor(conn, engines)?.label : undefined;
   const statusColor =
     status === "connected" ? "text-ok" : status === "disconnected" ? "text-faint" : "text-brass";
   // BASED-UI-SESSION-RESUME: only offer a manual retry once auto-resume has given up on a
@@ -44,10 +46,22 @@ export function StatusBar() {
           Reconnect
         </button>
       )}
+      {/* Traces: BASED-WINDOW-IDENTITY — the user's own connection name leads; the host follows. */}
       {conn && (
-        <span className="text-muted truncate">
-          {connTarget(conn, engines)}
-          {database ? ` · ${database}` : ""}
+        <span className="flex items-center gap-2 min-w-0">
+          {engineLabel && <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0">{engineLabel}</span>}
+          <span className="font-sans font-bold text-paper truncate" title={conn.name}>
+            {conn.name}
+          </span>
+          <span className="text-muted truncate">
+            {connTarget(conn, engines)}
+            {database ? ` · ${database}` : ""}
+          </span>
+          {capabilities && !capabilities.write && (
+            <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0" title="This connection cannot write data">
+              read-only
+            </span>
+          )}
         </span>
       )}
       {/* Traces: BASED-EDITOR-VIM — monaco-vim renders the mode and its `:` command input in here.

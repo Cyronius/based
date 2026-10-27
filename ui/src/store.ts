@@ -103,6 +103,8 @@ export interface QueryTabState {
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
+  /** BASED-AGENT-TAB-MARK: Capi's show_results created this tab. */
+  openedBy?: "capi";
 }
 
 export interface TableTabState {
@@ -134,6 +136,8 @@ export interface TableTabState {
   /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query
    *  view; Embeddings = the vector scatter (BASED-EMBED-UI, vector tables only). */
   view: TableViewId;
+  /** BASED-AGENT-TAB-MARK: Capi's show_results created this tab. */
+  openedBy?: "capi";
 }
 
 /** Sub-views of a table tab. "embeddings" renders only for tables with a vector column. */
@@ -294,6 +298,8 @@ export interface AppState {
   /** Move this window's active conversation for a connection — "New chat" mints a fresh id, the
    *  history picker reactivates a past one (BASED-CHAT-HISTORY-PICKER). */
   setCapiThread(connectionId: string, threadId: string): void;
+  /** BASED-AGENT-TAB-MARK: flag a tab Capi just created, so the tab strip can mark it. */
+  markOpenedByCapi(id: string): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
   /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
@@ -315,6 +321,12 @@ interface TableTabMeta {
   table: string;
   objectType: "table" | "view";
   view: TableViewId;
+  openedBy?: "capi";
+}
+
+/** Query tabs persist meta only for the Capi mark (BASED-AGENT-TAB-MARK). */
+interface QueryTabMeta {
+  openedBy?: "capi";
 }
 
 /** Kind-specific fields persisted alongside a routine tab (BASED-TABSTORE). */
@@ -329,8 +341,13 @@ interface DiagramTabMeta {
   schemaScope: string;
 }
 
-function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | null {
-  if (t.kind === "table") return { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
+  if (t.kind === "table") {
+    const meta: TableTabMeta = { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+    if (t.openedBy) meta.openedBy = t.openedBy;
+    return meta;
+  }
+  if (t.kind === "query") return t.openedBy ? { openedBy: t.openedBy } : null;
   if (t.kind === "routine") return { schema: t.schema, name: t.name, routineType: t.routineType };
   if (t.kind === "diagram") return { schemaScope: t.schemaScope };
   return null;
@@ -566,6 +583,7 @@ export const useStore = create<AppState>((set, get) => {
           prefillWhere: null,
           error: null,
           view: meta.view,
+          ...(meta.openedBy === "capi" ? { openedBy: "capi" as const } : {}),
         };
         return tab;
       }
@@ -599,11 +617,13 @@ export const useStore = create<AppState>((set, get) => {
       // No meta and no detail fetch — the help tab restores whole (BASED-HELP-DOCS).
       if (r.kind === "docs") return { kind: "docs", id: r.id, title: r.title } satisfies DocsTabState;
       // (A legacy originThreadId in old rows' meta is ignored — per-tab thread aliasing is gone.)
+      const queryMeta = r.meta as QueryTabMeta | null;
       return {
         ...freshQueryTab(r.title),
         id: r.id,
         content: r.content,
         filePath: r.filePath,
+        ...(queryMeta?.openedBy === "capi" ? { openedBy: "capi" as const } : {}),
       };
     });
     if (tabs.length === 0) tabs.push(freshQueryTab("Query 1"));
@@ -1386,6 +1406,13 @@ export const useStore = create<AppState>((set, get) => {
       return tab.id;
     },
 
+
+    markOpenedByCapi(id) {
+      set({
+        tabs: get().tabs.map((t) => (t.id === id && (t.kind === "query" || t.kind === "table") ? { ...t, openedBy: "capi" as const } : t)),
+      });
+      persistTabsSoon();
+    },
 
     // Traces: BASED-CHAT-HISTORY-PICKER — move this window's active conversation for a connection.
     // Persisted when it's the current connection, so restart restores it.

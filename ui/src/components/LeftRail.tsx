@@ -110,7 +110,9 @@ function ConnectionSelector() {
         {active ? (
           <>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-medium truncate">{active.name}</span>
+              <span className="font-medium truncate" title={active.name}>
+                {active.name}
+              </span>
               <span
                 className={`size-1.5 rounded-full shrink-0 ${
                   status === "connected" ? "bg-ok" : status === "disconnected" ? "bg-faint" : "bg-brass pulse-soft"
@@ -142,7 +144,9 @@ function ConnectionSelector() {
                   void connect(c.id);
                 }}
               >
-                <div className="truncate">{c.name}</div>
+                <div className="truncate" title={c.name}>
+                  {c.name}
+                </div>
                 <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c, engines)}</div>
               </button>
               <IconButton

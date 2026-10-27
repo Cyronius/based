@@ -555,9 +555,15 @@ export const capiTools: Record<string, ToolDefinition> = {
     handler: async (args: { sql?: string; table?: string; where?: string; schema?: string; run?: boolean; title?: string }) => {
       const sql = args.sql ?? "";
       const store = useStore.getState();
+      // A reused tab the user opened stays unmarked; only tabs this call creates get the Capi mark.
+      const before = new Set(store.tabs.map((t) => t.id));
+      const markIfNew = (id: string) => {
+        if (!before.has(id)) useStore.getState().markOpenedByCapi(id);
+      };
       if (!sql.trim()) {
         if (!args.table?.trim()) return JSON.stringify({ error: "Provide `sql` (SQL connections) or `table` (connections without SQL)." });
         const tabId = await store.openTableTabWithQuery(args.schema ?? "", args.table, args.where?.trim() || undefined);
+        markIfNew(tabId);
         return JSON.stringify({
           tabId,
           status: "opened",
@@ -572,6 +578,7 @@ export const capiTools: Record<string, ToolDefinition> = {
           error: "This connection has no SQL editor — pass `table` (and optionally `where`) instead of `sql`.",
         });
       }
+      markIfNew(tabId);
       if (args.run === false) {
         return JSON.stringify({ tabId, title: args.title ?? useStore.getState().tabs.find((t) => t.id === tabId)?.title, status: "not_run" });
       }
