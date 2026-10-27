@@ -11,14 +11,18 @@ export function Dialog({
   title,
   onClose,
   closeOnBackdrop = true,
-  className = "w-[440px]",
+  initialFocus = "field",
+  className = "w-[440px] max-h-[90vh] overflow-y-auto",
   z = "z-50",
   children,
 }: {
   title: ReactNode;
   onClose: () => void;
+  /** False when the dialog holds input a stray click must not throw away. */
   closeOnBackdrop?: boolean;
-  /** Width/height utilities for the panel. */
+  /** "field" focuses `[data-autofocus]` or the first field; "panel" focuses the dialog itself. */
+  initialFocus?: "field" | "panel";
+  /** Size and overflow utilities for the panel. */
   className?: string;
   z?: string;
   children: ReactNode;
@@ -34,7 +38,7 @@ export function Dialog({
     if (panel) {
       const auto = panel.querySelector<HTMLElement>("[data-autofocus]");
       const field = panel.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
-      (auto ?? field ?? panel).focus();
+      (initialFocus === "panel" ? panel : (auto ?? field ?? panel)).focus();
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -62,6 +66,8 @@ export function Dialog({
       window.removeEventListener("keydown", onKey, true);
       if (opener && document.contains(opener)) opener.focus();
     };
+    // Mount-only: focus and the trap belong to this dialog instance, not to prop changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -75,9 +81,9 @@ export function Dialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`max-h-[90vh] overflow-y-auto rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up focus:outline-none ${className}`}
+        className={`rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up focus:outline-none ${className}`}
       >
-        <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between gap-3">
+        <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between gap-3 shrink-0">
           <h2 id={titleId} className="font-display text-lg text-paper">
             {title}
           </h2>

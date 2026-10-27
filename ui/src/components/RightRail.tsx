@@ -44,11 +44,12 @@ function loadWidth(): number {
   return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
 }
 
+// A speech bubble with a plus: "new conversation", distinct from the ✎ edit glyph.
 function NewChatIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12Z" />
+      <path d="M13 9v6M10 12h6" />
     </svg>
   );
 }
@@ -72,14 +73,15 @@ function CapiHeader({
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
-      <button
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-faint hover:bg-ink-800 hover:text-brass"
+      <IconButton
+        className="h-8 w-8 text-lg text-muted hover:text-brass"
         title={`Collapse Capi (${accel("J")})`}
+        aria-label="Collapse Capi"
         onClick={toggle}
       >
-        <span>›</span>
-      </button>
-      <span className="font-sans text-[length:var(--fs-md)] font-semibold text-faint">Ask Capi</span>
+        ›
+      </IconButton>
+      <h2 className="font-sans text-[length:var(--fs-md)] font-semibold text-paper-dim">Ask Capi</h2>
       {/* One trailing group with the auto margin on the wrapper: `ml-auto` on each button would put
           an auto gap BETWEEN them and push them apart instead of grouping them at the right edge. */}
       <div className="ml-auto flex items-center gap-1">

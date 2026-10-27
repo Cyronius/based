@@ -19,6 +19,7 @@ import { parseSqlBlocks } from "../lib/sqlBlocks";
 import { isReadOnly } from "../lib/sqlText";
 import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { IconButton } from "./IconButton";
 import { deriveMood, HAPPY_WINDOW_MS } from "../agent/capiMood";
 
 function SendIcon() {
@@ -174,7 +175,10 @@ function SqlActions({ text }: { text: string }) {
               <button
                 className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0"
                 title="Opens in a new tab without running — review, then F5"
-                onClick={() => open(null, b.sql)}
+                onClick={() => {
+                  const id = open(null, b.sql);
+                  if (id) useStore.getState().requestEditorFocus(id);
+                }}
               >
                 Open
               </button>
@@ -367,8 +371,15 @@ export function CapiChat() {
     idleMs,
   });
 
+  // Traces: BASED-UI-A11Y-KEYBOARD — screen readers hear the settled answer once, not every token.
+  const settledAnswer =
+    !isStreaming && lastNonTool?.role === "assistant" && typeof lastNonTool.content === "string" ? lastNonTool.content : "";
+
   return (
     <div className="flex flex-1 min-h-0 min-w-0 flex-col" onPointerMove={touch} onKeyDown={touch}>
+      <div className="sr-only" aria-live="polite">
+        {settledAnswer}
+      </div>
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         <div ref={contentRef} className="pl-3 pr-4 py-2 space-y-3">
         {messages.length === 0 && !isStreaming && (
@@ -501,9 +512,10 @@ export function CapiChat() {
           <div className="relative flex-1 min-w-0">
             <textarea
               ref={inputRef}
-              className="h-full w-full resize-none rounded-md border border-line bg-ink-800 px-2 py-1.5 pr-9 text-[length:var(--fs-md)] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
+              className="h-full w-full resize-none rounded-md border border-line bg-ink-800 px-2 py-1.5 pr-9 text-[length:var(--fs-md)] text-paper placeholder:text-muted focus:border-brass-soft focus:outline-none"
               rows={2}
               placeholder="Ask about the database…"
+              aria-label="Message Capi"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -516,14 +528,15 @@ export function CapiChat() {
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
             />
-            <button
-              className="absolute right-1.5 bottom-1.5 rounded p-1 text-brass hover:text-brass-soft disabled:opacity-40"
-              title="Send"
+            <IconButton
+              className="absolute right-1 bottom-1 text-brass hover:text-brass-soft"
+              title="Send (Enter)"
+              aria-label="Send"
               onClick={() => void send()}
               disabled={isStreaming || !input.trim()}
             >
               <SendIcon />
-            </button>
+            </IconButton>
           </div>
         </div>
       </div>

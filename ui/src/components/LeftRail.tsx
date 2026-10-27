@@ -89,7 +89,9 @@ function ConnectionSelector() {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      ref.current?.querySelector<HTMLElement>("button")?.focus();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -101,10 +103,29 @@ function ConnectionSelector() {
 
   const active = connections.find((c) => c.id === activeConnectionId);
 
+  // Traces: BASED-UI-A11Y-KEYBOARD — listbox keys: focus lands on the current option, arrows move.
+  useEffect(() => {
+    if (!open) return;
+    const options = [...(ref.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+    (options.find((o) => o.getAttribute("aria-selected") === "true") ?? options[0])?.focus();
+  }, [open]);
+  const onListKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"], [data-list-extra]')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : Math.max(0, Math.min(items.length - 1, at + (e.key === "ArrowDown" ? 1 : -1)));
+    items[next]?.focus();
+  };
+
   return (
     <div className="relative" ref={ref}>
       <button
         className="w-full text-left px-3 py-2 rounded border border-line bg-ink-900 hover:border-brass-soft/60 transition-colors group"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={active ? `Connection: ${active.name}` : "Select a connection"}
         onClick={() => setOpen(!open)}
       >
         {active ? (
@@ -127,7 +148,12 @@ function ConnectionSelector() {
       </button>
 
       {open && (
-        <div className="absolute z-30 mt-1 w-full rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up">
+        <div
+          role="listbox"
+          aria-label="Connections"
+          className="absolute z-30 mt-1 w-full rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up"
+          onKeyDown={onListKey}
+        >
           {connections.map((c) => (
             <div
               key={c.id}
@@ -138,7 +164,9 @@ function ConnectionSelector() {
               }}
             >
               <button
-                className={`flex-1 text-left px-3 py-2 hover:bg-ink-800 min-w-0 ${c.id === activeConnectionId ? "text-brass" : ""}`}
+                role="option"
+                aria-selected={c.id === activeConnectionId}
+                className={`flex-1 text-left px-3 py-2 hover:bg-ink-800 focus-visible:bg-ink-800 focus-visible:outline-none min-w-0 ${c.id === activeConnectionId ? "text-brass" : ""}`}
                 onClick={() => {
                   setOpen(false);
                   void connect(c.id);
@@ -152,7 +180,7 @@ function ConnectionSelector() {
               <IconButton
                 title="Edit connection"
                 aria-label="Edit connection"
-                className="mr-1 text-faint opacity-0 group-hover:opacity-100 hover:text-brass"
+                className="mr-1 text-faint opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-brass"
                 onClick={() => {
                   setOpen(false);
                   setDialog({ mode: "edit", connection: c });
@@ -163,7 +191,8 @@ function ConnectionSelector() {
             </div>
           ))}
           <button
-            className="w-full text-left px-3 py-2 text-brass hover:bg-ink-800"
+            data-list-extra
+            className="w-full text-left px-3 py-2 text-brass hover:bg-ink-800 focus-visible:bg-ink-800 focus-visible:outline-none"
             onClick={() => {
               setOpen(false);
               setDialog({ mode: "new" });

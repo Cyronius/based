@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent } from "react";
 import { useStore } from "../store";
 import { TabContextMenu } from "./TabContextMenu";
 import { IconButton } from "./IconButton";
@@ -11,6 +11,7 @@ export function TabStrip() {
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const activateTab = useStore((s) => s.activateTab);
+  const requestEditorFocus = useStore((s) => s.requestEditorFocus);
   const closeTab = useStore((s) => s.closeTab);
   const reorderTab = useStore((s) => s.reorderTab);
   const newQueryTab = useStore((s) => s.newQueryTab);
@@ -36,6 +37,36 @@ export function TabStrip() {
   const [dropTarget, setDropTarget] = useState<{ id: string; side: "before" | "after" } | null>(null);
 
   const visible = tabs.filter((t) => !(t.kind === "query" && t.parentTabId));
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  // Traces: BASED-UI-A11Y-KEYBOARD — tablist keys: arrows/Home/End move and activate, Delete closes.
+  const focusTab = (id: string) => stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)?.focus();
+  const onTabKey = (e: KeyboardEvent<HTMLDivElement>, idx: number) => {
+    const go = (i: number) => {
+      const t = visible[(i + visible.length) % visible.length];
+      if (!t) return;
+      e.preventDefault();
+      activateTab(t.id);
+      requestAnimationFrame(() => focusTab(t.id));
+    };
+    if (e.key === "ArrowRight") go(idx + 1);
+    else if (e.key === "ArrowLeft") go(idx - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(visible.length - 1);
+    else if (e.key === "Delete") {
+      e.preventDefault();
+      const next = visible[idx + 1] ?? visible[idx - 1];
+      closeTab(visible[idx]!.id);
+      if (next) requestAnimationFrame(() => focusTab(next.id));
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      activateTab(visible[idx]!.id);
+    } else if ((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") {
+      e.preventDefault();
+      const r = e.currentTarget.getBoundingClientRect();
+      setMenu({ tabId: visible[idx]!.id, x: r.left, y: r.bottom });
+    }
+  };
 
   function commitFetchSize(): void {
     const n = Math.min(MAX_FETCH_SIZE, Math.max(1, Math.floor(Number(fetchSizeText)) || rowPageSize));
@@ -52,18 +83,27 @@ export function TabStrip() {
 
   return (
     <div className="flex items-stretch h-9 border-b border-line-soft bg-ink-950 overflow-x-auto shrink-0">
-      {visible.map((t) => {
+      <div ref={stripRef} role="tablist" aria-label="Open tabs" className="flex items-stretch">
+      {visible.map((t, idx) => {
         const active = t.id === activeTabId;
         const running = t.kind === "query" && t.running;
         const dirty = t.kind === "query" && t.dirty;
         return (
           <div
             key={t.id}
+            data-tab-id={t.id}
+            role="tab"
+            aria-selected={active}
+            tabIndex={active ? 0 : -1}
+            onKeyDown={(e) => onTabKey(e, idx)}
             draggable
-            className={`group relative flex items-center gap-2 px-3 border-r border-line-soft cursor-pointer max-w-56 select-none ${
+            className={`group relative flex items-center gap-2 px-3 border-r border-line-soft cursor-pointer max-w-56 select-none focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
               active ? "bg-ink-900 text-paper shadow-[inset_0_2px_0_var(--color-brass)]" : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
             } ${draggedId === t.id ? "opacity-40" : ""}`}
-            onClick={() => activateTab(t.id)}
+            onClick={() => {
+              activateTab(t.id);
+              requestEditorFocus(t.id);
+            }}
             onAuxClick={(e) => {
               if (e.button === 1) closeTab(t.id);
             }}
@@ -124,7 +164,8 @@ export function TabStrip() {
               size="sm"
               title={`Close tab (${accel("W")})`}
               aria-label="Close tab"
-              className="-mr-1 text-faint hover:text-err opacity-0 group-hover:opacity-100"
+              tabIndex={-1}
+              className="-mr-1 text-faint hover:text-err opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 focus-visible:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
                 closeTab(t.id);
@@ -135,6 +176,7 @@ export function TabStrip() {
           </div>
         );
       })}
+      </div>
       {sqlEditor && (
         <IconButton
           title={`New query tab (${accel("T")})`}
@@ -169,6 +211,7 @@ export function TabStrip() {
           <button
             className={toggleBtn(capturePlan)}
             title="Capture actual execution plan on next run"
+            aria-label="Capture execution plan"
             aria-pressed={capturePlan}
             onClick={() => toggleCapturePlan()}
           >
@@ -182,6 +225,7 @@ export function TabStrip() {
           <button
             className={toggleBtn(captureStats)}
             title="Capture client statistics (STATISTICS TIME, IO) on next run"
+            aria-label="Capture client statistics"
             aria-pressed={captureStats}
             onClick={() => toggleCaptureStats()}
           >

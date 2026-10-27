@@ -72,8 +72,13 @@ function ApprovalFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
+    <div role="group" aria-label={title} className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
       <div className="ledger-label mb-1 text-brass">{title}</div>
+      {phase === "idle" && (
+        <span role="status" className="sr-only">
+          Capi asks for approval: {title}
+        </span>
+      )}
       <ApprovalTarget />
       {reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{reason}</div>}
       {children}

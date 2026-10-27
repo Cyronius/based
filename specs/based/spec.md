@@ -325,6 +325,41 @@ App-wide user preferences (the active theme id; `fontScale`, the app-wide text-s
 - A partial patch merges over existing settings rather than replacing the row
 - Fresh store → `confirmCloseUnsaved: false` (BASED-TAB-CLOSE-CONFIRM is opt-in); `POST { confirmCloseUnsaved: true }` round-trips
 
+### BASED-THEME-CONTRAST: Secondary text is readable in every theme
+**Applies to:** based (ui)
+**Test category:** unit
+
+In every theme in `ui/src/theme.ts`, the `muted` and `faint` text tokens reach a WCAG contrast
+ratio of at least 4.5:1 against `bg0`, `bg1`, and `bg2` (the surfaces they are drawn on). Text on
+`bg3` uses `muted` or stronger. The `@theme` fallbacks in `index.css` match the Ledger tokens.
+
+**Acceptance criteria (`unit.themeContrast.test.ts`):** for each theme, `contrast(faint, bgN)` and
+`contrast(muted, bgN)` ≥ 4.5 for N = 0, 1, 2 (relative-luminance math in the test).
+
+### BASED-UI-A11Y-KEYBOARD: Keyboard and screen-reader basics
+**Applies to:** based (ui)
+**Test category:** manual
+
+- The explorer is a tree (`BASED-UI-EXPLORER`), the tab strip a tablist (`BASED-UI-TABS`), and the
+  connection selector a listbox (arrows move, Enter connects, Esc closes and returns focus).
+- Every modal uses the shared `Dialog`: `role="dialog"`, `aria-modal`, labelled by its title, focus
+  trapped inside, first field focused, Esc closes, focus returns to the opener. A dialog that
+  holds input (connection, import, new table) does not close on a backdrop click.
+- Hover-revealed controls (tab ✕, edit connection, + New table) also appear on keyboard focus.
+- Icon-only controls carry `title` and `aria-label` (Capi collapse, Send, plan/stats toggles).
+  New chat has its own icon, not ✎.
+- Live regions: the settled Capi answer (not each token), run status in the status bar, banners
+  (`role="alert"`), and a new approval card.
+- Monaco takes focus only when a user action asks for it (tab click, Ctrl+T, open file, Insert,
+  chat Open) — never on connect, restore, or an agent-opened tab. Help lists Ctrl+M (⌃⇧M on macOS),
+  which makes Tab leave the editor.
+
+**Verification procedure:** with only the keyboard: Tab to the connection selector → Enter → arrows
+→ Enter connects, and focus is not in the editor; Tab into the explorer → open a table with Enter;
+Tab to the tab strip → arrows switch tabs, Delete closes one; open Settings → Tab cycles inside it,
+Esc closes and focus returns to the gear. With a screen reader (Narrator/VoiceOver): a Capi answer is
+read once when it settles; an approval card is announced.
+
 ### BASED-THEME: Theme switching
 **Applies to:** based (ui)
 **Test category:** manual
@@ -1656,7 +1691,9 @@ field, tag, or color, because environments differ for every user (they put that 
 
 Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Functions — each header showing a count; collapsed groups hide members. Double-clicking a table/view opens a table-details tab (Name, Data Type, Size/Precision/Scale, Nullable, Key) sourced from the same introspection endpoint as everything else. Double-clicking a stored procedure/function opens a routine tab showing its parameter list (BASED-ROUTINE-DETAILS) and SQL definition text (BASED-VIEW-DEFINITION) — no Edit Data/SQL tabs, since a routine has no natural row set.
 
-**Verification procedure:** connect to dev DB → four groups with counts; collapse/expand works; double-click a table → details tab shows its columns with PK marked; double-click a stored procedure or function → routine tab shows its parameters and definition text (previously not double-clickable at all).
+The explorer is a `tree` with one tab stop (roving tabindex): ↑/↓/Home/End move, → expands a group or enters it, ← collapses a group or returns to its header, Enter opens (same as double-click) or toggles a group, Space selects, Shift+F10 / Menu opens the context menu (arrow keys walk its items), and typing a name moves to the next match (`BASED-UI-A11Y-KEYBOARD`).
+
+**Verification procedure:** connect to dev DB → four groups with counts; collapse/expand works; double-click a table → details tab shows its columns with PK marked; double-click a stored procedure or function → routine tab shows its parameters and definition text (previously not double-clickable at all). Keyboard only: Tab into the tree → arrows move, typing "ord" jumps to the first object starting with it, Enter opens it, Shift+F10 opens the menu.
 
 ### BASED-UI-SCRIPT-AS: Explorer multi-select + Script as
 **Applies to:** based (ui)
@@ -1702,7 +1739,7 @@ tab. Engines lacking the needed capability degrade to `details`.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Connection-scoped multi-tabs; auto-persisted across restarts; explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
+Connection-scoped multi-tabs; auto-persisted across restarts; the strip is a `tablist` with one tab stop (←/→/Home/End switch tabs, Delete closes the focused tab, Shift+F10 opens its menu; clicking a tab focuses its editor, keyboard switching keeps focus on the tab); explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
 
 **Verification procedure:**
 1. Open 2 tabs, type SQL, close app, reopen → both tabs restored with content
@@ -2441,6 +2478,8 @@ requirement owns only the key assignments and their discoverability.
 ### BASED-HELP-DOCS: In-app help documentation tab
 **Applies to:** based (ui + core)
 **Test category:** manual
+
+The help tab's shortcut table includes Ctrl+M (⌃⇧M on macOS), Monaco's switch that makes Tab move focus out of the editor (`BASED-UI-A11Y-KEYBOARD`).
 
 A `?` icon button next to the theme picker in the left-rail header opens the help documentation as
 a **tab** (`kind: "docs"`), rendered by the app like any other tab kind. There is at most one help

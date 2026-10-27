@@ -21,6 +21,7 @@ import {
 } from "../api/client";
 import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
+import { Dialog } from "./Dialog";
 import { CopyIcon } from "./icons";
 
 function Swatch({ t }: { t: ThemeDef }) {
@@ -1040,17 +1041,7 @@ export function ThemePicker() {
         <GearIcon />
       </IconButton>
       {open && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60"
-          onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
-        >
-          <div className="w-[min(80vw,960px)] h-[85vh] flex flex-col rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
-            <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between shrink-0">
-              <h2 className="font-display text-lg text-paper">Settings</h2>
-              <IconButton title="Close" aria-label="Close" className="text-faint hover:text-paper" onClick={() => setOpen(false)}>
-                ✕
-              </IconButton>
-            </div>
+        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] h-[85vh] flex flex-col">
             <div className="flex border-b border-line-soft shrink-0">
               {tabBtn("general", "General")}
               {tabBtn("theme", "Theme")}
@@ -1060,8 +1051,7 @@ export function ThemePicker() {
             <div className="flex-1 min-h-0 overflow-y-auto">
               {tab === "general" ? <GeneralTab /> : tab === "theme" ? <ThemeTab /> : tab === "search" ? <SearchProfilesTab /> : <AgentTab />}
             </div>
-          </div>
-        </div>
+        </Dialog>
       )}
     </>
   );

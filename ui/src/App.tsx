@@ -262,7 +262,7 @@ export function App() {
         <main className="flex-1 min-w-0 flex flex-col border-l border-line-soft">
           <ConnectFailureBanner />
           {banner && (
-            <div className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
+            <div role="alert" className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
               <span className="flex-1 font-mono">{banner}</span>
               <IconButton size="sm" title="Dismiss" aria-label="Dismiss" className="text-muted hover:text-paper" onClick={() => setBanner(null)}>
                 ✕

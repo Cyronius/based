@@ -1,6 +1,6 @@
 // Traces: BASED-UI-EXPLORER (manual), BASED-UI-SCRIPT-AS (multi-select + Script as),
 //         BASED-EXPLORER-ACTION (settings-driven double-click)
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useStore } from "../store";
 import type { DbObject, DbObjectType } from "../api/types";
 import { profileFor } from "../lib/engineProfile";
@@ -117,12 +117,83 @@ export function ObjectExplorer() {
     void openRoutineTab(o.schema, o.name, o.type);
   }
 
+  // Traces: BASED-UI-A11Y-KEYBOARD — the explorer is a tree with one tab stop (roving tabindex).
+  const treeRef = useRef<HTMLDivElement>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const typeAhead = useRef({ text: "", at: 0 });
+  type Node = { key: string; group: DbObjectType; obj: DbObject | null; index: number; label: string };
+  const nodes: Node[] = [];
+  for (const g of groups) {
+    nodes.push({ key: `group:${g.type}`, group: g.type, obj: null, index: -1, label: g.label });
+    if (!(collapsed[g.type] ?? false)) {
+      (grouped.get(g.type) ?? []).forEach((o, index) => nodes.push({ key: keyOf(o), group: g.type, obj: o, index, label: displayName(o) }));
+    }
+  }
+  const tabStop = nodes.some((n) => n.key === focusKey) ? focusKey : (nodes[0]?.key ?? null);
+  const focusNode = (key: string) => {
+    setFocusKey(key);
+    treeRef.current?.querySelector<HTMLElement>(`[data-node="${CSS.escape(key)}"]`)?.focus();
+  };
+
+  function onTreeKey(e: KeyboardEvent<HTMLDivElement>) {
+    const at = nodes.findIndex((n) => n.key === tabStop);
+    const node = nodes[at];
+    if (!node) return;
+    const groupCollapsed = collapsed[node.group] ?? false;
+    const move = (i: number) => {
+      const n = nodes[Math.max(0, Math.min(nodes.length - 1, i))];
+      if (n) focusNode(n.key);
+    };
+    let handled = true;
+    if (e.key === "ArrowDown") move(at + 1);
+    else if (e.key === "ArrowUp") move(at - 1);
+    else if (e.key === "Home") move(0);
+    else if (e.key === "End") move(nodes.length - 1);
+    else if (e.key === "ArrowRight") {
+      if (!node.obj && groupCollapsed) setCollapsed({ ...collapsed, [node.group]: false });
+      else if (!node.obj) move(at + 1);
+    } else if (e.key === "ArrowLeft") {
+      if (!node.obj && !groupCollapsed) setCollapsed({ ...collapsed, [node.group]: true });
+      else if (node.obj) focusNode(`group:${node.group}`);
+    } else if (e.key === "Enter") {
+      if (node.obj) handleDoubleClick(node.obj);
+      else setCollapsed({ ...collapsed, [node.group]: !groupCollapsed });
+    } else if (e.key === " " && node.obj) {
+      setSelected(new Set([node.key]));
+      setAnchor({ type: node.obj.type, index: node.index });
+    } else if (((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") && node.obj) {
+      if (!selected.has(node.key)) {
+        setSelected(new Set([node.key]));
+        setAnchor({ type: node.obj.type, index: node.index });
+      }
+      const r = (e.target as HTMLElement).getBoundingClientRect();
+      setMenu({ x: r.left + 24, y: r.bottom });
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== " ") {
+      const now = Date.now();
+      const t = typeAhead.current;
+      t.text = now - t.at < 600 ? t.text + e.key.toLowerCase() : e.key.toLowerCase();
+      t.at = now;
+      const order = [...nodes.slice(at + (t.text.length === 1 ? 1 : 0)), ...nodes.slice(0, at + 1)];
+      const hit = order.find((n) => n.obj && (n.obj.name.toLowerCase().startsWith(t.text) || n.label.toLowerCase().startsWith(t.text)));
+      if (hit) focusNode(hit.key);
+    } else handled = false;
+    if (e.key.length !== 1) typeAhead.current.text = "";
+    if (handled) e.preventDefault();
+  }
+
   if (status !== "connected" && objects.length === 0) {
     return <div className="p-4 text-faint text-[length:var(--fs-base)] italic">No connection.</div>;
   }
 
   return (
-    <div className="h-full overflow-y-auto py-1">
+    <div
+      ref={treeRef}
+      role="tree"
+      aria-label="Database objects"
+      aria-multiselectable="true"
+      className="h-full overflow-y-auto py-1"
+      onKeyDown={onTreeKey}
+    >
       {groups.map((g) => {
         const items = grouped.get(g.type) ?? [];
         const isCollapsed = collapsed[g.type] ?? false;
@@ -133,7 +204,13 @@ export function ObjectExplorer() {
           <section key={g.type}>
             <div className="flex items-center pr-1 hover:bg-ink-900 group">
               <button
-                className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5"
+                data-node={`group:${g.type}`}
+                role="treeitem"
+                aria-level={1}
+                aria-expanded={!isCollapsed}
+                tabIndex={tabStop === `group:${g.type}` ? 0 : -1}
+                className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-brass)]"
+                onFocus={() => setFocusKey(`group:${g.type}`)}
                 onClick={() => setCollapsed({ ...collapsed, [g.type]: !isCollapsed })}
               >
                 <span className={`text-faint text-[length:var(--fs-xs)] transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
@@ -145,7 +222,7 @@ export function ObjectExplorer() {
                   size="sm"
                   title="New table"
                   aria-label="New table"
-                  className="shrink-0 text-faint opacity-0 group-hover:opacity-100 hover:text-brass"
+                  className="shrink-0 text-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-brass"
                   onClick={() => setNewTableOpen(true)}
                 >
                   +
@@ -158,7 +235,13 @@ export function ObjectExplorer() {
                 return (
                   <div
                     key={`${o.schema}.${o.name}`}
-                    className={`flex items-center gap-2 pl-8 pr-3 py-[3px] text-[length:var(--fs-base)] select-none cursor-pointer ${
+                    data-node={keyOf(o)}
+                    role="treeitem"
+                    aria-level={2}
+                    aria-selected={isSelected}
+                    tabIndex={tabStop === keyOf(o) ? 0 : -1}
+                    onFocus={() => setFocusKey(keyOf(o))}
+                    className={`flex items-center gap-2 pl-8 pr-3 py-[3px] text-[length:var(--fs-base)] select-none cursor-pointer focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
                       isSelected ? "bg-ink-850 text-paper" : "text-paper-dim hover:bg-ink-900 hover:text-paper"
                     }`}
                     title={`${displayName(o)} — double-click to open`}

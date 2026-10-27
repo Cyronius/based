@@ -53,8 +53,16 @@ export function EditorPane({ tabId, initialContent }: { tabId: string; initialCo
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => void useStore.getState().saveTab(tabId, { as: true }));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO, () => void useStore.getState().openSqlFile());
 
-    editor.focus();
+    // BASED-UI-A11Y-KEYBOARD: take focus only when a user action asked for this tab's editor.
+    const takeFocus = (want: string | null) => {
+      if (want !== tabId) return;
+      editor.focus();
+      useStore.setState({ focusEditorFor: null });
+    };
+    takeFocus(useStore.getState().focusEditorFor);
+    const unsubFocus = useStore.subscribe((s) => takeFocus(s.focusEditorFor));
     return () => {
+      unsubFocus();
       sub.dispose();
       unregister();
       editor.dispose(); // model survives in the cache

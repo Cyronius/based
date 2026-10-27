@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { browseFolder } from "../api/client";
 import { IconButton } from "./IconButton";
+import { Dialog } from "./Dialog";
 import type { ConnectionInput, EngineProfile, FieldSpec, TestResult } from "../api/types";
 
 /** ConnectionConfig keys that stay top-level; every other FieldSpec key addresses `settings`. */
@@ -269,17 +270,7 @@ export function ConnectionDialog() {
   const inputs = visibleFields.filter((f) => f.kind !== "checkbox");
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60"
-      onMouseDown={(e) => e.target === e.currentTarget && setDialog({ mode: "closed" })}
-    >
-      <div className="w-[440px] max-h-[90vh] overflow-y-auto rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
-        <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between">
-          <h2 className="font-display text-lg text-paper">{editing ? "Edit connection" : "New connection"}</h2>
-          <IconButton title="Close" aria-label="Close" className="text-faint hover:text-paper" onClick={() => setDialog({ mode: "closed" })}>
-            ✕
-          </IconButton>
-        </div>
+    <Dialog title={editing ? "Edit connection" : "New connection"} onClose={() => setDialog({ mode: "closed" })} closeOnBackdrop={false}>
 
         <div className="px-5 py-4 space-y-3">
           <div>
@@ -398,7 +389,6 @@ export function ConnectionDialog() {
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

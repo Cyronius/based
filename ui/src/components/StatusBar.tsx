@@ -69,12 +69,14 @@ export function StatusBar() {
           contents are written by monaco-vim, never by React (see vimMode.ts). */}
       {editorKeymap === "vim" && <span id={VIM_STATUS_NODE_ID} className="vim-status min-w-0 text-muted" />}
       <div className="flex-1" />
+      <span className="contents" aria-live="polite">
       {tab?.running && <span className="shrink-0 text-brass pulse-soft">executing…</span>}
       {tab?.stats && !tab.running && (
         <span className={`shrink-0 whitespace-nowrap ${tab.stats.status === "ok" ? "text-muted" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"}`}>
           last run: {tab.stats.status} in {tab.stats.durationMs.toLocaleString()} ms
         </span>
       )}
+      </span>
       {version && <span className="text-faint" title={`based ${version}`}>v{version}</span>}
     </footer>
   );

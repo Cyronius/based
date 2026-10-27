@@ -225,6 +225,9 @@ export interface AppState {
   sqlFileOpenTarget: "current-window" | "new-window";
   /** BASED-TAB-CLOSE-CONFIRM: opt-in, off by default. */
   confirmCloseUnsaved: boolean;
+  /** BASED-UI-A11Y-KEYBOARD: the tab whose editor should take focus, set only by user actions so
+   *  connect/restore and agent-opened tabs never pull focus into Monaco. */
+  focusEditorFor: string | null;
   /** Tabs waiting on the opt-in close confirmation, or null. */
   closeConfirm: { ids: string[]; titles: string[] } | null;
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
@@ -283,6 +286,7 @@ export interface AppState {
   /** True when this connection has a closed-tab batch to restore. */
   canReopenTabs(): boolean;
   cancelCloseConfirm(): void;
+  requestEditorFocus(id: string): void;
   activateTab(id: string): void;
   reorderTab(draggedId: string, targetId: string, position: "before" | "after"): void;
   setContent(id: string, content: string): void;
@@ -728,6 +732,7 @@ export const useStore = create<AppState>((set, get) => {
     editorKeymap: "default",
     sqlFileOpenTarget: "current-window",
     confirmCloseUnsaved: false,
+    focusEditorFor: null,
     closeConfirm: null,
     capturePlan: false,
     captureStats: false,
@@ -1043,7 +1048,7 @@ export const useStore = create<AppState>((set, get) => {
       // LanceDB Cloud) has no query editor; local LanceDB runs SQL via the embedded DuckDB.
       if (capabilities && !capabilities.sql) return;
       const tab = freshQueryTab(nextQueryTitle(tabs));
-      set({ tabs: [...tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
       persistTabsSoon();
     },
 
@@ -1166,6 +1171,10 @@ export const useStore = create<AppState>((set, get) => {
 
     cancelCloseConfirm() {
       set({ closeConfirm: null });
+    },
+
+    requestEditorFocus(id) {
+      set({ focusEditorFor: id });
     },
 
     canReopenTabs() {
@@ -1391,7 +1400,7 @@ export const useStore = create<AppState>((set, get) => {
       const content = res.content ?? "";
       const title = res.path.split(/[\\/]/).pop() ?? res.path;
       const tab: QueryTabState = { ...freshQueryTab(title), content, filePath: res.path };
-      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
       const model = getModel(tab.id, content);
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text: content }], () => null);
       persistTabsSoon();
@@ -1431,10 +1440,10 @@ export const useStore = create<AppState>((set, get) => {
       if (!target) target = state.tabs.find((t): t is QueryTabState => t.kind === "query");
       if (!target) {
         const tab = freshQueryTab(nextQueryTitle(state.tabs));
-        set({ tabs: [...state.tabs, tab], activeTabId: tab.id });
+        set({ tabs: [...state.tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
         target = tab;
       } else {
-        set({ activeTabId: target.id });
+        set({ activeTabId: target.id, focusEditorFor: target.id });
       }
       const model = getModel(target.id, target.content);
       const existing = model.getValue();

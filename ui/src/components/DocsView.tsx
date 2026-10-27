@@ -71,6 +71,7 @@ const SHORTCUTS: Array<[ReactNode, ReactNode]> = [
     "Zoom the app text size in / out",
   ],
   [<Kbd>{accel("0")}</Kbd>, "Reset the text size to 100%"],
+  [<Kbd>{isMac ? "⌃⇧M" : "Ctrl+M"}</Kbd>, "In the editor: switch Tab between indenting and moving focus out"],
 ];
 
 const VIM_COMMANDS: Array<[ReactNode, ReactNode]> = [
