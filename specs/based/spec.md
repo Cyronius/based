@@ -1884,7 +1884,7 @@ the mutation gate).
 **Applies to:** based (ui)
 **Test category:** manual
 
-The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run**, labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` (full body, ~80 px tall, mood-driven — `BASED-CAPI-AVATAR`) sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
+The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run** (or **Open** for SQL that is not read-only — `BASED-CHAT-SQL-RUN-GATE`), labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card (`BASED-UI-APPROVAL-CARD`) whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` (full body, ~80 px tall, mood-driven — `BASED-CAPI-AVATAR`) sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
 1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
@@ -2155,6 +2155,71 @@ The MSSQL persona shall instruct the model to make the first line of every ```sq
 - Multiple fences → one block each, order preserved; empty and non-`sql` fences ignored
 - All-comment fence → `firstLine` falls back to the raw first line
 - `MSSQL_PERSONA` contains the leading-comment instruction
+
+### BASED-UI-READONLY-MIRROR: Webview read-only classifier agrees with core
+**Applies to:** based (ui)
+**Test category:** unit
+
+`ui/src/lib/sqlText.ts` `isReadOnly` mirrors `core/src/db/classify.ts` `isReadOnly` (the webview
+never imports core): read-only only when the text leads with `SELECT`/`WITH` and contains no
+mutating keyword after comments and string literals are removed. The chat Run gate
+(`BASED-CHAT-SQL-RUN-GATE`) depends on it, and a disagreement would be silent.
+
+**Acceptance criteria:** on one shared case table, both functions return the same value:
+- `SELECT …`, `(SELECT 1)`, a CTE followed by `SELECT` → true
+- CTE followed by `DELETE`, `SELECT … INTO`, `EXEC`, `UPDATE`, `SELECT 1; DROP TABLE t` → false
+- Mutating words only inside a string literal or a comment → true
+- Empty text, comment-only text → false
+
+Unit coverage: `unit.sqlText.test.ts`.
+
+### BASED-CHAT-SQL-RUN-GATE: Chat SQL that may write never runs on one click
+**Applies to:** based (ui)
+**Test category:** manual
+
+Each SQL block in a Capi answer offers **Insert** and one run action chosen by
+`BASED-UI-READONLY-MIRROR`. Read-only SQL gets **Run** (new tab, runs at once). Any other SQL gets
+**Open**: a new query tab with the SQL, not run, tooltip "Opens in a new tab without running —
+review, then F5". No confirmation dialog is shown.
+
+**Verification procedure:**
+1. Ask Capi for a `SELECT` → the block shows Insert / Run → Run opens a tab and results appear
+2. Ask Capi for an `UPDATE` (as a fenced block, not a `run_mutation` call) → the block shows
+   Insert / Open → Open creates a new tab holding the SQL, nothing runs, History shows no new entry
+3. A block that starts with a CTE and ends in `DELETE` → Open, not Run
+
+### BASED-UI-APPROVAL-CARD: Approval cards name the target and show the whole statement
+**Applies to:** based (ui)
+**Test category:** manual
+
+The `run_mutation`, `import_csv`, and `create_table` cards share one frame:
+- A bold target line, `{connection name} · {database}`, under the card title. The name is the
+  user's own connection name (`BASED-WINDOW-IDENTITY`).
+- Statement text wraps; long text scrolls vertically (max height), never sideways.
+- **Approve** keeps the primary style; **Reject** is a neutral secondary button.
+- The outcome is colored by status: success in the ok color; failure in the error color with a
+  "Failed:" / "Import failed:" prefix; rejection in the muted color.
+
+**Verification procedure:**
+1. Ask Capi to update a row with a long `WHERE` clause → the card shows the connection name and
+   database in bold, and the whole `WHERE` clause is visible without sideways scroll
+2. Approve a statement that fails (e.g. a unique-key violation) → the outcome is red and starts
+   with "Failed:"
+3. Reject → "Rejected — nothing ran." in the muted color
+4. Ask for an import of a CSV with a bad row and skip off → a failed import is red, not green
+
+### BASED-CHAT-CODE-THEME: Chat code is legible in every theme
+**Applies to:** based (ui)
+**Test category:** manual
+
+The theme sets `data-mode` (`dark` | `light`) on the root element, and Tailwind's `dark:` variant
+keys on it, not on the OS color scheme. Streamdown's Shiki highlighting therefore uses its dark
+palette under dark and midtone themes and its light palette under light themes. Chat code blocks
+use the editor surface color (`--color-ink-950`) as background.
+
+**Verification procedure:** with the OS in light mode, ask Capi for a SQL block under a dark theme
+(Ledger), a midtone theme, and a light theme → in each, strings, keywords, and identifiers are
+easy to read and the block background matches the editor.
 
 ### BASED-UI-SHORTCUTS: Global keyboard shortcuts, discoverable from the UI
 **Applies to:** based (ui)

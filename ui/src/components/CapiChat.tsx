@@ -16,6 +16,7 @@ import {
   resolveAiTimeouts,
 } from "../agent/aiTimeouts";
 import { parseSqlBlocks } from "../lib/sqlBlocks";
+import { isReadOnly } from "../lib/sqlText";
 import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
 import { deriveMood, HAPPY_WINDOW_MS } from "../agent/capiMood";
@@ -150,6 +151,7 @@ function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
 function SqlActions({ text }: { text: string }) {
   const insert = useStore((s) => s.insertSqlIntoEditor);
   const run = useStore((s) => s.runSqlInNewTab);
+  const open = useStore((s) => s.newQueryTabWithContent);
   const blocks = parseSqlBlocks(text);
   if (blocks.length === 0) return null;
   return (
@@ -163,9 +165,20 @@ function SqlActions({ text }: { text: string }) {
             <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => insert(b.sql)}>
               Insert
             </button>
-            <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => void run(b.sql)}>
-              Run
-            </button>
+            {/* BASED-CHAT-SQL-RUN-GATE: agent-written SQL that may change data never runs on one click. */}
+            {isReadOnly(b.sql) ? (
+              <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => void run(b.sql)}>
+                Run
+              </button>
+            ) : (
+              <button
+                className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0"
+                title="Opens in a new tab without running — review, then F5"
+                onClick={() => open(null, b.sql)}
+              >
+                Open
+              </button>
+            )}
           </div>
           <div className="font-mono text-[length:var(--fs-sm)] text-faint truncate">{b.firstLine}</div>
         </div>

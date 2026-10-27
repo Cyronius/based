@@ -5,6 +5,15 @@
 @source "../node_modules/@streamdown/code/dist/*.js";
 @source "../node_modules/@streamdown/mermaid/dist/*.js";
 
+/* Traces: BASED-CHAT-CODE-THEME — Tailwind's default dark: follows the OS, not the app theme, so a
+   dark app theme on a light-mode OS got Streamdown's light Shiki colors. Key dark: on the app mode. */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+
+/* Chat code blocks sit on the same surface as the editor instead of Shiki's own theme background. */
+[data-streamdown="code-block-body"] pre {
+  background-color: var(--color-ink-950) !important;
+}
+
 /* Streamdown's inline `code` span pairs bg-muted (--muted, mapped to the theme's bg3 — a raised
    surface that runs light-to-mid grey in several midtone themes) with inherited foreground text,
    which is always near-white/near-black regardless of bg3. That combo can land white-on-light-grey.

@@ -227,6 +227,7 @@ function writeVars(el: HTMLElement, t: ThemeDef): void {
 
   s.setProperty("color-scheme", t.mode);
   el.dataset.theme = t.id;
+  el.dataset.mode = t.mode;
 }
 
 /** Shared with the docs page (BASED-HELP-DOCS): same-origin windows read and live-sync from it. */

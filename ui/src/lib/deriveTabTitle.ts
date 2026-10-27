@@ -2,30 +2,7 @@
 // Derives a query-tab title ("verb object", e.g. "select Customers") from SQL text by
 // tokenizing, not parsing: T-SQL AST parsers reject too much valid input (APPLY, hints,
 // temp tables) to be the primary path, and a fallback heuristic would be needed anyway.
-// The comment/string strippers mirror core/src/db/classify.ts (the webview never imports
-// Bun-flavored core modules — see ui/src/api/types.ts).
-
-function stripSqlComments(sql: string): string {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n\r]*/g, " ");
-}
-
-function stripStringLiterals(sql: string): string {
-  return sql.replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""');
-}
-
-type Tok = { ident: boolean; v: string };
-
-/** Words, [bracketed] identifiers, and the punctuation the walker cares about; everything
- *  else (operators, numbers, leftover quote pairs) is irrelevant to naming and dropped. */
-function tokenize(sql: string): Tok[] {
-  const toks: Tok[] = [];
-  const re = /\[[^\]]*\]|[A-Za-z_@#$][A-Za-z0-9_@#$]*|[(),;.=]/g;
-  for (const m of sql.matchAll(re)) {
-    const v = m[0]!;
-    toks.push(v.startsWith("[") ? { ident: true, v: v.slice(1, -1) } : { ident: false, v });
-  }
-  return toks;
-}
+import { stripSqlComments, stripStringLiterals, tokenize, type Tok } from "./sqlText";
 
 function isName(t: Tok | undefined): boolean {
   return !!t && (t.ident || /^[A-Za-z_@#$]/.test(t.v));
