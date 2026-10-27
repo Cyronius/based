@@ -73,9 +73,32 @@ function toTablePage(res: SearchRows): TablePage {
 
 const numOrUndef = (s: string): number | undefined => (s.trim() === "" ? undefined : Number(s));
 
-const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { className?: string }) => ReactElement }[] = [
+const DEFAULT_POOL = "50";
+const DEFAULT_KEEP = "10";
+const tuneLabel = "flex items-center gap-1.5";
+const tuneField = "px-2 py-1 rounded border border-line bg-ink-950 text-paper";
+
+// The Tuning disclosure is per window: session storage lives exactly as long as this webview.
+const TUNING_KEY = "based.searchTuningOpen";
+function readTuningOpen(): boolean {
+  try {
+    return sessionStorage.getItem(TUNING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function writeTuningOpen(open: boolean): void {
+  try {
+    sessionStorage.setItem(TUNING_KEY, open ? "1" : "0");
+  } catch {
+    // storage unavailable — the toggle still works for this view
+  }
+}
+
+const SEARCH_MODES: { id: LanceSearchMode; short: string; label: string; icon: (props: { className?: string }) => ReactElement }[] = [
   {
     id: "vector",
+    short: "Vector",
     label: "Vector — meaning-based search over embeddings",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -86,6 +109,7 @@ const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { classN
   },
   {
     id: "text",
+    short: "Text",
     label: "Keyword — BM25 full-text search",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -96,6 +120,7 @@ const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { classN
   },
   {
     id: "hybrid",
+    short: "Hybrid",
     label: "Hybrid — vector + keyword combined",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -151,12 +176,17 @@ export function TableDataGrid({
   // Traces: BASED-SEARCH-PARAM-NAMES — candidatePool (was sampleSize: it is an over-fetch pool, not
   // a row sample) and minScore/maxScoreGapFromTop (were floor/delta: direction-aware thresholds, so
   // "min" means "keep the better ones" whichever way the score sorts).
-  const [candidatePool, setCandidatePool] = useState("50");
-  const [keepSize, setKeepSize] = useState("10");
+  const [candidatePool, setCandidatePool] = useState(DEFAULT_POOL);
+  const [keepSize, setKeepSize] = useState(DEFAULT_KEEP);
   const [minScoreText, setMinScoreText] = useState("");
   const [maxGapText, setMaxGapText] = useState("");
   const [vectorColumn, setVectorColumn] = useState("");
   const [searchResult, setSearchResult] = useState<SearchRows | null>(null);
+  const [tuningOpen, setTuningOpenState] = useState(() => readTuningOpen());
+  const setTuningOpen = (open: boolean) => {
+    setTuningOpenState(open);
+    writeTuningOpen(open);
+  };
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -201,7 +231,8 @@ export function TableDataGrid({
   const hasSearchResult = searchResult !== null;
   const effectivePage = hasSearchResult ? toTablePage(searchResult) : page;
   const hasPk = !!effectivePage?.columns.some((c) => c.isPrimaryKey);
-  const editable = !hasSearchResult && tab.objectType === "table" && hasPk;
+  const canWrite = useStore((s) => s.capabilities?.write ?? true);
+  const editable = !hasSearchResult && tab.objectType === "table" && hasPk && canWrite;
 
   const clearPending = useCallback(() => {
     setEdits({});
@@ -556,6 +587,34 @@ export function TableDataGrid({
     [page?.columns],
   );
 
+  // Collapsed Tuning shows each non-default setting as a chip; ✕ puts that one setting back.
+  const profileName = (list: Array<{ id: string; name: string }>, id: string) => list.find((x) => x.id === id)?.name ?? "none";
+  const tuningChips: Array<{ key: string; name: string; label: string; reset: () => void }> = [];
+  if (whereText.trim()) tuningChips.push({ key: "where", name: "where", label: `where ${whereText.trim()}`, reset: () => setWhereText("") });
+  if (searchMode !== "text" && embeddingProfileId !== defaultEmbeddingId)
+    tuningChips.push({
+      key: "embedding",
+      name: "embedding",
+      label: `embedding ${profileName(embeddingProfiles, embeddingProfileId)}`,
+      reset: () => setEmbeddingProfileId(defaultEmbeddingId),
+    });
+  if (hasEmbedding && vectorColumn) tuningChips.push({ key: "vcol", name: "vector column", label: `vector ${vectorColumn}`, reset: () => setVectorColumn("") });
+  if (hasEmbedding && minScoreText.trim()) tuningChips.push({ key: "min", name: "min score", label: `min score ${minScoreText.trim()}`, reset: () => setMinScoreText("") });
+  if (hasEmbedding && maxGapText.trim()) tuningChips.push({ key: "gap", name: "max gap", label: `max gap ${maxGapText.trim()}`, reset: () => setMaxGapText("") });
+  if (hasEmbedding && rerankerProfileId !== defaultRerankerId)
+    tuningChips.push({
+      key: "reranker",
+      name: "reranker",
+      label: `reranker ${profileName(rerankerProfiles, rerankerProfileId)}`,
+      reset: () => setRerankerProfileId(defaultRerankerId),
+    });
+  if (hasReranker && rerankTextColumn) tuningChips.push({ key: "rcol", name: "rerank column", label: `rerank ${rerankTextColumn}`, reset: () => setRerankTextColumn("") });
+  if (hasReranker && rerankTopN.trim()) tuningChips.push({ key: "topn", name: "top n", label: `top n ${rerankTopN.trim()}`, reset: () => setRerankTopN("") });
+  if (hasReranker && rerankTemperature.trim())
+    tuningChips.push({ key: "temp", name: "temperature", label: `temperature ${rerankTemperature.trim()}`, reset: () => setRerankTemperature("") });
+  if (hasReranker && candidatePool !== DEFAULT_POOL) tuningChips.push({ key: "pool", name: "pool", label: `pool ${candidatePool}`, reset: () => setCandidatePool(DEFAULT_POOL) });
+  if (hasReranker && keepSize !== DEFAULT_KEEP) tuningChips.push({ key: "keep", name: "keep", label: `keep ${keepSize}`, reset: () => setKeepSize(DEFAULT_KEEP) });
+
   async function runSearch() {
     clearPending();
     setSearching(true);
@@ -592,174 +651,220 @@ export function TableDataGrid({
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col bg-ink-900">
+    <div className="h-full min-h-0 min-w-0 flex flex-col bg-ink-900">
       <div className="flex flex-col border-b border-line-soft shrink-0">
+        {/* Traces: BASED-LANCE-SEARCH-UI — one primary row (mode, query, Run) that always fits;
+            everything that tunes the search sits behind the Tuning disclosure. */}
         {searchCapable && (
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]${!hasSearchResult ? " border-b border-line-soft" : ""}`}>
-            <div className="flex rounded border border-line overflow-hidden shrink-0">
-              {SEARCH_MODES.map((m, i) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  title={m.label}
-                  aria-label={m.label}
-                  aria-pressed={searchMode === m.id}
-                  onClick={() => setSearchMode(m.id)}
-                  className={`grid place-items-center h-[26px] w-[26px] ${i > 0 ? "border-l border-line" : ""} ${
-                    searchMode === m.id ? "bg-brass/20 text-brass" : "text-muted hover:text-paper hover:bg-ink-950/60"
-                  }`}
-                >
-                  <m.icon />
-                </button>
-              ))}
-            </div>
-            <input
-              className="px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint min-w-[10rem]"
-              placeholder="where (prefilter)"
-              value={whereText}
-              onChange={(e) => setWhereText(e.target.value)}
-              title='LanceDB filter predicate, e.g. "year > 2020"'
-            />
-            <input
-              className="px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint min-w-[16rem]"
-              placeholder={searchMode === "vector" ? "meaning to search for…" : "keywords…"}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void runSearch()}
-            />
-            {searchMode !== "text" && (
-              <select
-                className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
-                value={embeddingProfileId}
-                onChange={(e) => {
-                  profilesTouched.current = true;
-                  setEmbeddingProfileId(e.target.value);
-                }}
-                title="Embedding profile (seeded from this connection's default)"
-              >
-                <option value="">Embedding: none</option>
-                {embeddingProfiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            {hasEmbedding && (
-              <>
-                <select
-                  className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
-                  value={rerankerProfileId}
-                  onChange={(e) => {
-                    profilesTouched.current = true;
-                    setRerankerProfileId(e.target.value);
-                  }}
-                  title="Reranker profile (seeded from this connection's default)"
-                >
-                  <option value="">Reranker: none</option>
-                  {rerankerProfiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                {vectorColumnOptions.length > 1 && (
-                  <select
-                    className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[10rem]"
-                    value={vectorColumn}
-                    onChange={(e) => setVectorColumn(e.target.value)}
-                    title="Which vector column to search — this table has more than one embedding"
+          <div className={`flex flex-col text-[length:var(--fs-base)]${!hasSearchResult ? " border-b border-line-soft" : ""}`}>
+            <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+              <div role="radiogroup" aria-label="Search mode" className="flex rounded border border-line overflow-hidden shrink-0">
+                {SEARCH_MODES.map((m, i) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="radio"
+                    title={m.label}
+                    aria-checked={searchMode === m.id}
+                    onClick={() => setSearchMode(m.id)}
+                    className={`flex items-center gap-1 px-2 h-[26px] ${i > 0 ? "border-l border-line" : ""} ${
+                      searchMode === m.id ? "bg-brass/20 text-brass" : "text-muted hover:text-paper hover:bg-ink-950/60"
+                    }`}
                   >
-                    <option value="">Vector: auto</option>
-                    {vectorColumnOptions.map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <input
-                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="min score"
-                  value={minScoreText}
-                  onChange={(e) => setMinScoreText(e.target.value)}
-                  title="Drop results scoring worse than this. Direction-aware: an upper bound on _distance, a lower bound on relevance/rerank scores"
-                />
-                <input
-                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="max gap"
-                  value={maxGapText}
-                  onChange={(e) => setMaxGapText(e.target.value)}
-                  title="Drop results trailing the top result's score by more than this"
-                />
-              </>
-            )}
-            {hasReranker && (
-              <>
-                <select
-                  className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[10rem]"
-                  value={rerankTextColumn}
-                  onChange={(e) => setRerankTextColumn(e.target.value)}
-                  title="Column sent to the reranker as document text — auto prefers a content-named or longest text column"
-                >
-                  <option value="">Rerank col: auto</option>
-                  {rerankColumnOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="top_n"
-                  value={rerankTopN}
-                  onChange={(e) => setRerankTopN(e.target.value)}
-                  title="Rerank top_n"
-                />
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="temp"
-                  value={rerankTemperature}
-                  onChange={(e) => setRerankTemperature(e.target.value)}
-                  title="Rerank temperature"
-                />
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="pool"
-                  value={candidatePool}
-                  onChange={(e) => setCandidatePool(e.target.value)}
-                  title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
-                />
-                <input
-                  className="w-14 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="keep"
-                  value={keepSize}
-                  onChange={(e) => setKeepSize(e.target.value)}
-                  title="Keep size (final result count)"
-                />
-              </>
-            )}
-
-            <div className="flex-1" />
-
-            {searchResult && <span className="text-faint font-mono">{searchRangeLabel}</span>}
-            <button
-              className="px-2.5 py-1 rounded border border-brass-soft bg-brass/15 text-brass hover:bg-brass/25 disabled:opacity-40"
-              disabled={searching || !query.trim()}
-              onClick={() => void runSearch()}
-            >
-              {searching ? "Searching…" : "Run"}
-            </button>
-            {searchResult && (
-              <button className="px-2 py-1 rounded border border-line text-muted hover:text-paper" onClick={() => setSearchResult(null)}>
-                Clear
+                    <m.icon />
+                    {m.short}
+                  </button>
+                ))}
+              </div>
+              <input
+                className="flex-1 basis-48 min-w-[8rem] px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-muted"
+                aria-label="Search query"
+                placeholder={searchMode === "vector" ? "Meaning to search for…" : "Keywords…"}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void runSearch()}
+              />
+              <button
+                className="shrink-0 px-2.5 py-1 rounded border border-brass-soft bg-brass/15 text-brass hover:bg-brass/25 disabled:opacity-40"
+                disabled={searching || !query.trim()}
+                onClick={() => void runSearch()}
+              >
+                {searching ? "Searching…" : "Run"}
               </button>
+              {searchResult && (
+                <button className="shrink-0 px-2 py-1 rounded border border-line text-muted hover:text-paper" onClick={() => setSearchResult(null)}>
+                  Clear
+                </button>
+              )}
+              {searchResult && <span className="shrink-0 text-muted font-mono">{searchRangeLabel}</span>}
+              <button
+                className="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-line text-muted hover:text-paper"
+                aria-expanded={tuningOpen}
+                onClick={() => setTuningOpen(!tuningOpen)}
+              >
+                Tuning{!tuningOpen && tuningChips.length > 0 ? ` (${tuningChips.length})` : ""}
+                <span className={`text-[length:var(--fs-xs)] transition-transform ${tuningOpen ? "rotate-180" : ""}`}>▾</span>
+              </button>
+            </div>
+
+            {!tuningOpen && tuningChips.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 px-3 pb-1.5">
+                {tuningChips.map((c) => (
+                  <span key={c.key} className="inline-flex items-center gap-0.5 rounded-full border border-brass/50 pl-2 text-[length:var(--fs-sm)] text-brass">
+                    <span className="max-w-[18rem] truncate">{c.label}</span>
+                    <IconButton size="sm" title={`Reset ${c.name}`} aria-label={`Reset ${c.name}`} className="h-5 w-5 text-brass hover:text-paper" onClick={c.reset}>
+                      ✕
+                    </IconButton>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {tuningOpen && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 pb-2">
+                <label className={tuneLabel}>
+                  <span className="text-muted">Where</span>
+                  <input
+                    className={`${tuneField} w-56`}
+                    placeholder="year > 2020"
+                    value={whereText}
+                    onChange={(e) => setWhereText(e.target.value)}
+                    title="LanceDB filter predicate applied before the search"
+                  />
+                </label>
+                {searchMode !== "text" && (
+                  <label className={tuneLabel}>
+                    <span className="text-muted">Embedding</span>
+                    <select
+                      className={`${tuneField} pr-7 max-w-[12rem]`}
+                      value={embeddingProfileId}
+                      onChange={(e) => {
+                        profilesTouched.current = true;
+                        setEmbeddingProfileId(e.target.value);
+                      }}
+                      title="Embedding profile (seeded from this connection's default)"
+                    >
+                      <option value="">None</option>
+                      {embeddingProfiles.map((pr) => (
+                        <option key={pr.id} value={pr.id}>
+                          {pr.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {hasEmbedding && vectorColumnOptions.length > 1 && (
+                  <label className={tuneLabel}>
+                    <span className="text-muted">Vector column</span>
+                    <select
+                      className={`${tuneField} pr-7 max-w-[10rem]`}
+                      value={vectorColumn}
+                      onChange={(e) => setVectorColumn(e.target.value)}
+                      title="Which vector column to search — this table has more than one embedding"
+                    >
+                      <option value="">Auto</option>
+                      {vectorColumnOptions.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {hasEmbedding && (
+                  <>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Min score</span>
+                      <input
+                        className={`${tuneField} w-16`}
+                        value={minScoreText}
+                        onChange={(e) => setMinScoreText(e.target.value)}
+                        title="Drop results scoring worse than this. Direction-aware: an upper bound on _distance, a lower bound on relevance/rerank scores"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Max gap</span>
+                      <input
+                        className={`${tuneField} w-16`}
+                        value={maxGapText}
+                        onChange={(e) => setMaxGapText(e.target.value)}
+                        title="Drop results trailing the top result's score by more than this"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Reranker</span>
+                      <select
+                        className={`${tuneField} pr-7 max-w-[12rem]`}
+                        value={rerankerProfileId}
+                        onChange={(e) => {
+                          profilesTouched.current = true;
+                          setRerankerProfileId(e.target.value);
+                        }}
+                        title="Reranker profile (seeded from this connection's default)"
+                      >
+                        <option value="">None</option>
+                        {rerankerProfiles.map((pr) => (
+                          <option key={pr.id} value={pr.id}>
+                            {pr.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
+                {hasReranker && (
+                  <>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Rerank column</span>
+                      <select
+                        className={`${tuneField} pr-7 max-w-[10rem]`}
+                        value={rerankTextColumn}
+                        onChange={(e) => setRerankTextColumn(e.target.value)}
+                        title="Column sent to the reranker as document text — auto prefers a content-named or longest text column"
+                      >
+                        <option value="">Auto</option>
+                        {rerankColumnOptions.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Top n</span>
+                      <input className={`${tuneField} w-14`} value={rerankTopN} onChange={(e) => setRerankTopN(e.target.value)} title="Rerank top_n" />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Temperature</span>
+                      <input
+                        className={`${tuneField} w-14`}
+                        value={rerankTemperature}
+                        onChange={(e) => setRerankTemperature(e.target.value)}
+                        title="Rerank temperature"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Pool</span>
+                      <input
+                        className={`${tuneField} w-14`}
+                        value={candidatePool}
+                        onChange={(e) => setCandidatePool(e.target.value)}
+                        title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Keep</span>
+                      <input className={`${tuneField} w-14`} value={keepSize} onChange={(e) => setKeepSize(e.target.value)} title="Keep size (final result count)" />
+                    </label>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}
 
         {!hasSearchResult && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]">
+          <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]">
             <button
               className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
               disabled={loading || offset === 0 || pendingCount > 0}
@@ -842,7 +947,11 @@ export function TableDataGrid({
               </>
             ) : (
               <span className="text-[length:var(--fs-sm)] text-faint italic">
-                {tab.objectType === "view" ? "Views are read-only." : "No primary key — read-only. Add a PK to edit."}
+                {!canWrite
+                  ? "This connection is read-only."
+                  : tab.objectType === "view"
+                    ? "Views are read-only."
+                    : "No primary key — read-only. Add a PK to edit."}
               </span>
             )}
 
@@ -850,28 +959,32 @@ export function TableDataGrid({
 
             {page && <GridToolbarActions actions={exportActions} onFitColumns={() => fitFnRef.current()} />}
 
-            {pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
-            <button
-              className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
-              disabled={pendingCount === 0}
-              onClick={() => void openReview()}
-            >
-              Review SQL
-            </button>
-            <button
-              className="px-2.5 py-1 rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35"
-              disabled={pendingCount === 0 || committing}
-              onClick={() => void commit()}
-            >
-              {committing ? "Committing…" : "Commit"}
-            </button>
-            <button
-              className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
-              disabled={pendingCount === 0 || committing}
-              onClick={clearPending}
-            >
-              Discard
-            </button>
+            {editable && pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
+            {editable && (
+              <>
+                <button
+                  className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
+                  disabled={pendingCount === 0}
+                  onClick={() => void openReview()}
+                >
+                  Review SQL
+                </button>
+                <button
+                  className="px-2.5 py-1 rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35"
+                  disabled={pendingCount === 0 || committing}
+                  onClick={() => void commit()}
+                >
+                  {committing ? "Committing…" : "Commit"}
+                </button>
+                <button
+                  className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
+                  disabled={pendingCount === 0 || committing}
+                  onClick={clearPending}
+                >
+                  Discard
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

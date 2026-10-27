@@ -397,8 +397,8 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
   );
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-ink-900">
-      <div className="px-5 pt-4 pb-3 flex items-center gap-3 shrink-0">
+    <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col bg-ink-900">
+      <div className="px-5 pt-4 pb-3 flex flex-wrap items-center gap-x-3 gap-y-2 shrink-0">
         <div className="flex items-center gap-1.5">
           {tabBtn("details", "Details")}
           {tabBtn("data", "Data")}

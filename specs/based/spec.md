@@ -3030,11 +3030,15 @@ per-column lookup and the index panel cost one call between them.
 
 For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab's toolbar gains a Browse/Search toggle. Search mode replaces the browse toolbar with: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
 
+**Layout:** the primary row holds only a text-labelled `Vector | Text | Hybrid` mode control (a radio group), the query input, **Run**, **Clear** (after a search), the result count, and a **Tuning** disclosure. The row wraps instead of overflowing, so Run stays visible at 1024px with the Capi rail open. Tuning holds every other control, each with a visible label (Where, Embedding, Vector column, Min score, Max gap, Reranker, Rerank column, Top n, Temperature, Pool, Keep). Collapsed, Tuning shows each non-default value as a chip ("min score 0.5 ✕"); ✕ resets that one value; the toggle shows the chip count. The open/closed state lasts for the window's session. The Data view's edit actions (+, Import CSV, Delete row, Review SQL, Commit, Discard) are hidden when the table, the view, or the connection (`capabilities.write` false) cannot be edited, with one line saying why.
+
 **Verification procedure:**
-1. Open a LanceDB table's Data tab → click Search → the browse toolbar is replaced by search controls
-2. Pick vector mode, enter a query, pick an embedding profile, Run → results render in the grid, read-only
-3. Switch to Browse → the original paginated rows reappear unaffected
-4. Set `min score`/`max gap`/`pool`/`keep` and rerun → the result count and order change accordingly
+1. Open a LanceDB table's Data tab → the primary row shows the mode control, query, Run, and Tuning
+2. Pick vector mode, enter a query, pick an embedding profile under Tuning, Run → results render in the grid, read-only
+3. Clear → the original paginated rows reappear unaffected
+4. Set `min score`/`max gap`/`pool`/`keep` and rerun → the result count and order change accordingly; collapse Tuning → each set value shows as a chip; ✕ on one resets only it
+5. At 1024px wide with the Capi rail open → Run is visible without sideways scroll
+6. On a read-only connection → no Review SQL / Commit / Discard; the row says the connection is read-only
 
 ### BASED-LANCE-SEARCH-PROFILES-UI: Search tab in the settings popover
 **Applies to:** based (ui)
