@@ -316,7 +316,7 @@ Within one window's session, switching to a connection already visited restores 
 **Applies to:** based (core)
 **Test category:** integration
 
-App-wide user preferences (the active theme id; `fontScale`, the app-wide text-size multiplier, see BASED-UI-FONT-ZOOM; and `rowPageSize` — the Table Data view's rows-per-page *and* the tab bar's ad-hoc query fetch-size cap, see BASED-UI-EXEC-PLAN) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
+App-wide user preferences (the active theme id; `fontScale`, the app-wide text-size multiplier, see BASED-UI-FONT-ZOOM; and `rowPageSize` — the Table Data view's rows-per-page *and* the query toolbar's ad-hoc fetch-size cap, see BASED-UI-EXEC-PLAN) shall persist server-side in a single-row `app_settings` table so they survive restart. `GET /api/settings` returns the stored settings merged over defaults (`theme: "ledger"`, `rowPageSize: 500` out of the box); `POST /api/settings` accepts a partial patch, merges it over the current value, persists it, and returns the full settings.
 
 **Acceptance criteria:**
 - Fresh store → `GET /api/settings` returns `{ theme: "ledger", rowPageSize: 500 }`
@@ -1842,14 +1842,14 @@ When a query run completes with status `ok` and the tab's title still matches th
 **Applies to:** based (ui)
 **Test category:** manual
 
-At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Sub-tabs per result set for multi-statement batches. Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the tab bar's fetch-size input value, not a fixed constant).
+At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Sub-tabs per result set for multi-statement batches. Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the query toolbar's fetch-size input value, not a fixed constant).
 
 **Verification procedure:**
 1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 sub-tabs, each with stats
 2. Toggle grid/text views (far left of the toolbar, styled as tabs)
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
-5. Row-cap notice appears once fetched rows exceed the tab bar's fetch-size value
+5. Row-cap notice appears once fetched rows exceed the query toolbar's fetch-size value
 
 ### BASED-GRID-SORT: Client-side column sort in the query results grid
 **Applies to:** based (ui)
@@ -1973,7 +1973,7 @@ or Escape, and clamps to the viewport.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Far right of the document tab bar (`TabStrip`): a compact fetch-size number input (max rows to fetch per run — reuses the app's existing `rowPageSize` setting, default 500, persisted; this is now the *only* place that setting is edited, replacing the page-size `<select>` formerly in the Table Data view), and two checkable icon toggles — **Execution Plan** (captures the actual plan, with runtime stats, on the next run) and **Client Statistics** (captures `STATISTICS TIME, IO` output on the next run) — each with a hover tooltip, styled with the tab bar's active-tab look (brass inset-shadow) when checked. Both toggles are global, not per-tab, and apply to whichever run happens next. When a run captured a plan, a **Plan** tab appears in the results toolbar (BASED-UI-RESULTS) showing an interactive `@xyflow/react` operator-tree diagram: pan (drag), zoom (wheel/pinch), and click a node to open a detail panel (physical/logical operator, estimated vs. actual rows, IO/CPU estimates, subtree cost, object accessed, predicate). A multi-statement run shows a small "Statement 1/2/…" picker above the canvas.
+Beside Run in the query toolbar: a compact "Rows" fetch-size number input (max rows to fetch per run — reuses the app's existing `rowPageSize` setting, default 500, persisted; this is now the *only* place that setting is edited, replacing the page-size `<select>` formerly in the Table Data view). Far right of the document tab bar (`TabStrip`): two checkable icon toggles — **Execution Plan** (captures the actual plan, with runtime stats, on the next run) and **Client Statistics** (captures `STATISTICS TIME, IO` output on the next run) — each with a hover tooltip, styled with the tab bar's active-tab look (brass inset-shadow) when checked. Both toggles are global, not per-tab, and apply to whichever run happens next. When a run captured a plan, a **Plan** tab appears in the results toolbar (BASED-UI-RESULTS) showing an interactive `@xyflow/react` operator-tree diagram: pan (drag), zoom (wheel/pinch), and click a node to open a detail panel (physical/logical operator, estimated vs. actual rows, IO/CPU estimates, subtree cost, object accessed, predicate). A multi-statement run shows a small "Statement 1/2/…" picker above the canvas.
 
 **Verification procedure:**
 1. Type a fetch size, tab away or press Enter → value persists across a restart (`GET /api/settings`)

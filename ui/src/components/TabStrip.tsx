@@ -5,8 +5,6 @@ import { IconButton } from "./IconButton";
 import { CapiMark } from "./icons";
 import { accel } from "../platform";
 
-const MAX_FETCH_SIZE = 50_000;
-
 export function TabStrip() {
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
@@ -16,8 +14,6 @@ export function TabStrip() {
   const reorderTab = useStore((s) => s.reorderTab);
   const newQueryTab = useStore((s) => s.newQueryTab);
   const capabilities = useStore((s) => s.capabilities);
-  const rowPageSize = useStore((s) => s.rowPageSize);
-  const setRowPageSize = useStore((s) => s.setRowPageSize);
   const capturePlan = useStore((s) => s.capturePlan);
   const captureStats = useStore((s) => s.captureStats);
   const toggleCapturePlan = useStore((s) => s.toggleCapturePlan);
@@ -31,7 +27,6 @@ export function TabStrip() {
   // the affordance doesn't flicker (the store's newQueryTab guard makes the click a no-op then).
   const sqlEditor = connected && (capabilities?.sql ?? true);
 
-  const [fetchSizeText, setFetchSizeText] = useState(String(rowPageSize));
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; side: "before" | "after" } | null>(null);
@@ -67,12 +62,6 @@ export function TabStrip() {
       setMenu({ tabId: visible[idx]!.id, x: r.left, y: r.bottom });
     }
   };
-
-  function commitFetchSize(): void {
-    const n = Math.min(MAX_FETCH_SIZE, Math.max(1, Math.floor(Number(fetchSizeText)) || rowPageSize));
-    setFetchSizeText(String(n));
-    if (n !== rowPageSize) setRowPageSize(n);
-  }
 
   const toggleBtn = (active: boolean) =>
     `grid place-items-center h-full w-8 border-l border-line-soft text-[length:var(--fs-md)] shrink-0 ${
@@ -192,22 +181,6 @@ export function TabStrip() {
 
       {connected && (
         <>
-          <label className="self-center flex items-baseline gap-1.5 pl-2 pr-2 border-l border-line-soft select-none">
-            <span className="text-[length:var(--fs-sm)] leading-none text-faint">Rows</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              className="field-sizing-content min-w-8 px-1.5 py-1 border border-line-soft rounded-sm bg-transparent text-[length:var(--fs-sm)] leading-none text-muted font-mono focus:text-paper focus:border-brass focus:outline-none"
-              value={fetchSizeText}
-              title="Max rows to fetch per query run"
-              aria-label="Fetch size"
-              onChange={(e) => setFetchSizeText(e.target.value)}
-              onBlur={commitFetchSize}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              }}
-            />
-          </label>
           <button
             className={toggleBtn(capturePlan)}
             title="Capture actual execution plan on next run"

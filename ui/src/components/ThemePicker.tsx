@@ -101,7 +101,7 @@ function GeneralTab() {
       {/* Traces: BASED-EXPLORER-ACTION — default double-click behavior in the object explorer. */}
       <div className="ledger-label pt-2">Double-click opens</div>
       <label className="block">
-        <span className="text-faint">Tables and views</span>
+        <span className="text-[length:var(--fs-sm)] text-muted">Tables and views</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerTableAction}
@@ -114,7 +114,7 @@ function GeneralTab() {
         </select>
       </label>
       <label className="block">
-        <span className="text-faint">Procedures and functions</span>
+        <span className="text-[length:var(--fs-sm)] text-muted">Procedures and functions</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerRoutineAction}
@@ -1041,7 +1041,7 @@ export function ThemePicker() {
         <GearIcon />
       </IconButton>
       {open && (
-        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] h-[85vh] flex flex-col">
+        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] max-h-[85vh] flex flex-col">
             <div className="flex border-b border-line-soft shrink-0">
               {tabBtn("general", "General")}
               {tabBtn("theme", "Theme")}

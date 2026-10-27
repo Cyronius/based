@@ -509,7 +509,7 @@ preview/mapping card gates it — approval-only, exactly like a mutation.
 <details>
 <summary><b>Themes</b></summary>
 
-33 hand-built themes across three tonal groups — **11 dark**, **11 midtone**, **11 light** — and each
+57 hand-built themes across three tonal groups — **18 dark**, **22 midtone**, **17 light** — and each
 one carries its own **font trio** (display, body, mono), so switching a theme changes the typography,
 not only the palette. The midtone group is the one nobody else ships: mid-luminance backgrounds,
 tinted rather than neutral, with high foreground contrast — dark and light each commit further than

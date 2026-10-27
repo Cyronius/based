@@ -10,6 +10,7 @@ import { CellView } from "./CellView";
 import { ChevronUpIcon } from "./icons";
 import { accel, cancelLabel } from "../platform";
 import { runFromEditor } from "../editorRun";
+import { FetchSizeInput } from "./FetchSizeInput";
 
 type BottomTabId = "output" | "cell";
 
@@ -110,6 +111,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
             ▶ Run
           </button>
         )}
+        <FetchSizeInput />
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
           title={`Open a .sql file (${accel("O")})`}

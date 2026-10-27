@@ -86,7 +86,15 @@ function EmptyState() {
               to begin.
             </>
           ) : (
-            "Pick a connection to begin."
+            <>
+              <button
+                className="text-brass hover:underline"
+                onClick={() => document.querySelector<HTMLElement>('[aria-haspopup="listbox"]')?.click()}
+              >
+                Choose a connection
+              </button>{" "}
+              to begin.
+            </>
           )}
         </div>
       </div>

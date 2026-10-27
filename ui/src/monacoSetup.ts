@@ -6,6 +6,13 @@ self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
 };
 
+// Monaco cancels in-flight work (hover, tokenization) when an editor is disposed and leaves the
+// rejection unhandled; it is expected teardown, not an error.
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e.reason as { name?: string; message?: string } | undefined;
+  if (reason?.name === "Canceled" || reason?.message === "Canceled") e.preventDefault();
+});
+
 // The "based" editor theme is defined from live CSS variables by syncMonacoTheme() (see theme.ts),
 // called at startup in main.tsx and re-applied whenever the app theme changes.
 

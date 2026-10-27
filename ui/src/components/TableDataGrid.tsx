@@ -564,7 +564,7 @@ export function TableDataGrid({
     }
   };
 
-  const rangeLabel = page ? `${page.rows.length === 0 ? 0 : offset + 1}–${offset + page.rows.length}` : "";
+  const rangeLabel = page && page.rows.length > 0 ? `${offset + 1}–${offset + page.rows.length}` : page ? "No rows" : "";
   const searchRangeLabel = searchResult ? `${searchResult.rows.length} row${searchResult.rows.length === 1 ? "" : "s"}` : "";
 
   // Reranking only makes sense over an embedding-scored candidate set; the score thresholds trim
@@ -883,7 +883,7 @@ export function TableDataGrid({
             </button>
             <span className="text-faint font-mono">
               {rangeLabel}
-              {tab.rowCount != null && ` of ${tab.rowCount.toLocaleString()}`}
+              {tab.rowCount != null && page && page.rows.length > 0 && ` of ${tab.rowCount.toLocaleString()}`}
             </span>
             {/* Traces: BASED-LANCE-SCAN, BASED-AGENT-SHOW-RESULTS — the browse predicate is visible
                 and clearable, so a filtered grid never silently looks like the whole table. */}
