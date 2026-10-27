@@ -1,6 +1,6 @@
 import sql from "mssql";
 import type { TokenCredential } from "@azure/identity";
-import { splitBatches } from "./batch";
+import { splitBatchesWithLines } from "./batch";
 import { settingBool, settingStr } from "./connectionSettings";
 import { TSQL_DIALECT, type SqlDialect } from "./dialect";
 import { createCredential, mintSqlToken, type SecretProvider } from "./entra";
@@ -803,7 +803,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   execute(sqlText: string, onChunk: (chunk: QueryChunk) => void, opts: ExecuteOptions = {}): QueryExecution {
-    const batches = splitBatches(sqlText);
+    const batches = splitBatchesWithLines(sqlText);
     let cancelled = false;
     let errored = false;
     let currentRequest: sql.Request | null = null;
@@ -817,7 +817,7 @@ export class MssqlAdapter implements DatabaseAdapter {
         });
         for (const batch of batches) {
           if (cancelled) break;
-          const res = await this.runBatchStream(pool, batch, onChunk, (req) => (currentRequest = req), opts);
+          const res = await this.runBatchStream(pool, batch.text, batch.startLine, onChunk, (req) => (currentRequest = req), opts);
           if (res.errored) errored = true;
           if (res.cancelled) cancelled = true;
         }
@@ -849,6 +849,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   private runBatchStream(
     pool: sql.ConnectionPool,
     batchSql: string,
+    batchStartLine: number,
     onChunk: (chunk: QueryChunk) => void,
     setRequest: (req: sql.Request) => void,
     opts: ExecuteOptions,
@@ -907,7 +908,8 @@ export class MssqlAdapter implements DatabaseAdapter {
           return;
         }
         errored = true;
-        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, code: e?.number });
+        const textLine = e?.lineNumber != null ? batchStartLine + e.lineNumber - 1 : undefined;
+        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, textLine, code: e?.number });
       });
       request.on("done", () => {
         endResultSet();

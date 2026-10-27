@@ -16,6 +16,7 @@ import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { NewTableDialog } from "./components/NewTableDialog";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
+import { ConnectFailureBanner } from "./components/ConnectFailureBanner";
 import { runFromEditor } from "./editorRun";
 import { IconButton } from "./components/IconButton";
 
@@ -259,6 +260,7 @@ export function App() {
       <div className="flex flex-1 min-h-0">
         <LeftRail />
         <main className="flex-1 min-w-0 flex flex-col border-l border-line-soft">
+          <ConnectFailureBanner />
           {banner && (
             <div className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
               <span className="flex-1 font-mono">{banner}</span>

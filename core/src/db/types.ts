@@ -125,7 +125,8 @@ export type QueryChunk =
   | { type: "plan"; format: "showplan-xml"; xml: string }
   | { type: "plan"; format: "duckdb-json"; json: string }
   | { type: "message"; text: string }
-  | { type: "error"; message: string; line?: number; code?: number }
+  /** `line` is batch-relative (as SQL Server reports it); `textLine` is the line in the submitted text. */
+  | { type: "error"; message: string; line?: number; textLine?: number; code?: number }
   | { type: "cancelled" }
   | { type: "done"; durationMs: number; status: "ok" | "error" | "cancelled" };
 

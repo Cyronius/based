@@ -243,25 +243,31 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     broadcast(sid, { type: "connection-status", status, detail: detail ?? null, connectionId: session.connectionId, database: session.database });
   }
 
+  // Traces: BASED-CONN-SWITCH-FAILURE — connect the new adapter first and swap only on success, so
+  // a failed switch leaves the window on its previous, still-working connection.
   async function connectSession(sid: string, connectionId: string, database?: string): Promise<void> {
     const session = getSession(sid);
     const cfg = connections.get(connectionId);
     if (!cfg) throw new Error(`Unknown connection: ${connectionId}`);
-    lsp.closeForSession(sid); // the old engine's LSP backend is wrong for the new connection
-    if (session.adapter) await session.adapter.disconnect().catch(() => {});
-    session.connectionId = connectionId;
-    session.database = database ?? cfg.database;
-    setStatus(sid, "connecting");
-    const adapter = await createAdapter(cfg, getSecret, { database: session.database });
-    adapter.onStatus((status, detail) => setStatus(sid, status, detail));
-    session.adapter = adapter;
+    const nextDatabase = database ?? cfg.database;
+    const adapter = await createAdapter(cfg, getSecret, { database: nextDatabase });
+    // Only the session's current adapter may speak for it; a candidate or a replaced one stays quiet.
+    adapter.onStatus((status, detail) => {
+      if (session.adapter === adapter) setStatus(sid, status, detail);
+    });
     try {
       await adapter.connect();
     } catch (err) {
-      session.adapter = null;
-      setStatus(sid, "disconnected");
+      await adapter.disconnect().catch(() => {});
       throw err;
     }
+    const previous = session.adapter;
+    session.adapter = adapter;
+    session.connectionId = connectionId;
+    session.database = nextDatabase;
+    lsp.closeForSession(sid); // the old engine's LSP backend is wrong for the new connection
+    if (previous) await previous.disconnect().catch(() => {});
+    setStatus(sid, "connected");
     windowState.save(sid, { connectionId });
   }
 

@@ -6,7 +6,7 @@ export { startServer, type ServerOptions, type RunningServer } from "./server";
 export { serializeLanceValue } from "./db/lanceSerialize";
 export { encodeVectorSample, decodeVectorSample } from "./db/vectorWire";
 export { createAdapter, engineOf, testConnection } from "./db/adapterFactory";
-export { splitBatches } from "./db/batch";
+export { splitBatches, splitBatchesWithLines } from "./db/batch";
 export { serializeValue, serializeRow, formatSqlDate } from "./db/serialize";
 export { buildEditCommands, quoteIdent, qualified, type TableChangeSet, type EditColumnMeta } from "./db/tableEdit";
 export { isRetryableError, withReconnect, MAX_RECONNECT_ATTEMPTS } from "./db/retry";

@@ -29,7 +29,7 @@ import {
   setSessionHealer,
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
-import { disposeModel, getModel } from "./editorModels";
+import { disposeModel, getModel, setRunMarkers } from "./editorModels";
 import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { popClosed, pushClosed } from "./lib/closedTabs";
@@ -108,6 +108,8 @@ export interface QueryTabState {
   openedBy?: "capi";
   /** BASED-RUN-SCOPE: editor line where the last run's text starts (1 for a whole-buffer run). */
   runStartLine?: number;
+  /** BASED-UI-QUERY-ERROR: errors from the last run, `line` already mapped to the editor. */
+  queryErrors?: Array<{ message: string; line: number | null }>;
 }
 
 export interface TableTabState {
@@ -209,6 +211,8 @@ export interface AppState {
   newTableOpen: boolean;
   rightRailOpen: boolean;
   banner: string | null;
+  /** BASED-CONN-SWITCH-FAILURE: the last connect that failed, shown with Retry / Edit actions. */
+  connectFailure: { connectionId: string; message: string } | null;
   theme: string;
   rowPageSize: number;
   fontScale: number;
@@ -299,6 +303,7 @@ export interface AppState {
   setNewTableOpen(open: boolean): void;
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
+  dismissConnectFailure(): void;
   insertSqlIntoEditor(sql: string): void;
   /** Returns the new tab's id (so the agent's show_results can report it). */
   runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
@@ -714,6 +719,7 @@ export const useStore = create<AppState>((set, get) => {
     newTableOpen: false,
     rightRailOpen: false,
     banner: null,
+    connectFailure: null,
     theme: themeHint(),
     rowPageSize: 500,
     fontScale: fontScaleHint(),
@@ -876,6 +882,7 @@ export const useStore = create<AppState>((set, get) => {
 
     async connect(connectionId, database) {
       const outgoingId = get().activeConnectionId;
+      const previousStatus = get().status;
       // Traces: BASED-HELP-DOCS — a help tab opened with no connection had nowhere to persist to,
       // and connecting replaces the whole tab set. Carry it into the incoming connection (where it
       // then persists) instead of yanking it out from under someone mid-read. Only from the
@@ -898,7 +905,7 @@ export const useStore = create<AppState>((set, get) => {
           activeTabId: s.activeTabId,
         });
       }
-      set({ status: "connecting", statusDetail: null, banner: null });
+      set({ status: "connecting", statusDetail: null, banner: null, connectFailure: null });
       try {
         const res = await api<ConnectResponse>("/api/session/connect", {
           method: "POST",
@@ -943,7 +950,9 @@ export const useStore = create<AppState>((set, get) => {
         ensureCapiThread(connectionId);
         hydrateTabDetails(tabs);
       } catch (err) {
-        set({ status: "disconnected", banner: err instanceof Error ? err.message : String(err) });
+        // BASED-CONN-SWITCH-FAILURE: the server kept the previous session, so the window stays on it.
+        const message = err instanceof Error ? err.message : String(err);
+        set({ status: outgoingId ? previousStatus : "disconnected", connectFailure: { connectionId, message } });
       }
     },
 
@@ -1246,8 +1255,10 @@ export const useStore = create<AppState>((set, get) => {
           plan: null,
           version: 0,
           runStartLine: opts?.startLine ?? 1,
+          queryErrors: [],
         }),
       });
+      setRunMarkers(id, []);
 
       const patch = (p: Partial<QueryTabState>) => set({ tabs: updateTab(get().tabs, id, p) });
       const current = () => get().tabs.find((t) => t.id === id) as QueryTabState | undefined;
@@ -1294,14 +1305,19 @@ export const useStore = create<AppState>((set, get) => {
               case "message":
                 patch({ output: [...t.output, { kind: "message", text: chunk.text }] });
                 break;
-              case "error":
+              case "error": {
+                const line = chunk.textLine != null ? (opts?.startLine ?? 1) + chunk.textLine - 1 : null;
+                const queryErrors = [...(t.queryErrors ?? []), { message: chunk.message, line }];
+                setRunMarkers(id, queryErrors.flatMap((e) => (e.line != null ? [{ line: e.line, message: e.message }] : [])));
                 patch({
+                  queryErrors,
                   output: [
                     ...t.output,
                     { kind: "error", text: chunk.line != null ? `Error${chunk.code ? ` ${chunk.code}` : ""} (line ${chunk.line}): ${chunk.message}` : chunk.message },
                   ],
                 });
                 break;
+              }
               case "cancelled":
                 patch({ output: [...t.output, { kind: "system", text: "Query cancelled." }] });
                 break;
@@ -1401,6 +1417,10 @@ export const useStore = create<AppState>((set, get) => {
 
     setBanner(banner) {
       set({ banner });
+    },
+
+    dismissConnectFailure() {
+      set({ connectFailure: null });
     },
 
     // Insert agent-generated SQL into the active query tab (creating one if needed). Writes through

@@ -127,6 +127,16 @@ export function ResultsPane({
           ) : (
             <ResultText rs={rs} version={tab.version} />
           )
+        ) : !tab.running && tab.queryErrors && tab.queryErrors.length > 0 ? (
+          // Traces: BASED-UI-QUERY-ERROR — a failed run shows why here, not the "run a query" prompt.
+          <div role="alert" className="h-full overflow-auto px-4 py-3 space-y-2">
+            {tab.queryErrors.map((e, i) => (
+              <div key={i} className="font-mono text-[length:var(--fs-base)] text-err whitespace-pre-wrap break-words">
+                {e.line != null && <span className="text-muted">Line {e.line}: </span>}
+                {e.message}
+              </div>
+            ))}
+          </div>
         ) : (
           <div className="h-full grid place-items-center text-faint text-[length:var(--fs-base)] italic">
             {tab.running ? "Running…" : "No results — run a query (F5)."}

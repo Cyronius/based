@@ -31,6 +31,26 @@ export function getModel(tabId: string, initialContent: string): monaco.editor.I
   return model;
 }
 
+/** Traces: BASED-UI-QUERY-ERROR — error squiggles from the last run; an empty list clears them. */
+export function setRunMarkers(tabId: string, errors: Array<{ line: number; message: string }>): void {
+  const model = models.get(tabId);
+  if (!model || model.isDisposed()) return;
+  monaco.editor.setModelMarkers(
+    model,
+    "based-run",
+    errors
+      .filter((e) => e.line >= 1 && e.line <= model.getLineCount())
+      .map((e) => ({
+        severity: monaco.MarkerSeverity.Error,
+        message: e.message,
+        startLineNumber: e.line,
+        startColumn: model.getLineFirstNonWhitespaceColumn(e.line) || 1,
+        endLineNumber: e.line,
+        endColumn: model.getLineMaxColumn(e.line),
+      })),
+  );
+}
+
 export function disposeModel(tabId: string): void {
   const model = models.get(tabId);
   models.delete(tabId);

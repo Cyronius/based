@@ -334,6 +334,46 @@ function DataView({ tab, searchCapable }: { tab: TableTabState; searchCapable: b
   );
 }
 
+// Traces: BASED-UI-TABLE-TAB-ERROR — an object that can't be read (dropped, renamed, no access)
+// says so and offers a way out, instead of rendering an empty pane.
+function TableTabError({ tab }: { tab: TableTabState }) {
+  const closeTab = useStore((s) => s.closeTab);
+  const refreshObjects = useStore((s) => s.refreshObjects);
+  const name = tab.schema ? `${tab.schema}.${tab.table}` : tab.table;
+  const full = tab.error ?? "";
+  // Driver errors often trail a stack of "Caused by:" frames; lead with the first sentence.
+  const headline = full.split(/\s{2,}Caused by:|\n/)[0]!.trim();
+  return (
+    <div role="alert" className="mx-5 mt-2 max-w-2xl rounded border border-err/30 bg-err/10 px-4 py-3">
+      <div className="text-paper">
+        Couldn't open <span className="font-bold">{name}</span>
+      </div>
+      <div className="mt-1 font-mono text-[length:var(--fs-sm)] text-err whitespace-pre-wrap break-words">{headline}</div>
+      {headline !== full.trim() && (
+        <details className="mt-1 text-[length:var(--fs-sm)] text-muted">
+          <summary className="cursor-pointer hover:text-paper-dim">Full error</summary>
+          <div className="mt-1 font-mono whitespace-pre-wrap break-words">{full}</div>
+        </details>
+      )}
+      <div className="mt-2 text-[length:var(--fs-sm)] text-muted">It may have been dropped or renamed, or this login may not be able to read it.</div>
+      <div className="mt-3 flex gap-2">
+        <button
+          className="px-3 py-1 rounded border border-line text-paper-dim hover:bg-ink-800 text-[length:var(--fs-base)]"
+          onClick={() => closeTab(tab.id)}
+        >
+          Close tab
+        </button>
+        <button
+          className="px-3 py-1 rounded border border-line text-paper-dim hover:bg-ink-800 text-[length:var(--fs-base)]"
+          onClick={() => void refreshObjects()}
+        >
+          Refresh objects
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function TableDetailsView({ tab }: { tab: TableTabState }) {
   const setTableView = useStore((s) => s.setTableView);
   const linkedSqlTab = useStore((s) => s.tabs.find((t) => t.kind === "query" && t.parentTabId === tab.id));
@@ -380,10 +420,16 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
         )}
       </div>
 
-      {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
-      {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
-      {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
-      {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
+      {tab.error && !tab.columns ? (
+        <TableTabError tab={tab} />
+      ) : (
+        <>
+          {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
+          {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
+          {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
+          {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
+        </>
+      )}
     </div>
   );
 }

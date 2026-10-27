@@ -1579,13 +1579,53 @@ Three-region workbench: left rail (connection selector, database selector, schem
 **Applies to:** based (ui)
 **Test category:** manual
 
-Single active connection. "+ New connection" opens a form (name, server, auth type incl. all four, initial database, encrypt/trust-cert, Test Connection, Save); edit affordance opens the same form pre-filled with Delete + confirmation. Switching connections swaps the tab set. Database selector reconnects to the chosen database; schema dropdown: empty = all schemas with `schema.name` prefixes, a selection filters and drops the prefix.
+Single active connection. A failed connect or switch never drops the working one (`BASED-CONN-SWITCH-FAILURE`). "+ New connection" opens a form (name, server, auth type incl. all four, initial database, encrypt/trust-cert, Test Connection, Save); edit affordance opens the same form pre-filled with Delete + confirmation. Switching connections swaps the tab set. Database selector reconnects to the chosen database; schema dropdown: empty = all schemas with `schema.name` prefixes, a selection filters and drops the prefix.
 
 **Verification procedure:**
 1. Create a connection (azure-cli auth) → Test Connection succeeds → Save → it appears in the selector and survives app restart
 2. Edit it (rename) → name updates; Delete asks for confirmation
 3. Connect → database dropdown lists server databases; switching databases refreshes the explorer
 4. Schema dropdown "All schemas" shows `dbo.X` style names; choosing `dbo` drops the prefix and filters
+
+### BASED-CONN-SWITCH-FAILURE: A failed switch keeps the working connection
+**Applies to:** based (core, ui)
+**Test category:** integration + manual
+
+`connectSession` builds and connects the new adapter first. Only on success does it replace the
+session's adapter, connection id, and database, close the old adapter and LSP backend, and save
+window state. On failure the new adapter is closed and the session keeps its previous adapter,
+connection, and status; the error goes back to the caller. Only the session's current adapter may
+broadcast status, so a candidate or replaced adapter cannot move the window's status. The UI keeps
+its previous state (tabs, explorer, status) and shows a banner: "Couldn't connect to **{name}** —
+{plain reason} · still on {current name}", the raw driver text under it
+(`BASED-CONN-ERROR-TEXT`), and **Retry** / **Edit connection…** actions.
+
+**Acceptance criteria (integration — `integration.server.test.ts`):** connect to a good LanceDB
+connection; connect the same sid to a connection whose folder does not exist → the call fails with
+"Folder not found"; the session still lists the first connection's tables, and window state still
+names the first connection.
+
+**Verification procedure (manual):** connected to a working connection, pick a connection whose
+server is down → the banner names it with a plain reason; the explorer, tabs, and status bar still
+show the first connection, and a query on it still runs; Retry tries again; Edit connection… opens
+the dialog for the failed one.
+
+### BASED-CONN-ERROR-TEXT: Plain-language connect errors
+**Applies to:** based (ui)
+**Test category:** unit
+
+`describeConnectError(message)` (`ui/src/lib/connectError.ts`) maps known driver messages to one
+plain sentence and keeps the raw message as `detail`. An unknown message passes through unchanged
+with no detail.
+
+**Acceptance criteria (`unit.connectError.test.ts`):**
+- `Failed to connect to localhost:15433 - Could not connect (sequence)` → "Server not reachable at localhost:15433", raw text as detail
+- `Login failed for user 'sa'.` → "Login failed for sa"
+- `getaddrinfo ENOTFOUND host` → "Server name not found: host"
+- Snowflake wrong password / missing role → "Incorrect username or password" / "Role X does not exist or is not granted to this user"
+- Azure CLI credential failure → "Azure CLI sign-in needed — run az login"
+- `Folder not found: "…"` → "Folder not found: …"; `ETIMEDOUT` → "Connection timed out"
+- Anything else → unchanged, `detail: null`
 
 ### BASED-WINDOW-IDENTITY: Each window names its connection
 **Applies to:** based (ui, shell-tauri)
@@ -1910,12 +1950,44 @@ Far right of the document tab bar (`TabStrip`): a compact fetch-size number inpu
 **Applies to:** based (ui)
 **Test category:** manual
 
-Errors (syntax, permissions, timeout) appear as readable text in the Output pane; a dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
+Errors (syntax, permissions, timeout) appear as readable text in the Output pane, and also in the results pane and as editor squiggles (`BASED-UI-QUERY-ERROR`); a dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
 
 **Verification procedure:**
 1. Run `SELECT FROM` → syntax error text in Output, tab flips to Output pane
 2. Run `SELECT 1/0` → divide-by-zero message
 3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
+
+### BASED-UI-QUERY-ERROR: A failed run says why where the results would be
+**Applies to:** based (ui, core)
+**Test category:** manual (batch-line mapping: unit)
+
+When a run fails with no result set, the results pane shows each error's text (line breaks kept)
+instead of the "run a query" prompt. When the error has a line, the editor marks that line with an
+error squiggle whose hover shows the message; the next run clears the marks. SQL Server reports
+lines relative to the GO batch, so core adds `textLine` — the line in the submitted text, from
+`splitBatchesWithLines` — and the UI adds the line where the run's text started in the editor
+(`BASED-RUN-SCOPE`). The Output pane keeps the batch-relative `Error N (line L): …` text.
+
+**Acceptance criteria (unit — `unit.batch.test.ts`):** `splitBatchesWithLines` returns each trimmed
+batch with the 1-based line of its first non-blank line in the submitted text.
+
+**Verification procedure:**
+1. Run `SELECT * FROM no_such_table` → the results pane shows the error text, not "No results"
+2. On SQL Server, run three lines, then `GO`, then a line with `SELECT FROM` → the squiggle is on
+   the `SELECT FROM` line; hover shows the message; run again after a fix → the squiggle is gone
+3. Select only that bad line and press F5 → the squiggle lands on the same editor line
+
+### BASED-UI-TABLE-TAB-ERROR: An unreadable table tab says so
+**Applies to:** based (ui)
+**Test category:** manual
+
+When a table or view tab cannot load its columns (dropped, renamed, no permission — typical after
+restore), the tab shows "Couldn't open {name}", the first sentence of the error (the full text
+behind a "Full error" disclosure), a short list of likely causes, and **Close tab** /
+**Refresh objects**, instead of an empty pane.
+
+**Verification procedure:** open a table, drop or rename it outside based, restart, select the
+restored tab → the error state shows; Close tab closes it.
 
 ### BASED-UI-SESSION-RESUME: Auto-resume a lost server session
 **Applies to:** based (ui), based (core)
@@ -2433,11 +2505,12 @@ Adapter selection resolves through the engine registry (BASED-ENGINE-REGISTRY) r
 
 The LanceDB adapter shall connect file-based (uri = a directory) and cloud (`db://slug` + API key from the secret channel + region), and `probe()` reports ok with a LanceDB server string or an error.
 
-A local directory that exists but contains no entries at all connects as an empty single-db database (the bootstrap path for creating a brand-new database from nothing, BASED-LANCE-CREATE-TABLE). A directory with content but no LanceDB tables anywhere still errors — pointing a connection at an arbitrary populated folder stays a mistake, not an empty database.
+A local path that does not exist fails with `Folder not found: "<path>"` and creates nothing, so a typo never becomes a new, empty database. A local directory that exists but contains no entries at all connects as an empty single-db database (the bootstrap path for creating a brand-new database from nothing, BASED-LANCE-CREATE-TABLE). A directory with content but no LanceDB tables anywhere still errors — pointing a connection at an arbitrary populated folder stays a mistake, not an empty database.
 
 **Acceptance criteria:**
 - A local dir probe returns `ok: true` with a `serverVersion` matching `/LanceDB/`
 - An existing directory with zero entries connects; `listObjects()` returns `[]`
+- A path that does not exist → probe `ok: false`, error matches `Folder not found`, and no directory is created
 - Cloud connect (opt-in, env-gated `BASED_LANCE_CLOUD_URI`/`_KEY`; self-skips otherwise) connects and lists tables
 
 ### BASED-LANCE-BROWSE: List tables, columns (incl. vectors), page rows
