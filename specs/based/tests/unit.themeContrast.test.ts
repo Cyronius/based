@@ -29,3 +29,15 @@ describe("BASED-THEME-CONTRAST: muted and faint text reach 4.5:1", () => {
     });
   }
 });
+
+// Traces: BASED-FOCUS-VISIBLE — the focus ring is drawn in the accent color; WCAG non-text contrast is 3:1.
+describe("BASED-FOCUS-VISIBLE: the focus ring reaches 3:1", () => {
+  for (const theme of THEMES) {
+    test(theme.id, () => {
+      const t = theme.tokens;
+      for (const surface of ["bg0", "bg1", "bg2"] as const) {
+        expect(contrast(t.accent, t[surface])).toBeGreaterThanOrEqual(3);
+      }
+    });
+  }
+});

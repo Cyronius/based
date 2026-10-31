@@ -6,6 +6,7 @@
 //
 // Adding or removing a theme is a data edit here — no CSS duplication.
 import type { Theme as GridTheme } from "@glideapps/glide-data-grid";
+import { themeFontUrl } from "./lib/themeFonts";
 
 type Monaco = typeof import("monaco-editor");
 
@@ -92,13 +93,13 @@ export const THEMES: ThemeDef[] = [
   { id: "slate-noon", label: "Slate Noon", mode: "dark", tone: "midtone", fonts: [SANS("Space Grotesk"), SANS("IBM Plex Sans"), MONO("JetBrains Mono")],
     tokens: { bg0: "#363b42", bg1: "#40464e", bg2: "#4b525b", bg3: "#575e68", line: "#626a74", lineSoft: "#4b525b", text: "#f2f4f6", textDim: "#c7ccd2", muted: "#d4d7db", faint: "#c2c6ca", accent: "#5fb0e8", ok: "#7fc98a", err: "#e2776a", info: "#7fb0e0" } },
   { id: "terracotta-dusk", label: "Terracotta Dusk", mode: "dark", tone: "midtone", fonts: [SERIF("Fraunces"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
-    tokens: { bg0: "#423731", bg1: "#4d4139", bg2: "#594c42", bg3: "#66584c", line: "#6b5b4d", lineSoft: "#524438", text: "#f7ede2", textDim: "#d9c2ac", muted: "#dad1c8", faint: "#cdc0b3", accent: "#e2793f", ok: "#8fbf6a", err: "#e2705f", info: "#7fa8c9" } },
+    tokens: { bg0: "#423731", bg1: "#4d4139", bg2: "#594c42", bg3: "#66584c", line: "#6b5b4d", lineSoft: "#524438", text: "#f7ede2", textDim: "#d9c2ac", muted: "#dad1c8", faint: "#cdc0b3", accent: "#e58550", ok: "#8fbf6a", err: "#e2705f", info: "#7fa8c9" } },
   { id: "moss-fog", label: "Moss Fog", mode: "dark", tone: "midtone", fonts: [SERIF("Newsreader"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
     tokens: { bg0: "#363f34", bg1: "#414a3e", bg2: "#4c5648", bg3: "#576352", line: "#576352", lineSoft: "#46503f", text: "#eef2e8", textDim: "#c4cfba", muted: "#d6dbd1", faint: "#c5cbbd", accent: "#7bc25c", ok: "#7bc25c", err: "#d97a63", info: "#7fa8c9" } },
   { id: "graphite-ember", label: "Graphite Ember", mode: "dark", tone: "midtone", fonts: [SERIF("Spectral"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
     tokens: { bg0: "#332d28", bg1: "#3d3630", bg2: "#47403a", bg3: "#524a42", line: "#5c5045", lineSoft: "#453c34", text: "#f5efe6", textDim: "#d3c3ae", muted: "#c6b9ac", faint: "#bcac9b", accent: "#e8a33d", ok: "#8fbf6a", err: "#d97361", info: "#7fa0c4" } },
   { id: "concrete-violet", label: "Concrete Violet", mode: "dark", tone: "midtone", fonts: [SANS("Space Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
-    tokens: { bg0: "#3a3742", bg1: "#45414d", bg2: "#504c59", bg3: "#5c5765", line: "#665f74", lineSoft: "#4d495a", text: "#f1eff6", textDim: "#cbc6d6", muted: "#d2cfd9", faint: "#c2bfcb", accent: "#a97fe0", ok: "#7fc98a", err: "#e2776a", info: "#8ea3f0" } },
+    tokens: { bg0: "#3a3742", bg1: "#45414d", bg2: "#504c59", bg3: "#5c5765", line: "#665f74", lineSoft: "#4d495a", text: "#f1eff6", textDim: "#cbc6d6", muted: "#d2cfd9", faint: "#c2bfcb", accent: "#b28ce3", ok: "#7fc98a", err: "#e2776a", info: "#8ea3f0" } },
   { id: "sandstone-teal", label: "Sandstone Teal", mode: "dark", tone: "midtone", fonts: [SANS("Hanken Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
     tokens: { bg0: "#423b2e", bg1: "#4d4536", bg2: "#584f3f", bg3: "#635948", line: "#6b5e48", lineSoft: "#524836", text: "#f6efe1", textDim: "#d6c7a9", muted: "#d9d1c4", faint: "#cdc3b1", accent: "#35b0a4", ok: "#8fbf6a", err: "#d9704f", info: "#6fa8c0" } },
   { id: "blue-hour", label: "Blue Hour", mode: "dark", tone: "midtone", fonts: [SERIF("Fraunces"), SANS("IBM Plex Sans"), MONO("JetBrains Mono")],
@@ -106,7 +107,7 @@ export const THEMES: ThemeDef[] = [
   { id: "clay-ash", label: "Clay Ash", mode: "dark", tone: "midtone", fonts: [SERIF("Newsreader"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
     tokens: { bg0: "#3e3230", bg1: "#493c39", bg2: "#544642", bg3: "#60504b", line: "#6b5651", lineSoft: "#52423e", text: "#f5e9e5", textDim: "#d6bcb5", muted: "#d2c4c1", faint: "#c8b6b2", accent: "#7ba36b", ok: "#7ba36b", err: "#d9705a", info: "#7fa0c4" } },
   { id: "rosewood", label: "Rosewood", mode: "dark", tone: "midtone", fonts: [SERIF("Fraunces"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
-    tokens: { bg0: "#3d3034", bg1: "#483a3e", bg2: "#544349", bg3: "#604c53", line: "#6b535a", lineSoft: "#4f4046", text: "#f5e9ec", textDim: "#d6bcc2", muted: "#cec0c3", faint: "#c5b3b7", accent: "#c25a75", ok: "#8fbf6a", err: "#d9705f", info: "#7fa0c4" } },
+    tokens: { bg0: "#3d3034", bg1: "#483a3e", bg2: "#544349", bg3: "#604c53", line: "#6b535a", lineSoft: "#4f4046", text: "#f5e9ec", textDim: "#d6bcc2", muted: "#cec0c3", faint: "#c5b3b7", accent: "#cf7d92", ok: "#8fbf6a", err: "#d9705f", info: "#7fa0c4" } },
   { id: "coastal-slate", label: "Coastal Slate", mode: "dark", tone: "midtone", fonts: [SERIF("Zilla Slab"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
     tokens: { bg0: "#2e3a3c", bg1: "#384547", bg2: "#425052", bg3: "#4d5c5e", line: "#576769", lineSoft: "#414f51", text: "#e9f2f2", textDim: "#c0d0d0", muted: "#c8d2d2", faint: "#b5c3c3", accent: "#4fb0a0", ok: "#4fb0a0", err: "#e2776a", info: "#7fa0c4" } },
   { id: "radium-bloom", label: "Radium Bloom", mode: "dark", tone: "midtone", fonts: [SANS("Audiowide"), SANS("Outfit"), MONO("JetBrains Mono")],
@@ -114,11 +115,11 @@ export const THEMES: ThemeDef[] = [
   { id: "thundercloud", label: "Thundercloud", mode: "dark", tone: "midtone", fonts: [SANS("Oswald"), SANS("Source Sans 3"), MONO("Cousine")],
     tokens: { bg0: "#333a45", bg1: "#3e4653", bg2: "#49515f", bg3: "#555e6d", line: "#646e80", lineSoft: "#49515e", text: "#f1f5f9", textDim: "#ced6df", muted: "#ced4dc", faint: "#bfc5cf", accent: "#ffd23f", ok: "#7fc98a", err: "#e57373", info: "#7fb3e8" } },
   { id: "ink-wash", label: "Ink Wash", mode: "dark", tone: "midtone", fonts: [SERIF("Noto Serif JP"), SANS("Zen Maru Gothic"), MONO("M PLUS 1 Code")],
-    tokens: { bg0: "#3b3b38", bg1: "#454542", bg2: "#504f4c", bg3: "#5c5b57", line: "#6a6965", lineSoft: "#4b4a47", text: "#f4f2ee", textDim: "#d9d4cd", muted: "#d0ccc5", faint: "#c5c2bc", accent: "#f2422e", ok: "#7fb573", err: "#c22e20", info: "#6f9fb5" } },
+    tokens: { bg0: "#3b3b38", bg1: "#454542", bg2: "#504f4c", bg3: "#5c5b57", line: "#6a6965", lineSoft: "#4b4a47", text: "#f4f2ee", textDim: "#d9d4cd", muted: "#d0ccc5", faint: "#c5c2bc", accent: "#f6796b", ok: "#7fb573", err: "#c22e20", info: "#6f9fb5" } },
   { id: "lava-lamp", label: "Lava Lamp", mode: "dark", tone: "midtone", fonts: [SERIF("Caprasimo"), SANS("Baloo 2"), MONO("Azeret Mono")],
     tokens: { bg0: "#46344e", bg1: "#523d5b", bg2: "#5e4768", bg3: "#6b5276", line: "#7b6087", lineSoft: "#584261", text: "#f7eef9", textDim: "#e1cde8", muted: "#dccce2", faint: "#cfbdd5", accent: "#ff8c3a", ok: "#a8d94f", err: "#ff5a6b", info: "#6fb8e8" } },
   { id: "marrakech", label: "Marrakech", mode: "dark", tone: "midtone", fonts: [SERIF("Amiri"), SANS("Rubik"), MONO("Cousine")],
-    tokens: { bg0: "#5c4326", bg1: "#694e2e", bg2: "#775a37", bg3: "#856640", line: "#957447", lineSoft: "#6d5231", text: "#fbf1df", textDim: "#ecd4ab", muted: "#e9dabe", faint: "#e8dac0", accent: "#4a6bff", ok: "#8fb573", err: "#d9503f", info: "#3fbfb0" } },
+    tokens: { bg0: "#5c4326", bg1: "#694e2e", bg2: "#775a37", bg3: "#856640", line: "#957447", lineSoft: "#6d5231", text: "#fbf1df", textDim: "#ecd4ab", muted: "#e9dabe", faint: "#e8dac0", accent: "#9fb1ff", ok: "#8fb573", err: "#d9503f", info: "#3fbfb0" } },
   { id: "canyon", label: "Canyon", mode: "dark", tone: "midtone", fonts: [SERIF("Eczar"), SANS("Rubik"), MONO("PT Mono")],
     tokens: { bg0: "#5a3d31", bg1: "#66473a", bg2: "#735244", bg3: "#7f5d4e", line: "#8e6b5a", lineSoft: "#6a4b3d", text: "#faeee5", textDim: "#e6cdb9", muted: "#e3d3c6", faint: "#e1cfc3", accent: "#5fb8e8", ok: "#93bf6a", err: "#e05a45", info: "#8fc9e8" } },
   { id: "periwinkle-dusk", label: "Periwinkle Dusk", mode: "dark", tone: "midtone", fonts: [SERIF("Lora"), SANS("Mulish"), MONO("Azeret Mono")],
@@ -134,14 +135,14 @@ export const THEMES: ThemeDef[] = [
   // picker still groups them under Midtone — groupOf() branches on tone before mode. Their ramp runs
   // the light-theme direction too: bg1 is the lightest surface, bg2/bg3 step *down* into it.
   { id: "kraft", label: "Kraft", mode: "light", tone: "midtone", fonts: [SERIF("Zilla Slab"), SANS("Instrument Sans"), MONO("Fragment Mono")],
-    tokens: { bg0: "#ae9971", bg1: "#bfa87f", bg2: "#b39c72", bg3: "#a68f66", line: "#86714b", lineSoft: "#b7a077", text: "#241c10", textDim: "#3b2f1b", muted: "#3c311c", faint: "#3c311e", accent: "#8f2c14", ok: "#35631f", err: "#a03018", info: "#1f4f7a" } },
+    tokens: { bg0: "#ae9971", bg1: "#bfa87f", bg2: "#b39c72", bg3: "#a68f66", line: "#86714b", lineSoft: "#b7a077", text: "#241c10", textDim: "#3b2f1b", muted: "#3c311c", faint: "#3c311e", accent: "#8c2b14", ok: "#35631f", err: "#a03018", info: "#1f4f7a" } },
   { id: "sage-chalk", label: "Sage Chalk", mode: "light", tone: "midtone", fonts: [SERIF("Newsreader"), SANS("Karla"), MONO("Sometype Mono")],
-    tokens: { bg0: "#94a890", bg1: "#a3b79f", bg2: "#99ad95", bg3: "#8da189", line: "#74896f", lineSoft: "#9db19a", text: "#131e15", textDim: "#26332a", muted: "#2d3b2f", faint: "#2c3b2e", accent: "#8f3a63", ok: "#24632f", err: "#96301f", info: "#23557a" } },
+    tokens: { bg0: "#94a890", bg1: "#a3b79f", bg2: "#99ad95", bg3: "#8da189", line: "#74896f", lineSoft: "#9db19a", text: "#131e15", textDim: "#26332a", muted: "#2d3b2f", faint: "#2c3b2e", accent: "#85365c", ok: "#24632f", err: "#96301f", info: "#23557a" } },
   // ── light ──
   { id: "porcelain", label: "Porcelain", mode: "light", fonts: [SANS("Hanken Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
     tokens: { bg0: "#eef0f3", bg1: "#f8f9fb", bg2: "#eaedf1", bg3: "#dfe3e9", line: "#d3d8e0", lineSoft: "#e5e8ee", text: "#1e242c", textDim: "#3d4652", muted: "#5e6671", faint: "#606b7a", accent: "#3a6ea5", ok: "#3f8a5a", err: "#c0503f", info: "#4f7fb0" } },
   { id: "solarized-light", label: "Solarized Light", mode: "light", fonts: [SERIF("Newsreader"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
-    tokens: { bg0: "#eee8d5", bg1: "#fdf6e3", bg2: "#e7e0cc", bg3: "#dcd4bd", line: "#cfc8ad", lineSoft: "#e0d9c2", text: "#073642", textDim: "#586e75", muted: "#4e5f65", faint: "#506669", accent: "#b58900", ok: "#859900", err: "#dc322f", info: "#268bd2" } },
+    tokens: { bg0: "#eee8d5", bg1: "#fdf6e3", bg2: "#e7e0cc", bg3: "#dcd4bd", line: "#cfc8ad", lineSoft: "#e0d9c2", text: "#073642", textDim: "#586e75", muted: "#4e5f65", faint: "#506669", accent: "#9f7900", ok: "#859900", err: "#dc322f", info: "#268bd2" } },
   { id: "mint-ledger", label: "Mint Ledger", mode: "light", fonts: [SANS("Hanken Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
     tokens: { bg0: "#e6ede8", bg1: "#f2f7f3", bg2: "#dfe9e2", bg3: "#d1ded5", line: "#c3d3c8", lineSoft: "#dbe6df", text: "#1f2a24", textDim: "#3b4a41", muted: "#54635a", faint: "#586a5e", accent: "#2f8f5f", ok: "#3f9a5f", err: "#c0503f", info: "#3d7f96" } },
   { id: "blush-slate", label: "Blush Slate", mode: "light", fonts: [SERIF("Fraunces"), SANS("IBM Plex Sans"), MONO("JetBrains Mono")],
@@ -153,15 +154,15 @@ export const THEMES: ThemeDef[] = [
   { id: "tater", label: "Tater Dog", mode: "light", fonts: [SANS("Quicksand"), SANS("Quicksand"), MONO("JetBrains Mono")],
     tokens: { bg0: "#bce0c8", bg1: "#ffffff", bg2: "#d6ecdd", bg3: "#e0c89a", line: "#2a2620", lineSoft: "#cfe0d4", text: "#1a1714", textDim: "#3f342a", muted: "#594531", faint: "#665b4a", accent: "#7a4424", ok: "#3f7d4a", err: "#c0432b", info: "#3a6b8f" } },
   { id: "marigold", label: "Marigold", mode: "light", fonts: [SANS("Manrope"), SANS("Manrope"), MONO("IBM Plex Mono")],
-    tokens: { bg0: "#f2e9c8", bg1: "#fbf6e2", bg2: "#eee0ad", bg3: "#e3d18e", line: "#d3bb6c", lineSoft: "#e8d9a2", text: "#2b2308", textDim: "#4a3d14", muted: "#6a582a", faint: "#706039", accent: "#d9821f", ok: "#4f8a4f", err: "#c04a3a", info: "#3d7f96" } },
+    tokens: { bg0: "#f2e9c8", bg1: "#fbf6e2", bg2: "#eee0ad", bg3: "#e3d18e", line: "#d3bb6c", lineSoft: "#e8d9a2", text: "#2b2308", textDim: "#4a3d14", muted: "#6a582a", faint: "#706039", accent: "#b66d1a", ok: "#4f8a4f", err: "#c04a3a", info: "#3d7f96" } },
   { id: "coral-reef", label: "Coral Reef", mode: "light", fonts: [SANS("Hanken Grotesk"), SANS("Hanken Grotesk"), MONO("JetBrains Mono")],
-    tokens: { bg0: "#dcece8", bg1: "#eefaf6", bg2: "#d2e7e1", bg3: "#bfdad2", line: "#a6c9be", lineSoft: "#cbe2da", text: "#16241f", textDim: "#33453d", muted: "#4b6058", faint: "#4e695d", accent: "#d9634a", ok: "#3f9a6f", err: "#d9634a", info: "#2f9aa0" } },
+    tokens: { bg0: "#dcece8", bg1: "#eefaf6", bg2: "#d2e7e1", bg3: "#bfdad2", line: "#a6c9be", lineSoft: "#cbe2da", text: "#16241f", textDim: "#33453d", muted: "#4b6058", faint: "#4e695d", accent: "#ce5e46", ok: "#3f9a6f", err: "#d9634a", info: "#2f9aa0" } },
   { id: "wheatfield", label: "Wheatfield", mode: "light", fonts: [SERIF("Zilla Slab"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
-    tokens: { bg0: "#e9dfc4", bg1: "#f7efd9", bg2: "#e0d1a4", bg3: "#d4bf85", line: "#c2a862", lineSoft: "#dccb96", text: "#26200f", textDim: "#473c1f", muted: "#594e2e", faint: "#64583a", accent: "#a3701f", ok: "#4f8a4f", err: "#bf503f", info: "#3d7f96" } },
+    tokens: { bg0: "#e9dfc4", bg1: "#f7efd9", bg2: "#e0d1a4", bg3: "#d4bf85", line: "#c2a862", lineSoft: "#dccb96", text: "#26200f", textDim: "#473c1f", muted: "#594e2e", faint: "#64583a", accent: "#9b6a1d", ok: "#4f8a4f", err: "#bf503f", info: "#3d7f96" } },
   { id: "lilac-frost", label: "Lilac Frost", mode: "light", fonts: [SERIF("Fraunces"), SANS("IBM Plex Sans"), MONO("IBM Plex Mono")],
     tokens: { bg0: "#e9e4ee", bg1: "#f8f5fb", bg2: "#e1dbec", bg3: "#d3c9e3", line: "#c0b0d6", lineSoft: "#ddd3ea", text: "#211c2b", textDim: "#423a4e", muted: "#5b536c", faint: "#685a7d", accent: "#7a4fb0", ok: "#4f8a5f", err: "#bf5060", info: "#4f6fb0" } },
   { id: "riso-zine", label: "Riso Zine", mode: "light", fonts: [SANS("Anton"), SANS("Instrument Sans"), MONO("Fragment Mono")],
-    tokens: { bg0: "#f2ede1", bg1: "#faf6eb", bg2: "#ece5d4", bg3: "#e0d6c0", line: "#cbbfa2", lineSoft: "#e4dbc6", text: "#232a45", textDim: "#3e4562", muted: "#5c6280", faint: "#5f647f", accent: "#ff48b0", ok: "#00a87e", err: "#ff4438", info: "#2f6bce" } },
+    tokens: { bg0: "#f2ede1", bg1: "#faf6eb", bg2: "#ece5d4", bg3: "#e0d6c0", line: "#cbbfa2", lineSoft: "#e4dbc6", text: "#232a45", textDim: "#3e4562", muted: "#5c6280", faint: "#5f647f", accent: "#e03f9b", ok: "#00a87e", err: "#ff4438", info: "#2f6bce" } },
   { id: "sky-atlas", label: "Sky Atlas", mode: "light", fonts: [SERIF("Playfair Display"), SANS("Alegreya Sans"), MONO("Cousine")],
     tokens: { bg0: "#dfe9f0", bg1: "#edf4f9", bg2: "#d5e2ec", bg3: "#c5d6e3", line: "#aac2d5", lineSoft: "#cfdee8", text: "#1a2733", textDim: "#36495b", muted: "#4f6477", faint: "#506477", accent: "#e04e2a", ok: "#3f8a5f", err: "#c93318", info: "#2f7fb5" } },
   { id: "pistachio", label: "Pistachio Gelato", mode: "light", fonts: [SERIF("Shrikhand"), SANS("Varela Round"), MONO("Sometype Mono")],
@@ -171,7 +172,7 @@ export const THEMES: ThemeDef[] = [
   { id: "jadeite", label: "Jadeite Diner", mode: "light", fonts: [SANS("Righteous"), SANS("Varela Round"), MONO("Cousine")],
     tokens: { bg0: "#cfe5d9", bg1: "#e2f2e8", bg2: "#c1dbce", bg3: "#afcfbf", line: "#8cb8a2", lineSoft: "#bad7c8", text: "#17332b", textDim: "#345349", muted: "#456158", faint: "#426156", accent: "#d92f4b", ok: "#2f8a5f", err: "#c02838", info: "#3f7fa8" } },
   { id: "tangerine", label: "Tangerine", mode: "light", fonts: [SANS("Unbounded"), SANS("Schibsted Grotesk"), MONO("Red Hat Mono")],
-    tokens: { bg0: "#eeeff1", bg1: "#f9fafb", bg2: "#e8eaed", bg3: "#dbdee3", line: "#c5cad2", lineSoft: "#e1e4e9", text: "#1d2126", textDim: "#3b4149", muted: "#5a626c", faint: "#606974", accent: "#f26419", ok: "#3f9a5f", err: "#d93f2a", info: "#3f7fc9" } },
+    tokens: { bg0: "#eeeff1", bg1: "#f9fafb", bg2: "#e8eaed", bg3: "#dbdee3", line: "#c5cad2", lineSoft: "#e1e4e9", text: "#1d2126", textDim: "#3b4149", muted: "#5a626c", faint: "#606974", accent: "#df5c17", ok: "#3f9a5f", err: "#d93f2a", info: "#3f7fc9" } },
 ];
 
 export const THEME_IDS = THEMES.map((t) => t.id);
@@ -236,10 +237,24 @@ let currentId = DEFAULT_THEME_ID;
 
 /** Apply a theme by writing its tokens onto <html>. Also caches the id in localStorage as a
  *  first-paint hint so the next launch renders correctly before the server value loads. */
+function loadThemeFonts(t: ThemeDef): void {
+  const href = themeFontUrl(t);
+  if (!href) return;
+  let link = document.getElementById("theme-fonts") as HTMLLinkElement | null;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "theme-fonts";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  if (link.getAttribute("href") !== href) link.setAttribute("href", href);
+}
+
 export function applyTheme(id: string): void {
   const t = themeDef(id);
   currentId = t.id;
   writeVars(document.documentElement, t);
+  loadThemeFonts(t);
   try {
     localStorage.setItem(THEME_HINT_KEY, t.id);
   } catch {

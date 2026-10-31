@@ -11,6 +11,7 @@ import { TableDetailsView } from "./components/TableDetailsView";
 import { RoutineDetailsView } from "./components/RoutineDetailsView";
 import { DiagramView } from "./components/DiagramView";
 import { DocsView } from "./components/DocsView";
+import { ErrorBoundary, ErrorPanel, panelBtn } from "./components/ErrorBoundary";
 import { RightRail } from "./components/RightRail";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
@@ -283,12 +284,25 @@ export function App() {
           {activeConnectionId || activeTab?.kind === "docs" ? (
             <>
               <TabStrip />
-              {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
-              {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
-              {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
-              {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
-              {activeTab?.kind === "docs" && <DocsView />}
-              {!activeTab && <div className="flex-1" />}
+              <ErrorBoundary
+                resetKey={activeTab?.id}
+                fallback={(error) => (
+                  <ErrorPanel title="This tab failed to draw." error={error}>
+                    {activeTab && (
+                      <button className={panelBtn} onClick={() => useStore.getState().closeTab(activeTab.id)}>
+                        Close tab
+                      </button>
+                    )}
+                  </ErrorPanel>
+                )}
+              >
+                {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
+                {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
+                {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
+                {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
+                {activeTab?.kind === "docs" && <DocsView />}
+                {!activeTab && <div className="flex-1" />}
+              </ErrorBoundary>
             </>
           ) : (
             <EmptyState />

@@ -8,6 +8,7 @@ import { useStore } from "../store";
 import { fetchHistory, fetchAgentAudit } from "../api/client";
 import type { AuditEntry, HistoryEntry } from "../api/types";
 import { IconButton } from "./IconButton";
+import { Tabs } from "./Tabs";
 
 type SubTab = "queries" | "agent";
 type StatusFilter = "all" | "ok" | "error" | "cancelled";
@@ -90,20 +91,18 @@ export function HistoryPanel() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-1 px-3 pt-2">
-        {(["queries", "agent"] as const).map((t) => (
-          <button
-            key={t}
-            className={`px-2 py-1 text-[length:var(--fs-sm)] border-b-2 ${
-              sub === t ? "border-brass text-brass font-semibold" : "border-transparent text-faint hover:text-muted"
-            }`}
-            onClick={() => {
-              setSub(t);
-              setExpandedId(null);
-            }}
-          >
-            {t === "queries" ? "Queries" : "Agent"}
-          </button>
-        ))}
+        <Tabs
+          label="History kind"
+          tabs={[
+            { id: "queries", label: "Queries" },
+            { id: "agent", label: "Agent" },
+          ]}
+          value={sub}
+          onChange={(t) => {
+            setSub(t);
+            setExpandedId(null);
+          }}
+        />
         <div className="flex-1" />
         <IconButton title="Refresh" aria-label="Refresh history" className="text-faint hover:text-brass" onClick={load}>
           ↻

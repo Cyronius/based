@@ -96,7 +96,7 @@ export function ExplorerContextMenu({
           {item("Open details", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "details"))}
           {item("Open data", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "data"))}
           {capabilities?.sql &&
-            item("Open sql", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "sql"))}
+            item("Open SQL", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "sql"))}
         </>
       )}
       {single && !isTableLike && item("Open details", () => void openRoutineTab(single.schema, single.name, single.type as "procedure" | "function"))}

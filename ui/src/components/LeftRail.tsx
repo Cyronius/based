@@ -4,6 +4,7 @@ import { ObjectExplorer } from "./ObjectExplorer";
 import { HistoryPanel } from "./HistoryPanel";
 import { ThemePicker } from "./ThemePicker";
 import { IconButton } from "./IconButton";
+import { Tabs } from "./Tabs";
 import { authLabel, connSubtitle, profileFor } from "../lib/engineProfile";
 
 const WIDTH_KEY = "based:leftRailWidth";
@@ -293,7 +294,8 @@ export function LeftRail() {
 
       <div className="px-3 space-y-2">
         <ConnectionSelector />
-        {sqlEngine && (
+        {/* No connection: no database or schema to pick, so no empty selectors. */}
+        {sqlEngine && activeConnectionId && (
           <select
             className={selectCls}
             value={database ?? ""}
@@ -309,7 +311,7 @@ export function LeftRail() {
             ))}
           </select>
         )}
-        {showSchemaFilter && (
+        {showSchemaFilter && activeConnectionId && (
           <div className="flex items-center gap-1.5">
             <select
               className={selectCls}
@@ -346,22 +348,19 @@ export function LeftRail() {
         )}
       </div>
 
-      <div className="mt-3 px-3 flex items-center gap-1">
-        {(["objects", "history"] as const).map((v) => (
-          <button
-            key={v}
-            className={`px-2 py-1 text-[length:var(--fs-sm)] border-b-2 ${
-              railView === v ? "border-brass text-brass font-semibold" : "border-transparent text-faint hover:text-muted"
-            }`}
-            onClick={() => {
-              setRailView(v);
-              localStorage.setItem(RAIL_VIEW_KEY, v);
-            }}
-          >
-            {v === "objects" ? "Objects" : "History"}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        label="Sidebar view"
+        className="mt-3 px-3"
+        tabs={[
+          { id: "objects", label: "Objects" },
+          { id: "history", label: "History" },
+        ]}
+        value={railView}
+        onChange={(v) => {
+          setRailView(v);
+          localStorage.setItem(RAIL_VIEW_KEY, v);
+        }}
+      />
       <div className="flex-1 min-h-0 border-t border-line-soft">
         {railView === "objects" ? <ObjectExplorer /> : <HistoryPanel />}
       </div>

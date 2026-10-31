@@ -57,3 +57,13 @@ export function disposeModel(tabId: string): void {
   if (model && !model.isDisposed()) model.dispose();
   for (const cb of disposedListeners) cb(tabId);
 }
+
+/** Puts the cursor on a reported error line in whichever editor shows this tab. */
+export function revealLine(tabId: string, line: number): void {
+  const model = models.get(tabId);
+  const editor = model && monaco.editor.getEditors().find((e) => e.getModel() === model);
+  if (!editor || !model || line < 1 || line > model.getLineCount()) return;
+  editor.setPosition({ lineNumber: line, column: model.getLineFirstNonWhitespaceColumn(line) || 1 });
+  editor.revealLineInCenterIfOutsideViewport(line);
+  editor.focus();
+}

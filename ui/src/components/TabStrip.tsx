@@ -1,9 +1,12 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useStore } from "../store";
 import { TabContextMenu } from "./TabContextMenu";
 import { IconButton } from "./IconButton";
-import { CapiMark } from "./icons";
+import { CapiMark, ChevronDownIcon } from "./icons";
+import { MenuButton } from "./MenuButton";
+import { dedupeTitles } from "../lib/dedupeTitles";
 import { accel } from "../platform";
+import { gridPendingCount } from "../lib/gridPending";
 
 export function TabStrip() {
   const tabs = useStore((s) => s.tabs);
@@ -33,6 +36,23 @@ export function TabStrip() {
 
   const visible = tabs.filter((t) => !(t.kind === "query" && t.parentTabId));
   const stripRef = useRef<HTMLDivElement>(null);
+  const titles = useMemo(() => dedupeTitles(visible), [visible]);
+
+  // The All tabs menu exists only while the tablist overflows.
+  const [overflow, setOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const check = () => setOverflow(el.scrollWidth > el.clientWidth + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [visible.length]);
+
+  useEffect(() => {
+    if (activeTabId) stripRef.current?.querySelector(`[data-tab-id="${activeTabId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, visible.length]);
 
   // Traces: BASED-UI-A11Y-KEYBOARD — tablist keys: arrows/Home/End move and activate, Delete closes.
   const focusTab = (id: string) => stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)?.focus();
@@ -71,22 +91,20 @@ export function TabStrip() {
     }`;
 
   return (
-    <div className="flex items-stretch h-9 border-b border-line-soft bg-ink-950 overflow-x-auto shrink-0">
-      <div ref={stripRef} role="tablist" aria-label="Open tabs" className="flex items-stretch">
+    <div className="flex items-stretch h-9 border-b border-line-soft bg-ink-950 shrink-0 min-w-0">
+      {/* Traces: BASED-UI-TABS — only the tabs scroll; "+", All tabs, and the toggles stay put. */}
+      <div ref={stripRef} role="tablist" aria-label="Open tabs" className="flex items-stretch min-w-0 overflow-x-auto overflow-y-hidden tab-scroll">
       {visible.map((t, idx) => {
         const active = t.id === activeTabId;
         const running = t.kind === "query" && t.running;
-        const dirty = t.kind === "query" && t.dirty;
+        const dirty = (t.kind === "query" && t.dirty) || (t.kind === "table" && gridPendingCount(t.grid) > 0);
+        const label = titles.get(t.id) ?? t.title;
         return (
           <div
             key={t.id}
-            data-tab-id={t.id}
-            role="tab"
-            aria-selected={active}
-            tabIndex={active ? 0 : -1}
-            onKeyDown={(e) => onTabKey(e, idx)}
+            role="presentation"
             draggable
-            className={`group relative flex items-center gap-2 px-3 border-r border-line-soft cursor-pointer max-w-56 select-none focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
+            className={`group relative flex items-center shrink-0 border-r border-line-soft cursor-pointer max-w-56 select-none has-[[role=tab]:focus-visible]:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
               active ? "bg-ink-900 text-paper shadow-[inset_0_2px_0_var(--color-brass)]" : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
             } ${draggedId === t.id ? "opacity-40" : ""}`}
             onClick={() => {
@@ -128,33 +146,42 @@ export function TabStrip() {
               setDraggedId(null);
               setDropTarget(null);
             }}
-            title={t.kind === "query" && t.filePath ? t.filePath : t.title}
+            title={t.kind === "query" && t.filePath ? t.filePath : label}
           >
             {dropTarget?.id === t.id && (
               <span
                 className={`absolute inset-y-0.5 w-0.5 bg-brass ${dropTarget.side === "before" ? "left-0" : "right-0"}`}
               />
             )}
-            {t.kind === "table" && <span className="text-faint text-[length:var(--fs-sm)]">{t.objectType === "view" ? "◫" : "▦"}</span>}
-            {t.kind === "routine" && <span className="text-faint text-[length:var(--fs-sm)]">{t.routineType === "function" ? "λ" : "≡"}</span>}
-            {t.kind === "diagram" && <span className="text-faint text-[length:var(--fs-sm)]">⧉</span>}
-            {t.kind === "docs" && <span className="text-faint text-[length:var(--fs-sm)]">?</span>}
-            {(t.kind === "query" || t.kind === "table") && t.openedBy === "capi" && (
-              <span className="text-brass shrink-0" title="Opened by Capi" aria-label="Opened by Capi">
-                <CapiMark />
+            <div
+              data-tab-id={t.id}
+              role="tab"
+              aria-selected={active}
+              tabIndex={active ? 0 : -1}
+              onKeyDown={(e) => onTabKey(e, idx)}
+              className="flex items-center gap-2 min-w-0 h-full pl-3 pr-1 focus-visible:outline-none"
+            >
+              {t.kind === "table" && <span aria-hidden className="text-faint text-[length:var(--fs-sm)]">{t.objectType === "view" ? "◫" : "▦"}</span>}
+              {t.kind === "routine" && <span aria-hidden className="text-faint text-[length:var(--fs-sm)]">{t.routineType === "function" ? "λ" : "≡"}</span>}
+              {t.kind === "diagram" && <span aria-hidden className="text-faint text-[length:var(--fs-sm)]">⧉</span>}
+              {t.kind === "docs" && <span aria-hidden className="text-faint text-[length:var(--fs-sm)]">?</span>}
+              {(t.kind === "query" || t.kind === "table") && t.openedBy === "capi" && (
+                <span className="text-brass shrink-0" title="Opened by Capi" aria-label="Opened by Capi">
+                  <CapiMark />
+                </span>
+              )}
+              {running && <span className="size-1.5 rounded-full bg-brass pulse-soft shrink-0" />}
+              <span className="truncate text-[length:var(--fs-base)]">
+                {label}
+                {dirty ? " •" : ""}
               </span>
-            )}
-            {running && <span className="size-1.5 rounded-full bg-brass pulse-soft shrink-0" />}
-            <span className="truncate text-[length:var(--fs-base)]">
-              {t.title}
-              {dirty ? " •" : ""}
-            </span>
+            </div>
             <IconButton
               size="sm"
               title={`Close tab (${accel("W")})`}
-              aria-label="Close tab"
+              aria-label={`Close ${label}`}
               tabIndex={-1}
-              className="-mr-1 text-faint hover:text-err opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 focus-visible:opacity-100"
+              className="mr-1 shrink-0 text-faint hover:text-err opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
                 closeTab(t.id);
@@ -166,11 +193,27 @@ export function TabStrip() {
         );
       })}
       </div>
+      {overflow && (
+        <MenuButton
+          className="self-center shrink-0 ml-1 h-7 w-7 grid place-items-center rounded text-muted hover:text-brass hover:bg-ink-900/50"
+          title="All tabs"
+          label="All tabs"
+          items={visible.map((t) => ({
+            label: `${t.id === activeTabId ? "● " : ""}${titles.get(t.id) ?? t.title}`,
+            run: () => {
+              activateTab(t.id);
+              requestAnimationFrame(() => focusTab(t.id));
+            },
+          }))}
+        >
+          <ChevronDownIcon />
+        </MenuButton>
+      )}
       {sqlEditor && (
         <IconButton
           title={`New query tab (${accel("T")})`}
           aria-label="New query tab"
-          className="self-center mx-1 text-muted hover:text-brass text-base"
+          className="self-center shrink-0 mx-1 text-muted hover:text-brass text-base"
           onClick={() => newQueryTab()}
         >
           +
@@ -197,7 +240,11 @@ export function TabStrip() {
           </button>
           <button
             className={toggleBtn(captureStats)}
-            title="Capture client statistics (STATISTICS TIME, IO) on next run"
+            title={
+              capabilities?.engine === "mssql"
+                ? "Capture client statistics (STATISTICS TIME, IO) on next run"
+                : "Capture run statistics on next run"
+            }
             aria-label="Capture client statistics"
             aria-pressed={captureStats}
             onClick={() => toggleCaptureStats()}

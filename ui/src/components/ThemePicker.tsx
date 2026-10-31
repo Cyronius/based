@@ -11,6 +11,7 @@
 // one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
+import { Tabs } from "./Tabs";
 import { accel, isMac } from "../platform";
 import { THEMES, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
@@ -75,6 +76,8 @@ function GeneralTab() {
         step={FONT_SCALE_STEP}
         value={fontScale}
         onChange={(e) => setFontScale(Number(e.target.value))}
+        aria-label="Font size"
+        aria-valuetext={`${Math.round(fontScale * 100)}%`}
         className="w-full accent-(--color-brass)"
       />
       <div className="flex items-center justify-between text-[length:var(--fs-sm)] text-faint">
@@ -1014,6 +1017,14 @@ function GearIcon() {
 export function ThemePicker() {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"general" | "theme" | "search" | "agent">("general");
+  const settingsRequest = useStore((s) => s.settingsRequest);
+  const openSettings = useStore((s) => s.openSettings);
+  useEffect(() => {
+    if (!settingsRequest) return;
+    setTab(settingsRequest);
+    setOpen(true);
+    openSettings(null);
+  }, [settingsRequest, openSettings]);
 
   useEffect(() => {
     if (!open) return;
@@ -1024,17 +1035,6 @@ export function ThemePicker() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const tabBtn = (id: "general" | "theme" | "search" | "agent", label: string) => (
-    <button
-      className={`flex-1 px-3 py-1.5 text-[length:var(--fs-sm)] font-bold ${
-        tab === id ? "text-brass border-b-2 border-brass" : "text-faint border-b-2 border-transparent hover:text-paper-dim"
-      }`}
-      onClick={() => setTab(id)}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <>
       <IconButton className="text-faint hover:text-brass" title="Settings" aria-label="Settings" onClick={() => setOpen(true)}>
@@ -1042,12 +1042,19 @@ export function ThemePicker() {
       </IconButton>
       {open && (
         <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] max-h-[85vh] flex flex-col">
-            <div className="flex border-b border-line-soft shrink-0">
-              {tabBtn("general", "General")}
-              {tabBtn("theme", "Theme")}
-              {tabBtn("search", "Search")}
-              {tabBtn("agent", "Agent")}
-            </div>
+            <Tabs
+              label="Settings section"
+              fill
+              className="border-b border-line-soft shrink-0"
+              tabs={[
+                { id: "general", label: "General" },
+                { id: "theme", label: "Theme" },
+                { id: "search", label: "Search" },
+                { id: "agent", label: "Agent" },
+              ]}
+              value={tab}
+              onChange={setTab}
+            />
             <div className="flex-1 min-h-0 overflow-y-auto">
               {tab === "general" ? <GeneralTab /> : tab === "theme" ? <ThemeTab /> : tab === "search" ? <SearchProfilesTab /> : <AgentTab />}
             </div>

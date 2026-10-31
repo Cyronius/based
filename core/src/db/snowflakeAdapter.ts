@@ -939,6 +939,8 @@ export class SnowflakeAdapter implements DatabaseAdapter {
                       type: "error",
                       message: errMessage(err),
                       line: typeof e.line === "number" ? e.line : undefined,
+                      // The editor text is one statement, so Snowflake's line is already a text line.
+                      textLine: typeof e.line === "number" ? e.line : undefined,
                       code: typeof e.code === "number" ? e.code : undefined,
                     });
                     return resolve();

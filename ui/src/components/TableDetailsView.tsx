@@ -3,8 +3,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { TableTabState, TableViewId } from "../store";
-import { useStore } from "../store";
+import { markTableViewFailed, useStore } from "../store";
 import { EmbeddingsView } from "./embeddings/EmbeddingsView";
+import { ErrorBoundary, ErrorPanel, panelBtn } from "./ErrorBoundary";
 import type { TableColumn, TableDetails, TableIndex } from "../api/types";
 import { TableDataGrid } from "./TableDataGrid";
 import { QueryTabView } from "./QueryTabView";
@@ -14,6 +15,8 @@ import { CellView } from "./CellView";
 import { ScriptDropdown } from "./ScriptDropdown";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
+import { ErrorDetail } from "./ErrorDetail";
+import { Tabs } from "./Tabs";
 
 function typeDisplay(c: TableColumn): string {
   const t = c.type;
@@ -340,21 +343,14 @@ function TableTabError({ tab }: { tab: TableTabState }) {
   const closeTab = useStore((s) => s.closeTab);
   const refreshObjects = useStore((s) => s.refreshObjects);
   const name = tab.schema ? `${tab.schema}.${tab.table}` : tab.table;
-  const full = tab.error ?? "";
-  // Driver errors often trail a stack of "Caused by:" frames; lead with the first sentence.
-  const headline = full.split(/\s{2,}Caused by:|\n/)[0]!.trim();
   return (
     <div role="alert" className="mx-5 mt-2 max-w-2xl rounded border border-err/30 bg-err/10 px-4 py-3">
       <div className="text-paper">
         Couldn't open <span className="font-bold">{name}</span>
       </div>
-      <div className="mt-1 font-mono text-[length:var(--fs-sm)] text-err whitespace-pre-wrap break-words">{headline}</div>
-      {headline !== full.trim() && (
-        <details className="mt-1 text-[length:var(--fs-sm)] text-muted">
-          <summary className="cursor-pointer hover:text-paper-dim">Full error</summary>
-          <div className="mt-1 font-mono whitespace-pre-wrap break-words">{full}</div>
-        </details>
-      )}
+      <div className="mt-1 text-[length:var(--fs-sm)]">
+        <ErrorDetail message={tab.error ?? ""} />
+      </div>
       <div className="mt-2 text-[length:var(--fs-sm)] text-muted">It may have been dropped or renamed, or this login may not be able to read it.</div>
       <div className="mt-3 flex gap-2">
         <button
@@ -385,25 +381,18 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
   // capable engine (LanceDB) and a table that actually has a vector column.
   const embedCapable = searchCapable && (tab.columns?.some((c) => c.isVector) ?? false);
 
-  const tabBtn = (view: TableViewId, label: string) => (
-    <button
-      className={`px-2.5 py-1 text-[length:var(--fs-base)] rounded border ${
-        tab.view === view ? "border-brass-soft/60 text-brass bg-brass/5" : "border-line text-muted hover:text-paper"
-      }`}
-      onClick={() => setTableView(tab.id, view)}
-    >
-      {label}
-    </button>
-  );
+  const views: Array<{ id: TableViewId; label: string }> = [
+    { id: "details", label: "Details" },
+    { id: "data", label: "Data" },
+    ...(sqlCapable ? [{ id: "sql" as TableViewId, label: "SQL" }] : []),
+    ...(embedCapable ? [{ id: "embeddings" as TableViewId, label: "Embeddings" }] : []),
+  ];
 
   return (
     <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col bg-ink-900">
       <div className="px-5 pt-4 pb-3 flex flex-wrap items-center gap-x-3 gap-y-2 shrink-0">
         <div className="flex items-center gap-1.5">
-          {tabBtn("details", "Details")}
-          {tabBtn("data", "Data")}
-          {sqlCapable && tabBtn("sql", "SQL")}
-          {embedCapable && tabBtn("embeddings", "Embeddings")}
+          <Tabs label="Table view" tabs={views} value={tab.view} onChange={(v) => setTableView(tab.id, v)} />
           {capabilities?.script && <ScriptDropdown schema={tab.schema} name={tab.table} type={tab.objectType} />}
         </div>
         <h1 className="font-display text-xl text-paper">
@@ -423,12 +412,24 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
       {tab.error && !tab.columns ? (
         <TableTabError tab={tab} />
       ) : (
-        <>
+        <ErrorBoundary
+          resetKey={`${tab.id}:${tab.view}`}
+          onError={() => markTableViewFailed(tab.id, tab.view)}
+          fallback={(error) => (
+            <ErrorPanel title={`The ${views.find((v) => v.id === tab.view)?.label ?? tab.view} view failed to draw.`} error={error}>
+              {tab.view !== "data" && (
+                <button className={panelBtn} onClick={() => setTableView(tab.id, "data")}>
+                  Switch to Data
+                </button>
+              )}
+            </ErrorPanel>
+          )}
+        >
           {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
           {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
           {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
           {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
-        </>
+        </ErrorBoundary>
       )}
     </div>
   );

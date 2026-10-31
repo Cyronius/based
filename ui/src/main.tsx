@@ -8,6 +8,7 @@ import { initLsp } from "./lsp/manager";
 import { registerLspProviders } from "./lsp/providers";
 import { App } from "./App";
 import { CapiGallery } from "./components/CapiGallery";
+import { ErrorBoundary, ErrorPanel, panelBtn } from "./components/ErrorBoundary";
 
 // Paint the hinted theme onto <html> before React mounts (avoids a flash); the server value
 // reconciles it once App boots. Monaco's "based" theme is defined from the resulting variables.
@@ -24,5 +25,19 @@ registerLspProviders();
 const capiGallery = new URLSearchParams(window.location.search).has("capi");
 
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>{capiGallery ? <CapiGallery /> : <App />}</React.StrictMode>,
+  <React.StrictMode>
+    <ErrorBoundary
+      fallback={(error) => (
+        <div className="h-full flex bg-ink-950">
+          <ErrorPanel title="based hit an error." error={error}>
+            <button className={panelBtn} onClick={() => window.location.reload()}>
+              Reload window
+            </button>
+          </ErrorPanel>
+        </div>
+      )}
+    >
+      {capiGallery ? <CapiGallery /> : <App />}
+    </ErrorBoundary>
+  </React.StrictMode>,
 );

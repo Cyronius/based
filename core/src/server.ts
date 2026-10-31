@@ -44,6 +44,7 @@ import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
+import { agentReadiness } from "./agent/readiness";
 import { createAgentMemory } from "./agent/memory";
 import { threadTitle, isDerivableTitle } from "./agent/threadTitle";
 import { describeProviderError, isContextOverflowError } from "./agent/contextRecovery";
@@ -750,6 +751,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       deleteAiKey(aiProfileMatch[1]!);
       if (settings.get().activeAiProfileId === aiProfileMatch[1]) settings.save({ activeAiProfileId: null });
       return json({ ok: true });
+    }
+    if (path === "/api/ai-profiles/active/status" && method === "GET") {
+      const list = ensureAiProfiles();
+      const p = list.length === 0 ? null : activeAiProfile();
+      return json(await agentReadiness(p, p ? getAiKey(p.id) : null));
     }
     if (path === "/api/ai-profiles/active" && method === "POST") {
       const { id } = (await req.json()) as { id: string };

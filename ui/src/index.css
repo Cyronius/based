@@ -115,6 +115,33 @@ body {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+/* Tab strip: a 4px bar so the 36px strip keeps room for its labels. */
+.tab-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.tab-scroll::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 2px;
+}
+
+/* BASED-FOCUS-VISIBLE: one keyboard focus ring everywhere; in base so a utility can still opt out. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline-width: 1px;
+    outline-offset: -1px;
+  }
+  /* Monaco and the data grid draw their own cursor and selection. */
+  .monaco-editor :focus-visible,
+  canvas:focus-visible {
+    outline: none;
+  }
+}
 
 /* Ledger section label: heavy weight, letterspaced (no uppercase — see CLAUDE.md) */
 .ledger-label {

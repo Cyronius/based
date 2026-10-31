@@ -331,10 +331,29 @@ App-wide user preferences (the active theme id; `fontScale`, the app-wide text-s
 
 In every theme in `ui/src/theme.ts`, the `muted` and `faint` text tokens reach a WCAG contrast
 ratio of at least 4.5:1 against `bg0`, `bg1`, and `bg2` (the surfaces they are drawn on). Text on
-`bg3` uses `muted` or stronger. The `@theme` fallbacks in `index.css` match the Ledger tokens.
+`bg3` uses `muted` or stronger (the result-set row counts in the results toolbar included). The
+`@theme` fallbacks in `index.css` match the Ledger tokens.
 
 **Acceptance criteria (`unit.themeContrast.test.ts`):** for each theme, `contrast(faint, bgN)` and
 `contrast(muted, bgN)` ≥ 4.5 for N = 0, 1, 2 (relative-luminance math in the test).
+
+
+### BASED-FOCUS-VISIBLE: Keyboard focus is visible in every theme
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+Every focusable control shows a 2px ring in the theme's accent color on `:focus-visible` (one base
+rule in `index.css`; `IconButton` carries it too). Text fields get a 1px inset ring. Monaco and
+the data grid canvas draw their own focus and are excluded. In every theme the accent reaches WCAG
+non-text contrast (3:1) against `bg0`, `bg1`, and `bg2`; a theme that misses gets its accent
+nudged, not the rule.
+
+**Acceptance criteria (`unit.themeContrast.test.ts`):** for each theme, `contrast(accent, bgN)` ≥ 3
+for N = 0, 1, 2.
+
+**Verification procedure (manual):** on a dark theme and on a light theme, Tab through the query
+toolbar, the results toolbar, and the explorer → every stop shows the ring; clicking a button with
+the mouse shows no ring.
 
 ### BASED-UI-A11Y-KEYBOARD: Keyboard and screen-reader basics
 **Applies to:** based (ui)
@@ -342,6 +361,13 @@ ratio of at least 4.5:1 against `bg0`, `bg1`, and `bg2` (the surfaces they are d
 
 - The explorer is a tree (`BASED-UI-EXPLORER`), the tab strip a tablist (`BASED-UI-TABS`), and the
   connection selector a listbox (arrows move, Enter connects, Esc closes and returns focus).
+- Every view switch inside a pane (results Grid/Text/Plan, plan statements, Objects/History,
+  Queries/Agent history, Details/Data/SQL/Embeddings, Settings sections) uses the shared `Tabs`
+  component: a `tablist` with one tab stop, ←/→/Home/End move and select, and one look (an underline
+  in the accent color when selected). Document tabs and the bottom panel strip keep their top-bar
+  look.
+- Toolbar menus (Export, More file actions) are `role="menu"`: the first item takes focus, ↑/↓ move,
+  Esc closes and returns focus to the button.
 - Every modal uses the shared `Dialog`: `role="dialog"`, `aria-modal`, labelled by its title, focus
   trapped inside, first field focused, Esc closes, focus returns to the opener. A dialog that
   holds input (connection, import, new table) does not close on a backdrop click.
@@ -364,13 +390,24 @@ read once when it settles; an approval card is announced.
 **Applies to:** based (ui)
 **Test category:** manual
 
-The UI shall offer a theme picker (LeftRail header) listing all themes grouped dark/light. Selecting a theme applies it immediately by writing CSS custom properties onto `<html>` — retinting the Tailwind-driven chrome, the Monaco editor (`based` theme rebuilt from the live variables), and both Glide result grids — and persists the choice via `POST /api/settings`. On launch the theme is painted from a localStorage hint before React mounts (no flash), then reconciled to the server value. Themes carry their own display/body/mono fonts (full swap).
+The UI shall offer a theme picker (LeftRail header) listing all themes grouped dark/light. Selecting a theme applies it immediately by writing CSS custom properties onto `<html>` — retinting the Tailwind-driven chrome, the Monaco editor (`based` theme rebuilt from the live variables), and both Glide result grids — and persists the choice via `POST /api/settings`. On launch the theme is painted from a localStorage hint before React mounts (no flash), then reconciled to the server value. Themes carry their own display/body/mono fonts (full swap); only the active theme's fonts download (BASED-THEME-FONT-LOAD).
 
 **Acceptance criteria:**
 - Picking a light theme (e.g. Cozy Reading Room) recolors the rails, editor, grids, and native controls with no reload; the wordmark/body/editor fonts change to that theme's fonts
 - The choice survives an app restart (loaded from `/api/settings`)
 - Result grid header/cells, NULL cells, and the editable grid's dirty/new row tints all match the active palette
 - Switching to a theme whose mono font this window has never rendered (so the webfont downloads only on the swap) leaves the editor caret exactly at the end of typed text, not a fraction of a character to its left — see BASED-EDITOR-CARET-METRICS
+
+### BASED-THEME-FONT-LOAD: Only the active theme's fonts download
+**Applies to:** based (ui)
+**Test category:** unit (`unit.themeFonts.test.ts`)
+
+`index.html` loads only the default theme's families (Fraunces, IBM Plex Sans, IBM Plex Mono). `applyTheme` adds one stylesheet link (`#theme-fonts`) built by `themeFontUrl(theme)` for the active theme's other families, and replaces it on a theme switch.
+
+**Acceptance criteria:**
+- Every family any theme names has a Google Fonts spec in `FONT_SPECS`, so no theme falls back silently
+- The default theme needs no extra stylesheet (`themeFontUrl` → null)
+- A theme gets one css2 URL with only its non-base families, each once
 
 ### BASED-UI-FONT-ZOOM: App-wide text zoom from the wheel and the keyboard
 **Applies to:** based (ui)
@@ -824,7 +861,7 @@ The adapter shall list a stored procedure or function's parameters (name, SQL ty
 **Applies to:** based (ui)
 **Test category:** manual
 
-The table/view tab's header tabs (Details / Edit Data / SQL — see BASED-TABLE-SQL-VIEW) sit at the left of the header, before the object title. Edit Data shows an editable grid (glide-data-grid edit mode) with page controls (Prev/Next plus a rows-per-page picker, backed by the `rowPageSize` app setting from BASED-SETTINGS, default 500), add-row and delete-row affordances, a **pending changes** indicator, a **Review SQL** peek, and **Commit**/**Discard**. Details additionally shows a view's SQL definition text (BASED-VIEW-DEFINITION) below its columns. No PK → read-only with a notice.
+The table/view tab's header tabs (Details / Edit Data / SQL — see BASED-TABLE-SQL-VIEW) sit at the left of the header, before the object title. Edit Data shows an editable grid (glide-data-grid edit mode) with page controls (Prev/Next plus a rows-per-page picker, backed by the `rowPageSize` app setting from BASED-SETTINGS, default 500), add-row and delete-row affordances, a **pending changes** indicator, a **Review SQL** peek, and **Commit**/**Discard**. Pending changes outlive the grid (BASED-TABLE-EDIT-RETAIN). Details additionally shows a view's SQL definition text (BASED-VIEW-DEFINITION) below its columns. No PK → read-only with a notice.
 
 **Verification procedure:**
 1. Double-click a table → Details view, tabs at the left of the header; toggle to Edit Data → rows list; Prev/Next paging works
@@ -834,6 +871,31 @@ The table/view tab's header tabs (Details / Edit Data / SQL — see BASED-TABLE-
 5. Open a view → Details shows both columns and its CREATE VIEW text; Edit Data grid works the same as for a table
 6. A table with no PK → grid is read-only with a notice
 7. Break a value (bad type) → Commit shows the server error; grid still reflects pre-commit (uncommitted) state
+
+
+### BASED-TABLE-EDIT-RETAIN: Pending grid edits survive tab and view switches
+**Applies to:** based (ui)
+**Test category:** manual
+
+A table tab keeps its Data view session in memory (`TableTabState.grid`, never written to the tab
+store): the loaded page and its offset, sort, filters, and browse `where`, the pending edits, new
+rows, and deletions, and the LanceDB search (mode, query, result, Tuning values). Switching to
+another tab, to Details/SQL and back, or to another connection and back shows the same page with
+the same pending changes, with no refetch. A refetch never runs over pending changes (a page-size
+change waits; an agent's `show_results` filter is not applied to a tab with pending edits).
+
+A table tab with pending changes shows the same dirty mark (•) as an unsaved query tab. The opt-in
+close confirmation (BASED-TAB-CLOSE-CONFIRM) lists it as "{title} — N pending changes", and
+Ctrl+Shift+T (BASED-TAB-REOPEN) brings the tab back with its pending changes.
+
+**Verification procedure:**
+1. Edit two cells and add a row → the tab shows • → switch to another tab, then back → the three
+   changes are still marked and "3 pending" shows
+2. Data → SQL → Data → same
+3. Close the tab with the confirmation off → it closes; Ctrl+Shift+T → it comes back with •; Review
+   SQL shows the same statements
+4. Turn the confirmation on → close the tab → the dialog lists "{table} — 3 pending changes"
+5. On a LanceDB table, run a text search → Details → Data → the query and results are still there
 
 ### BASED-TABLE-DETAILS-UI: Enriched Details view + Script dropdown
 **Applies to:** based (ui)
@@ -1739,7 +1801,9 @@ tab. Engines lacking the needed capability degrade to `details`.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Connection-scoped multi-tabs; auto-persisted across restarts; the strip is a `tablist` with one tab stop (←/→/Home/End switch tabs, Delete closes the focused tab, Shift+F10 opens its menu; clicking a tab focuses its editor, keyboard switching keeps focus on the tab); explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
+Connection-scoped multi-tabs; auto-persisted across restarts; the strip is a `tablist` with one tab stop (←/→/Home/End switch tabs, Delete closes the focused tab, Shift+F10 opens its menu; clicking a tab focuses its editor, keyboard switching keeps focus on the tab); a dirty mark (•) on query tabs with unsaved text and on table tabs with pending grid changes (BASED-TABLE-EDIT-RETAIN); explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
+
+Only the tablist scrolls. "+", the All tabs menu (shown only while the tabs overflow), and the plan/stats toggles stay at the right edge. The active tab scrolls into view, also on keyboard switching. Each tab's close button is a sibling of its `role="tab"` element, so the tab's accessible name is its title only. Tabs with the same title show a display-only " (2)", " (3)" suffix (BASED-TAB-TITLE-DEDUPE). The statistics toggle's tooltip names `STATISTICS TIME, IO` only on SQL Server.
 
 **Verification procedure:**
 1. Open 2 tabs, type SQL, close app, reopen → both tabs restored with content
@@ -1747,6 +1811,7 @@ Connection-scoped multi-tabs; auto-persisted across restarts; the strip is a `ta
 3. On that file-backed tab: edit → Ctrl+S overwrites with no dialog; Ctrl+Shift+S (or "Save As…") → dialog seeded with the current file name → saves to the new path and re-titles the tab
 4. F5 runs; run `WAITFOR DELAY '00:00:30'` → Cancel button (and Ctrl+Break) stops it with "cancelled" in Output
 5. Drag both pane dividers; collapse/expand Output
+6. Open 15 tabs at 1024px → "+", the All tabs menu, and the toggles stay visible; All tabs activates a tab and scrolls it into view; a screen reader names each tab by its title, with "Close <title>" on its close button
 
 ### BASED-RUN-SCOPE: What a run sends
 **Applies to:** based (ui)
@@ -1784,7 +1849,8 @@ the text that ran.
 Each close action (one tab, Close Others/Left/Right/All, Ctrl+W, middle-click) pushes one batch of
 closed-tab snapshots onto an in-session stack kept per connection, capped at 20 batches (the
 oldest is dropped). Query snapshots keep title, text, file path, dirty flag, and the Capi mark;
-object tabs keep what identifies them. Ctrl+Shift+T, or "Reopen Closed Tab" on the tab context
+object tabs keep what identifies them, and a table tab with pending grid changes keeps them
+(BASED-TABLE-EDIT-RETAIN). Ctrl+Shift+T, or "Reopen Closed Tab" on the tab context
 menu, restores the newest batch whole. Results are not kept. The stack does not survive restart.
 
 **Acceptance criteria (unit — `unit.closedTabs.test.ts`):**
@@ -1802,7 +1868,8 @@ same view.
 
 Setting `confirmCloseUnsaved` (Settings → General → "Ask before closing tabs with unsaved
 changes"), **off by default**. When on, a close action that includes query tabs with unsaved,
-non-empty text asks once, listing those tabs; Cancel keeps every tab. When off, tabs close at once
+non-empty text, or table tabs with pending grid changes, asks once, listing those tabs; Cancel
+keeps every tab. When off, tabs close at once
 and `BASED-TAB-REOPEN` is the safety net.
 
 **Verification procedure:** with the setting off, close a dirty tab → it closes with no question;
@@ -1830,7 +1897,7 @@ A pure function `deriveTabTitle(sql)` (`ui/src/lib/deriveTabTitle.ts`) shall map
 **Applies to:** based (ui)
 **Test category:** manual
 
-When a query run completes with status `ok` and the tab's title still matches the default `Query N` pattern and the tab is not file-backed, the title shall be replaced by `deriveTabTitle(<the SQL that was executed>)` when non-null. This fires at most once per tab: after the rename the title no longer matches the default pattern, so later runs never rename. Errored/cancelled runs, file-backed tabs, and manually renamed tabs are never renamed. Duplicate titles across tabs are allowed (tabs are keyed by id).
+When a query run completes with status `ok` and the tab's title still matches the default `Query N` pattern and the tab is not file-backed, the title shall be replaced by `deriveTabTitle(<the SQL that was executed>)` when non-null. This fires at most once per tab: after the rename the title no longer matches the default pattern, so later runs never rename. Errored/cancelled runs, file-backed tabs, and manually renamed tabs are never renamed. Duplicate titles across tabs are allowed (tabs are keyed by id); the strip tells them apart with a display-only suffix (BASED-TAB-TITLE-DEDUPE). Titles are deliberately sticky: a title that changes under the user confuses them.
 
 **Verification procedure:**
 1. New query tab (`Query N`), run `SELECT * FROM dbo.Customers` → tab title becomes `select Customers`
@@ -1838,14 +1905,25 @@ When a query run completes with status `ok` and the tab's title still matches th
 3. Open a `.sql` file and run it → tab keeps the file name
 4. New tab, run invalid SQL (error) → title stays `Query N`; fix the SQL and rerun → now renamed
 
+### BASED-TAB-TITLE-DEDUPE: Tabs with the same title are told apart
+**Applies to:** based (ui)
+**Test category:** unit (`unit.tabTitleDedupe.test.ts`)
+
+`dedupeTitles(tabs)` (`ui/src/lib/dedupeTitles.ts`) maps each visible tab to its display title. The first tab with a title keeps it; later tabs with the same title get " (2)", " (3)" in tab order. The stored title never changes, and the numbers follow the current tab order.
+
+**Acceptance criteria:**
+- Unique titles are unchanged
+- `select plain`, `docs`, `select plain`, `select plain` → `select plain`, `docs`, `select plain (2)`, `select plain (3)`
+- After the first duplicate closes, the remaining two read `select plain` and `select plain (2)`
+
 ### BASED-UI-RESULTS: Results pane
 **Applies to:** based (ui)
 **Test category:** manual
 
-At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Sub-tabs per result set for multi-statement batches. Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the query toolbar's fetch-size input value, not a fixed constant).
+At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Result-set buttons per result set, shown only when a run returns 2 or more result sets (a single set repeats nothing the row count already says). Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the query toolbar's fetch-size input value, not a fixed constant).
 
 **Verification procedure:**
-1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 sub-tabs, each with stats
+1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 result-set buttons, each with stats; run `SELECT 1` → no result-set buttons
 2. Toggle grid/text views (far left of the toolbar, styled as tabs)
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
@@ -1915,8 +1993,9 @@ Both the query-results grid (BASED-UI-RESULTS) and the Edit Data grid (BASED-UI-
 
 Every data grid — the SQL results grid (ResultsPane), the Data tab grid (TableDataGrid), and the
 embeddings Selection grid (SelectionGrid) — exposes the same toolbar action set: Fit columns, Copy
-(selection-or-all, tab-separated), Copy as Markdown (BASED-GRID-COPY-MD), Save as CSV, and Open in
-Excel. The action behavior lives in one shared hook (`useGridExportActions` in
+(selection-or-all, tab-separated; a `CopyIcon` icon button), and one **Export ▾** menu with Copy as
+Markdown (BASED-GRID-COPY-MD), Save as CSV, and Open in Excel. The results toolbar wraps onto a
+second line instead of hiding actions in a narrow pane; only the result-set buttons scroll. The action behavior lives in one shared hook (`useGridExportActions` in
 `ui/src/components/GridToolbarActions.tsx`); each host creates a single instance that feeds both
 its toolbar buttons and its right-click context menu (BASED-GRID-CONTEXT-MENU), so notices ("Copied",
 "Saved …") surface in the toolbar regardless of which surface triggered the action. All toolbar
@@ -1926,7 +2005,7 @@ controls (text and icon buttons) render at the same height.
 1. Lasso a selection in the embeddings view → the Selection tab shows a toolbar with row count +
    Fit columns / Copy / markdown / CSV / Excel; each action works on the lassoed rows
 2. The same buttons appear and work in the SQL results toolbar and the Data tab toolbar
-3. Visually confirm the CSV/Excel/markdown icon buttons are the same height as "Fit columns"/"Copy"
+3. Visually confirm the Copy icon button and "Export ▾" are the same height as "Fit columns"; Export ▾ opens a menu whose first item has focus, ↑/↓ move, Esc returns focus to the button
 
 ### BASED-GRID-COPY-MD: Copy selection as a markdown table
 **Applies to:** based (ui)
@@ -1973,7 +2052,7 @@ or Escape, and clamps to the viewport.
 **Applies to:** based (ui)
 **Test category:** manual
 
-Beside Run in the query toolbar: a compact "Rows" fetch-size number input (max rows to fetch per run — reuses the app's existing `rowPageSize` setting, default 500, persisted; this is now the *only* place that setting is edited, replacing the page-size `<select>` formerly in the Table Data view). Far right of the document tab bar (`TabStrip`): two checkable icon toggles — **Execution Plan** (captures the actual plan, with runtime stats, on the next run) and **Client Statistics** (captures `STATISTICS TIME, IO` output on the next run) — each with a hover tooltip, styled with the tab bar's active-tab look (brass inset-shadow) when checked. Both toggles are global, not per-tab, and apply to whichever run happens next. When a run captured a plan, a **Plan** tab appears in the results toolbar (BASED-UI-RESULTS) showing an interactive `@xyflow/react` operator-tree diagram: pan (drag), zoom (wheel/pinch), and click a node to open a detail panel (physical/logical operator, estimated vs. actual rows, IO/CPU estimates, subtree cost, object accessed, predicate). A multi-statement run shows a small "Statement 1/2/…" picker above the canvas.
+The query toolbar is a size container: below about 36rem of toolbar width, Open…, Save, and Save As… fold into one "More file actions" (⋯) menu and the file path hides; Run, Rows, and Output always stay visible, and no button label wraps. Beside Run in the query toolbar: a compact "Rows" fetch-size number input (max rows to fetch per run — reuses the app's existing `rowPageSize` setting, default 500, persisted; this is now the *only* place that setting is edited, replacing the page-size `<select>` formerly in the Table Data view). Far right of the document tab bar (`TabStrip`): two checkable icon toggles — **Execution Plan** (captures the actual plan, with runtime stats, on the next run) and **Client Statistics** (captures `STATISTICS TIME, IO` output on the next run) — each with a hover tooltip, styled with the tab bar's active-tab look (brass inset-shadow) when checked. Both toggles are global, not per-tab, and apply to whichever run happens next. When a run captured a plan, a **Plan** tab appears in the results toolbar (BASED-UI-RESULTS) showing an interactive `@xyflow/react` operator-tree diagram: pan (drag), zoom (wheel/pinch), and click a node to open a detail panel (physical/logical operator, estimated vs. actual rows, IO/CPU estimates, subtree cost, object accessed, predicate). A multi-statement run shows a small "Statement 1/2/…" picker above the canvas.
 
 **Verification procedure:**
 1. Type a fetch size, tab away or press Enter → value persists across a restart (`GET /api/settings`)
@@ -1987,23 +2066,43 @@ Beside Run in the query toolbar: a compact "Rows" fetch-size number input (max r
 **Applies to:** based (ui)
 **Test category:** manual
 
-Errors (syntax, permissions, timeout) appear as readable text in the Output pane, and also in the results pane and as editor squiggles (`BASED-UI-QUERY-ERROR`); a dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
+Errors (syntax, permissions, timeout) appear as readable text in the Output pane, with their line breaks kept, and also in the results pane and as editor squiggles (`BASED-UI-QUERY-ERROR`). The query toolbar's Output control is a toggle button (`aria-pressed`); the pane has no inner heading, because its tab names it. A dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
 
 **Verification procedure:**
 1. Run `SELECT FROM` → syntax error text in Output, tab flips to Output pane
 2. Run `SELECT 1/0` → divide-by-zero message
 3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
 
+### BASED-UI-ERROR-BOUNDARY: A render error replaces one region, never the whole window
+**Applies to:** based (ui)
+**Test category:** manual
+
+Three React error boundaries (`ui/src/components/ErrorBoundary.tsx`) catch render errors:
+- **Table view:** a failed Details/Data/SQL/Embeddings view shows "The <view> view failed to draw.", the error (headline + Full error), and "Switch to Data". The failed view is saved as Data, so a restart never reopens into it.
+- **Tab:** a failed tab body shows "This tab failed to draw." with a Close tab button. The rails and the tab strip stay usable.
+- **Root:** the last resort shows "based hit an error." with Reload window.
+
+A boundary clears when its key changes (another tab, another view).
+
+**Verification procedure:**
+1. In devtools, set a table tab's grid page to an invalid value (`patchTableGrid(id, { page: { columns: 5 } })`) → the Data view shows the fallback; the tab strip and rails still work; "Details" then "Data" with a reset page draws rows again
+2. Restart after a view failure → the tab opens on Data
+3. Open Embeddings in a window with no WebGL (`--disable-webgl`) → the WebGL message, no fallback and no white screen (BASED-EMBED-UI)
+
 ### BASED-UI-QUERY-ERROR: A failed run says why where the results would be
 **Applies to:** based (ui, core)
-**Test category:** manual (batch-line mapping: unit)
+**Test category:** manual (batch-line mapping: unit; DuckDB line mapping: BASED-QUERY-ERROR-LINE)
 
-When a run fails with no result set, the results pane shows each error's text (line breaks kept)
-instead of the "run a query" prompt. When the error has a line, the editor marks that line with an
+When a run fails with no result set, the results pane shows each error instead of the "run a query"
+prompt, in the shared error look (`BASED-ERROR-HEADLINE`): the headline, with the full text behind
+"Full error". An error with a line has a "Line N · go to line" button that puts the editor cursor
+on that line. When the error has a line, the editor marks that line with an
 error squiggle whose hover shows the message; the next run clears the marks. SQL Server reports
 lines relative to the GO batch, so core adds `textLine` — the line in the submitted text, from
 `splitBatchesWithLines` — and the UI adds the line where the run's text started in the editor
 (`BASED-RUN-SCOPE`). The Output pane keeps the batch-relative `Error N (line L): …` text.
+LanceDB SQL (DuckDB) and Snowflake also send `textLine` (BASED-QUERY-ERROR-LINE), so their errors
+get the same marks.
 
 **Acceptance criteria (unit — `unit.batch.test.ts`):** `splitBatchesWithLines` returns each trimmed
 batch with the 1-based line of its first non-blank line in the submitted text.
@@ -2013,18 +2112,53 @@ batch with the 1-based line of its first non-blank line in the submitted text.
 2. On SQL Server, run three lines, then `GO`, then a line with `SELECT FROM` → the squiggle is on
    the `SELECT FROM` line; hover shows the message; run again after a fix → the squiggle is gone
 3. Select only that bad line and press F5 → the squiggle lands on the same editor line
+4. On LanceDB, run `select 1;` / `select 2;` / `selec 3 fom t;` on three lines → squiggle on line 3,
+   the headline in the results pane, and "Line 3 · go to line" moves the cursor there
+
+### BASED-QUERY-ERROR-LINE: DuckDB and Snowflake errors carry a text line
+**Applies to:** based (core)
+**Test category:** unit (`unit.queryErrorLine.test.ts`)
+
+`duckErrorLine(message)` (`core/src/db/errorLine.ts`) reads DuckDB's `LINE n:` suffix; n counts lines of the whole submitted script. When an error has no such suffix, the LanceDB SQL bridge uses the failed statement's first line from `statementStartLines(script)`, but only when that count matches DuckDB's statement count. Otherwise it sends no `textLine`; the error still shows, with no mark. Snowflake runs the editor text as one statement, so its error `line` is already the text line.
+
+**Acceptance criteria:**
+- `…Parser Error: syntax error at or near "selec"\n\nLINE 4: selec 3 fom t;` → 4
+- A message with no `LINE n:` → null
+- `statementStartLines("select 1;\n\n-- note\nselect 2\nfrom t;\nselect\n  3;")` → `[1, 4, 6]`
+- A `;` inside a string or a comment does not split; empty statements are dropped
 
 ### BASED-UI-TABLE-TAB-ERROR: An unreadable table tab says so
 **Applies to:** based (ui)
 **Test category:** manual
 
 When a table or view tab cannot load its columns (dropped, renamed, no permission — typical after
-restore), the tab shows "Couldn't open {name}", the first sentence of the error (the full text
-behind a "Full error" disclosure), a short list of likely causes, and **Close tab** /
+restore), the tab shows "Couldn't open {name}", the error headline (BASED-ERROR-HEADLINE, with
+the full text behind a "Full error" disclosure), a short list of likely causes, and **Close tab** /
 **Refresh objects**, instead of an empty pane.
 
 **Verification procedure:** open a table, drop or rename it outside based, restart, select the
 restored tab → the error state shows; Close tab closes it.
+
+
+### BASED-ERROR-HEADLINE: Driver errors lead with one readable line
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+`errorHeadline(full)` (`ui/src/lib/errorText.ts`) keeps the text before the first line break or
+"Caused by:", and drops a trailing Rust source location (`…/file.rs:123:45`). The shared
+`ErrorDetail` shows that headline and, when it differs from the full text, a "Full error"
+disclosure. It is used by the table-tab error state and by the Data view's load, search, and commit
+errors.
+
+**Acceptance criteria (`unit.errorHeadline.test.ts`):**
+- A one-line error is unchanged
+- A multi-line error keeps its first line
+- A LanceDB chain with a source location and "Caused by:" keeps only the readable first clause
+- Text that is blank before its first break falls back to the whole text, trimmed
+
+**Verification procedure (manual):** run a text search on a LanceDB table with no full-text index
+through the API (the UI disables the mode) or force any search error → the Data view shows one
+line, and "Full error" opens the driver text.
 
 ### BASED-UI-SESSION-RESUME: Auto-resume a lost server session
 **Applies to:** based (ui), based (core)
@@ -2220,6 +2354,23 @@ Users configure one or more named AI provider profiles (`name`, `kind` — opena
 4. Point a profile's Instructions at a custom set, make it active → the agent's behavior reflects that persona; delete that set → the agent falls back to the Default persona instead of erroring
 5. With zero profiles configured, ask Capi something → a clear "No agent profile configured — add one in Settings → Agent." message appears in the chat rail instead of a raw error
 
+### BASED-AGENT-READY: Capi says early when it cannot answer
+**Applies to:** based (core, ui)
+**Test category:** manual
+
+`GET /api/ai-profiles/active/status` returns `{ state, profileName?, detail? }`:
+- `none`: no profile is configured.
+- `no-key`: a hosted kind (openai, azure-openai, anthropic) with no stored key. Hosted kinds get no network check, so the check costs nothing and adds no delay.
+- `unreachable`: an openai-compatible profile whose `GET {baseUrl}/models` fails or takes more than 3 s.
+- `ok`: none of the above.
+
+The UI checks when the rail opens, when the active profile or the profile list changes, and after a failed send; it does not poll. For any state except `ok`, one line above the composer says why, with "Settings → Agent" and "Check again". Sending is never blocked. The collapsed rail (36px, Capi mark, "Capi" label) shows a red dot, with the same text in its tooltip.
+
+**Verification procedure:**
+1. With no AI profile → the line "No agent profile yet, so Capi cannot answer." and a dot on the collapsed rail
+2. An openai-compatible profile pointing at a closed port → "The model server is not answering." with the URL and the error; start the server and press Check again → the line goes away
+3. A hosted profile with no key → "The <name> profile has no API key."; no request leaves the machine
+
 ### BASED-AI-PROVIDER-WIRED: Native openai / azure-openai / anthropic providers
 **Applies to:** based (core, ui)
 **Test category:** unit (branch resolution); manual (live round-trip)
@@ -2403,7 +2554,8 @@ The `run_mutation`, `import_csv`, and `create_table` cards share one frame:
 - A bold target line, `{connection name} · {database}`, under the card title. The name is the
   user's own connection name (`BASED-WINDOW-IDENTITY`).
 - Statement text wraps; long text scrolls vertically (max height), never sideways.
-- **Approve** keeps the primary style; **Reject** is a neutral secondary button.
+- **Approve** keeps the primary style, except that it uses the error color when the statement
+  removes data or objects (BASED-APPROVAL-RISK); **Reject** is a neutral secondary button.
 - The outcome is colored by status: success in the ok color; failure in the error color with a
   "Failed:" / "Import failed:" prefix; rejection in the muted color.
 
@@ -2414,6 +2566,36 @@ The `run_mutation`, `import_csv`, and `create_table` cards share one frame:
    with "Failed:"
 3. Reject → "Rejected — nothing ran." in the muted color
 4. Ask for an import of a CSV with a bad row and skip off → a failed import is red, not green
+
+
+### BASED-APPROVAL-RISK: The mutation card flags statements that remove data
+**Applies to:** based (ui)
+**Test category:** unit + manual
+
+`describeStatements(sql)` (`ui/src/lib/sqlText.ts`) returns one entry per statement: its kind
+(SELECT, INSERT, UPDATE, DELETE, MERGE, TRUNCATE, DROP, ALTER, CREATE, EXEC, or OTHER), the target
+object when it parses, and `noWhere` for an UPDATE or DELETE with no top-level WHERE and no TOP.
+Statements split at `;`, at GO lines, and at a new top-level verb with no separator; a WITH-led
+statement takes the first verb after its CTE list; MERGE, CREATE, and ALTER keep their inner verbs.
+Strings, comments, and parenthesized subqueries do not count.
+
+The `run_mutation` card shows one badge per kind ("DELETE · 2"); a kind that removes data is in the
+error color. Each UPDATE/DELETE with no WHERE adds the line "No WHERE — changes/deletes every row in
+{table}", and TRUNCATE adds "TRUNCATE removes every row in {table}". Approve uses the error color
+when any statement is DROP, TRUNCATE, DELETE, or an UPDATE with no WHERE. There is no extra dialog.
+
+**Acceptance criteria (`unit.approvalRisk.test.ts`):**
+- `UPDATE dbo.Orders SET … WHERE id = 1` → UPDATE, `dbo.Orders`, `noWhere` false; without WHERE → true
+- WHERE only inside a string, comment, or subquery → `noWhere` true
+- `WITH c AS (…) DELETE FROM t WHERE …` → one DELETE on `t`
+- `INSERT …; GO UPDATE … WHERE … DELETE FROM c` → INSERT, UPDATE, DELETE (no WHERE)
+- `INSERT … SELECT`, a MERGE with UPDATE/DELETE branches, and `ALTER TABLE … DROP COLUMN` → one statement each
+- `TRUNCATE TABLE`, `DROP TABLE IF EXISTS`, `DELETE TOP (10)`, `UPDATE STATISTICS` → TRUNCATE, DROP, DELETE without the flag, OTHER
+- `isDestructive` is true for DROP, TRUNCATE, any DELETE, and an UPDATE with no WHERE; false otherwise
+
+**Verification procedure (manual):** ask Capi to delete every row of a scratch table → the card
+shows a red DELETE badge, the no-WHERE line, and a red Approve; ask for a single-row UPDATE with a
+WHERE → a muted UPDATE badge and the usual green Approve.
 
 ### BASED-CHAT-CODE-THEME: Chat code is legible in every theme
 **Applies to:** based (ui)
@@ -3028,17 +3210,36 @@ per-column lookup and the index panel cost one call between them.
 **Applies to:** based (ui)
 **Test category:** manual
 
-For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab's toolbar gains a Browse/Search toggle. Search mode replaces the browse toolbar with: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
+For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab leads with rows. The browse toolbar holds a "Search rows…" field with the `Ctrl+F` hint; a click on it, or `Ctrl+F` with focus in the Data tab, opens the search row and focuses its query. The search row holds: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
 
-**Layout:** the primary row holds only a text-labelled `Vector | Text | Hybrid` mode control (a radio group), the query input, **Run**, **Clear** (after a search), the result count, and a **Tuning** disclosure. The row wraps instead of overflowing, so Run stays visible at 1024px with the Capi rail open. Tuning holds every other control, each with a visible label (Where, Embedding, Vector column, Min score, Max gap, Reranker, Rerank column, Top n, Temperature, Pool, Keep). Collapsed, Tuning shows each non-default value as a chip ("min score 0.5 ✕"); ✕ resets that one value; the toggle shows the chip count. The open/closed state lasts for the window's session. The Data view's edit actions (+, Import CSV, Delete row, Review SQL, Commit, Discard) are hidden when the table, the view, or the connection (`capabilities.write` false) cannot be edited, with one line saying why.
+**Modes the table can run:** Text and Hybrid need a full-text (FTS/INVERTED) index, from the tab's index list; Vector and Hybrid need a vector column. The mode control is a menu button ("Text ▾"); a mode the table cannot run is a disabled menu item with the reason under its label, and arrow keys skip it. When the index list or the page is not loaded yet, the mode stays on. Until the user picks a mode, the opening mode follows BASED-LANCE-SEARCH-DEFAULT; if the selected mode becomes blocked, it moves to the first mode the table can run. A table that can run none shows the field as a disabled "No search index", with the reason in its tooltip. Vector or Hybrid with no embedding profile shows "Choose embedding profile" in place of Run: it opens Tuning and focuses the Embedding picker; with no profiles at all, "Add embedding profile" opens Settings on Search. Run uses the shared green Run style.
+
+**Layout:** before a search, the Data tab has one toolbar row (paging, row range, the search field, edit actions, export). The search row holds only the mode menu, the query input, **Run**, **Clear** (after a search), the result count, a **Tuning** disclosure, and ✕. ✕ or `Esc` in the query closes search: it clears the result and returns to the browse row. Whether search is open is part of the tab's grid session (BASED-TABLE-EDIT-RETAIN), so it survives a view switch. The row wraps instead of overflowing, so Run stays visible at 1024px with the Capi rail open. Tuning holds every other control, each with a visible label (Where, Embedding, Vector column, Min score, Max gap, Reranker, Rerank column, Top n, Temperature, Pool, Keep). Collapsed, Tuning shows each non-default value as a chip ("min score 0.5 ✕"); ✕ resets that one value; the toggle shows the chip count. The open/closed state lasts for the window's session. The Data view's edit actions (+, Import CSV, Delete row, Review SQL, Commit, Discard) are hidden when the table, the view, or the connection (`capabilities.write` false) cannot be edited, with one line saying why.
 
 **Verification procedure:**
-1. Open a LanceDB table's Data tab → the primary row shows the mode control, query, Run, and Tuning
-2. Pick vector mode, enter a query, pick an embedding profile under Tuning, Run → results render in the grid, read-only
+1. Open a LanceDB table's Data tab → one toolbar row with the "Search rows…" field; `Ctrl+F` (or a click on the field) opens the search row with the query focused; `Esc` returns to the browse row
+2. Pick Vector in the mode menu, enter a query, pick an embedding profile under Tuning, Run → results render in the grid, read-only
 3. Clear → the original paginated rows reappear unaffected
 4. Set `min score`/`max gap`/`pool`/`keep` and rerun → the result count and order change accordingly; collapse Tuning → each set value shows as a chip; ✕ on one resets only it
 5. At 1024px wide with the Capi rail open → Run is visible without sideways scroll
 6. On a read-only connection → no Review SQL / Commit / Discard; the row says the connection is read-only
+7. A table with no full-text index → Text and Hybrid are disabled menu items that say why; a table with no vector column → Vector and Hybrid are disabled; a table with neither → the field reads "No search index" and is disabled
+8. Vector mode with no embedding profile → "Choose embedding profile" in place of Run opens Tuning on the Embedding picker; with no profiles at all, "Add embedding profile" opens Settings → Search
+9. A search error shows its headline with "Full error" behind it (BASED-ERROR-HEADLINE)
+
+### BASED-LANCE-SEARCH-DEFAULT: The Data tab opens search on a mode that can run
+**Applies to:** based (ui)
+**Test category:** unit (`unit.searchDefault.test.ts`)
+
+`defaultSearchMode({ hasFts, hasVectorColumn, hasEmbeddingProfile })` (`ui/src/lib/searchDefault.ts`) picks the opening mode: Vector when a vector column and an embedding profile both exist; else Text when a full-text index exists; else Vector when a vector column exists (the profile action shows); else null. A null capability (not loaded yet) counts as available. The rule applies only until the user picks a mode.
+
+**Acceptance criteria:**
+- Vector column + FTS + profile → `vector`
+- Vector column + FTS, no profile → `text`
+- Vector column, no FTS, no profile → `vector`
+- FTS only → `text`
+- Neither → `null`
+- Both capabilities unknown, no profile → `text`
 
 ### BASED-LANCE-SEARCH-PROFILES-UI: Search tab in the settings popover
 **Applies to:** based (ui)
@@ -3428,7 +3629,7 @@ on completion).
 **Applies to:** based (ui)
 **Test category:** manual
 
-A fourth sub-view button, "Embeddings", appears on table tabs only when the engine is search-capable AND the table has a vector column. It renders a deck.gl scatter (ScatterplotLayer/Orthographic in 2D, PointCloudLayer/Orbit in 3D) themed from the live CSS variables, with: live epoch-streamed layout ("galaxy condensing"), cluster tints + legend chips (click dims a cluster), numbered callout-badge cluster labels tethered to their centroids by leader lines, always full-strength at any zoom (TF-IDF terms in legend tooltips; AI names on demand replace the numbers), hover tooltip, click → point details panel (a resizable side panel with the row cells + Find similar via client-side cosine kNN, neighbours ringed and the rest dimmed), lasso selection (2D) → ResultGrid panel with a Cell viewer tab (double-click/Enter on a cell), and a points/vector-column/text-column/seed toolbar. Layout state lives in a per-tab engine registry: switching sub-views mid-run does not kill the worker; closing the tab does.
+A fourth sub-view button, "Embeddings", appears on table tabs only when the engine is search-capable AND the table has a vector column. It renders a deck.gl scatter (ScatterplotLayer/Orthographic in 2D, PointCloudLayer/Orbit in 3D) themed from the live CSS variables, with: live epoch-streamed layout ("galaxy condensing"), cluster tints + legend chips (click dims a cluster), numbered callout-badge cluster labels tethered to their centroids by leader lines, always full-strength at any zoom (TF-IDF terms in legend tooltips; AI names on demand replace the numbers), hover tooltip, click → point details panel (a resizable side panel with the row cells + Find similar via client-side cosine kNN, neighbours ringed and the rest dimmed), lasso selection (2D) → ResultGrid panel with a Cell viewer tab (double-click/Enter on a cell), and a points/vector-column/text-column/seed toolbar. Layout state lives in a per-tab engine registry: switching sub-views mid-run does not kill the worker; closing the tab does. Before it builds the scatter, the view checks for WebGL 2; with none, or when deck.gl reports a device error, the map area shows "The embeddings map needs WebGL 2, and this window could not start it." instead of throwing. Label projection and the lasso wait until deck.gl's device is ready, and labels draw as soon as it is (BASED-UI-ERROR-BOUNDARY catches anything else).
 
 **Verification procedure:**
 1. Connect to a LanceDB database with an embeddings table (vector column + a text column); open the table → an "Embeddings" button appears beside Details/Data/SQL (absent on MSSQL tables and vector-less Lance tables).
@@ -3441,6 +3642,7 @@ A fourth sub-view button, "Embeddings", appears on table tabs only when the engi
 8. Switch to Data and back mid-layout → the run continues (no restart). Close the tab → the worker terminates (no orphan in devtools).
 9. Switch among a dark, midtone, and light theme → canvas background, point tints, labels, and legend recolor live.
 10. Tiny table (<50 rows) → instant PCA layout with a "PCA (too few rows for UMAP)" note.
+11. Launch the browser with `--disable-webgl` → the WebGL message in the map area, no white screen; in a normal headless browser the map and the numbered labels draw.
 
 Record: PASS/FAIL + date below.
 - 2026-07-25 PASS (automated Playwright pass against the dev app, steps 1-6 + 10-equivalent: 3-cluster fixture laid out, labels/legend/tooltip/click-details/find-similar/lasso-grid/2D-3D all verified by screenshot; found and fixed ortho depth-clipping and a lasso pointer-event crash). Steps 7 (AI label — LM Studio was down) and 8-9 (worker survival, theme sweep) pending a human pass.

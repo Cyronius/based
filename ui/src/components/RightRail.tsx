@@ -28,6 +28,8 @@ import {
 } from "../agent/threads";
 import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { agentReadyText } from "./AgentReadyLine";
+import { CapiMark } from "./icons";
 import { SLEEPY_AFTER_MS } from "../agent/capiMood";
 import { CapiChat } from "./CapiChat";
 import { relativeTime } from "./HistoryPanel";
@@ -374,6 +376,15 @@ export function RightRail() {
     };
   }, [dragging]);
 
+  // Traces: BASED-AGENT-READY — rechecked on open and on any profile change; no polling.
+  const activeAiProfileId = useStore((s) => s.activeAiProfileId);
+  const aiProfiles = useStore((s) => s.aiProfiles);
+  const agentReady = useStore((s) => s.agentReady);
+  useEffect(() => {
+    void useStore.getState().refreshAgentReady();
+  }, [open, activeAiProfileId, aiProfiles]);
+  const notReady = agentReadyText(agentReady);
+
   // BASED-CAPI-AVATAR: the disconnected rail's full-body Capi dozes off when nobody is around.
   const { idleMs, touch } = useIdleMs(connected);
 
@@ -381,7 +392,7 @@ export function RightRail() {
     <aside
       onPointerMove={touch}
       className={`relative shrink-0 flex border-l border-line-soft bg-ink-950 ${dragging ? "" : "transition-[width]"}`}
-      style={{ width: open ? width : 32 }}
+      style={{ width: open ? width : 36 }}
     >
       {open && (
         <div
@@ -395,13 +406,17 @@ export function RightRail() {
       )}
       {!open && (
         <button
-          className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-          title={`Expand Capi (${accel("J")})`}
+          className="w-9 shrink-0 flex flex-col items-center pt-3 gap-2 text-paper-dim hover:text-brass hover:bg-ink-900/50"
+          title={notReady ? `Expand Capi (${accel("J")}) — ${notReady}` : `Expand Capi (${accel("J")})`}
+          aria-label="Expand Capi"
           onClick={toggle}
         >
-          <span className="text-[length:var(--fs-sm)]">‹</span>
-          <span className="ledger-label" style={{ writingMode: "vertical-rl", color: "var(--color-paper-dim)" }}>
-            capi
+          <span className="relative text-brass">
+            <CapiMark />
+            {notReady && <span className="absolute -right-1 -top-1 size-2 rounded-full bg-err" />}
+          </span>
+          <span className="text-[length:var(--fs-base)] font-semibold" style={{ writingMode: "vertical-rl" }}>
+            Capi
           </span>
         </button>
       )}

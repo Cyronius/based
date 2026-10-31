@@ -146,3 +146,114 @@ export function statementAt(sql: string, offset: number): { start: number; end: 
   const trail = text.length - text.trimEnd().length;
   return { start: span.start + lead, end: span.end - trail };
 }
+
+export type StatementKind = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "TRUNCATE" | "DROP" | "ALTER" | "CREATE" | "EXEC" | "OTHER";
+
+export interface StatementInfo {
+  kind: StatementKind;
+  /** Target object after UPDATE / DELETE [FROM] / TRUNCATE TABLE / DROP <type>, when it parses. */
+  table?: string;
+  /** UPDATE or DELETE with no top-level WHERE (and no TOP): it changes every row. */
+  noWhere: boolean;
+}
+
+const VERBS = new Set(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "ALTER", "CREATE", "EXEC", "EXECUTE"]);
+const SPLIT_VERBS = new Set(["INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "ALTER", "CREATE", "EXEC", "EXECUTE"]);
+// MERGE's WHEN clauses and a CREATE/ALTER body hold verbs that are part of the same statement.
+const NO_SPLIT_AFTER = new Set(["MERGE", "CREATE", "ALTER"]);
+
+const word = (t: Tok | undefined) => (t && !t.ident ? t.v.toUpperCase() : "");
+
+function describeSegment(toks: Tok[]): StatementInfo {
+  let depth = 0;
+  let at = -1;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]!;
+    if (t.v === "(" && !t.ident) depth++;
+    else if (t.v === ")" && !t.ident) depth = Math.max(0, depth - 1);
+    else if (depth === 0 && VERBS.has(word(t))) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return { kind: "OTHER", noWhere: false };
+  const verb = word(toks[at]);
+  const kind = (verb === "EXECUTE" ? "EXEC" : verb) as StatementKind;
+  let i = at + 1;
+  let top = false;
+  if (word(toks[i]) === "TOP") {
+    top = true;
+    i++;
+    if (toks[i]?.v === "(") {
+      let d = 0;
+      for (; i < toks.length; i++) {
+        if (toks[i]!.v === "(") d++;
+        else if (toks[i]!.v === ")" && --d === 0) break;
+      }
+      i++;
+    }
+  }
+  if (kind === "UPDATE" && word(toks[i]) === "STATISTICS") return { kind: "OTHER", noWhere: false };
+  if (kind === "DELETE" && word(toks[i]) === "FROM") i++;
+  if (kind === "TRUNCATE" && word(toks[i]) === "TABLE") i++;
+  if (kind === "DROP") {
+    i++;
+    if (word(toks[i]) === "IF" && word(toks[i + 1]) === "EXISTS") i += 2;
+  }
+  const parts: string[] = [];
+  while (toks[i] && toks[i]!.v !== "(" && toks[i]!.v !== ")" && toks[i]!.v !== "," && toks[i]!.v !== ";" && toks[i]!.v !== "=") {
+    parts.push(toks[i]!.v);
+    if (toks[i + 1]?.v !== ".") break;
+    parts.push(".");
+    i += 2;
+  }
+  const table = parts.length > 0 && !(parts.length === 1 && VERBS.has(parts[0]!.toUpperCase())) ? parts.join("") : undefined;
+  let noWhere = false;
+  if ((kind === "UPDATE" || kind === "DELETE") && !top) {
+    depth = 0;
+    noWhere = true;
+    for (let k = at + 1; k < toks.length; k++) {
+      const t = toks[k]!;
+      if (t.v === "(" && !t.ident) depth++;
+      else if (t.v === ")" && !t.ident) depth = Math.max(0, depth - 1);
+      else if (depth === 0 && word(t) === "WHERE") {
+        noWhere = false;
+        break;
+      }
+    }
+  }
+  return { kind, ...(table ? { table } : {}), noWhere };
+}
+
+/** BASED-APPROVAL-RISK: one entry per statement in a batch. Statements split at `;`, GO lines, and
+ *  at a new top-level verb (T-SQL needs no separator). Strings and comments are ignored. */
+export function describeStatements(sql: string): StatementInfo[] {
+  const out: StatementInfo[] = [];
+  for (const span of statementSpans(sql)) {
+    const text = sql.slice(span.start, span.end);
+    if (isBlank(text)) continue;
+    let seg: Tok[] = [];
+    let kind = "";
+    let depth = 0;
+    const flush = () => {
+      if (seg.some((t) => t.v !== ";")) out.push(describeSegment(seg));
+      seg = [];
+      kind = "";
+    };
+    for (const t of tokenize(stripStringLiterals(stripSqlComments(text)))) {
+      if (t.v === "(" && !t.ident) depth++;
+      else if (t.v === ")" && !t.ident) depth = Math.max(0, depth - 1);
+      const w = word(t);
+      if (depth === 0 && kind && SPLIT_VERBS.has(w) && !NO_SPLIT_AFTER.has(kind) && !(kind === "INSERT" && (w === "EXEC" || w === "EXECUTE"))) flush();
+      if (depth === 0 && !kind && VERBS.has(w)) kind = w;
+      seg.push(t);
+    }
+    flush();
+  }
+  return out;
+}
+
+/** Statements that remove data or objects: DROP, TRUNCATE, DELETE, and an UPDATE with no WHERE. */
+export function isDestructive(s: StatementInfo): boolean {
+  return s.kind === "DROP" || s.kind === "TRUNCATE" || s.kind === "DELETE" || (s.kind === "UPDATE" && s.noWhere);
+}

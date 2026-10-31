@@ -1,6 +1,6 @@
 # Plan: UX critique pass (impeccable critique, 2026-10-26)
 
-**Status:** proposed
+**Status:** implemented (7 commits on `ux/critique-pass`, 2026-10-27)
 **Branch:** `ux/critique-pass` (from `origin/main`)
 **Source:** `.impeccable/critique/2026-10-26T17-24-28Z__ui-src.md` (24/40). User priorities: agent SQL
 safety first, all five issues, agent/connection identity shown across the workspace.
@@ -264,3 +264,14 @@ and additions to the existing settings, server, and lancedb integration tests.
   screenshots of each changed surface, including the approval card on SQL Server (needs the demo
   SQL Server up) and a dark, midtone, and light theme.
 - Phase 7 ends with `/impeccable critique` on `ui/src`; target ≥ 30/40.
+
+## Outcome
+
+- All seven phases are implemented and merged into `spec.md`; `bun test` and typecheck pass.
+- Deviations: Phase 2 has no environment field, tag, or strip (user decision); identity is the
+  user-chosen name, first in the window title and bold in the status bar. The engine mark is a text
+  chip from the engine profile, not a glyph (`BASED-ENGINE-REGISTRY` forbids branching on engine id).
+  `docs/screenshots/agent-tabs.png` was not retaken (needs a live model backend).
+- Re-critique: 25/40 (was 24/40), short of the 30 target. New P1s for a follow-up plan: pending
+  grid edits lost on tab/view switch, invisible focus ring on dark themes, LanceDB search offering
+  unsupported modes and raw engine errors. Snapshot: `.impeccable/critique/2026-10-27T18-32-23Z__ui-src.md`.

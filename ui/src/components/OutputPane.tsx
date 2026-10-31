@@ -10,9 +10,8 @@ export function OutputPane({ tab }: { tab: QueryTabState }) {
 
   return (
     <div className="h-full flex flex-col bg-ink-950">
-      <div className="px-3 py-1 border-b border-line-soft shrink-0 flex items-center gap-3">
-        <span className="ledger-label">Output</span>
-        {tab.stats && (
+      {tab.stats && (
+        <div className="px-3 py-1 border-b border-line-soft shrink-0 flex items-center gap-3">
           <span
             className={`text-[length:var(--fs-sm)] font-mono ${
               tab.stats.status === "ok" ? "text-ok" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"
@@ -20,15 +19,15 @@ export function OutputPane({ tab }: { tab: QueryTabState }) {
           >
             {tab.stats.status} · {tab.stats.durationMs.toLocaleString()} ms
           </span>
-        )}
-      </div>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-[length:var(--fs-sm)] leading-relaxed">
         {tab.output.length === 0 && !tab.running && <span className="text-faint italic">No messages.</span>}
         {tab.running && tab.output.length === 0 && <span className="text-muted pulse-soft">Executing…</span>}
         {tab.output.map((line, i) => (
           <div
             key={i}
-            className={line.kind === "error" ? "text-err" : line.kind === "system" ? "text-brass" : "text-paper-dim"}
+            className={`whitespace-pre-wrap break-words ${line.kind === "error" ? "text-err" : line.kind === "system" ? "text-brass" : "text-paper-dim"}`}
           >
             {line.text}
           </div>

@@ -21,6 +21,8 @@ import {
   saveRerankerProfile as apiSaveRerankerProfile,
   deleteRerankerProfile as apiDeleteRerankerProfile,
   listAiProfiles,
+  getAgentReadiness,
+  type AgentReadiness,
   saveAiProfile as apiSaveAiProfile,
   deleteAiProfile as apiDeleteAiProfile,
   setActiveAiProfile as apiSetActiveAiProfile,
@@ -33,6 +35,7 @@ import { disposeModel, getModel, setRunMarkers } from "./editorModels";
 import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { popClosed, pushClosed } from "./lib/closedTabs";
+import { gridPendingCount } from "./lib/gridPending";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
   AiProfile,
@@ -57,6 +60,10 @@ import type {
   TableColumn,
   TableDetails,
   TableIndex,
+  TablePage,
+  TableSort,
+  LanceSearchMode,
+  SearchRows,
   TestResult,
   WireValue,
 } from "./api/types";
@@ -112,6 +119,40 @@ export interface QueryTabState {
   queryErrors?: Array<{ message: string; line: number | null }>;
 }
 
+/** BASED-TABLE-EDIT-RETAIN: the Data view's browse page, pending edits, and search, kept per tab in
+ *  memory so they outlive the grid component. Never written to the tab store. */
+export interface TableGridSession {
+  page: TablePage | null;
+  offset: number;
+  loadedPageSize: number | null;
+  /** where/sort/filters the loaded page was fetched with. */
+  loadedKey: string;
+  sort: TableSort | null;
+  browseWhere: string;
+  filterExprs: Record<string, string>;
+  edits: Record<number, Record<string, WireValue>>;
+  newRows: Array<Record<string, WireValue>>;
+  deleted: Set<number>;
+  searchMode: LanceSearchMode;
+  query: string;
+  whereText: string;
+  embeddingProfileId: string;
+  rerankerProfileId: string;
+  profilesTouched: boolean;
+  rerankTopN: string;
+  rerankTemperature: string;
+  rerankTextColumn: string;
+  candidatePool: string;
+  keepSize: string;
+  minScoreText: string;
+  maxGapText: string;
+  vectorColumn: string;
+  searchResult: SearchRows | null;
+  searchOpen: boolean;
+  /** The user picked a mode, so the opening-mode rule stops choosing for them. */
+  modeTouched: boolean;
+}
+
 export interface TableTabState {
   kind: "table";
   id: string;
@@ -137,6 +178,7 @@ export interface TableTabState {
    *  TableDataGrid on mount. This is how `show_results` lands rows in a real grid on a connection
    *  with no SQL editor to open a query tab in. */
   prefillWhere: string | null;
+  grid?: Partial<TableGridSession>;
   error: string | null;
   /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query
    *  view; Embeddings = the vector scatter (BASED-EMBED-UI, vector tables only). */
@@ -196,6 +238,9 @@ export interface AppState {
   rerankerProfiles: RerankerProfile[];
   aiProfiles: AiProfile[];
   activeAiProfileId: string | null;
+  /** Traces: BASED-AGENT-READY — null until first checked or when the check itself failed. */
+  agentReady: AgentReadiness | null;
+  refreshAgentReady(): Promise<void>;
   databases: string[];
   database: string | null;
   schemas: string[];
@@ -230,6 +275,9 @@ export interface AppState {
   focusEditorFor: string | null;
   /** Tabs waiting on the opt-in close confirmation, or null. */
   closeConfirm: { ids: string[]; titles: string[] } | null;
+  /** A request from elsewhere in the UI to open Settings on one section; ThemePicker consumes it. */
+  settingsRequest: "general" | "theme" | "search" | "agent" | null;
+  openSettings(section: "general" | "theme" | "search" | "agent" | null): void;
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -275,12 +323,13 @@ export interface AppState {
   /** `view` sets the initial sub-view on creation (BASED-EXPLORER-ACTION); an existing tab is
    *  activated as-is. Returns the tab id — ids are random, so callers that need to patch the tab
    *  afterwards (openTableTabWithQuery) can only get it from here. */
-  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId): Promise<string>;
+  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId, grid?: Partial<TableGridSession>): Promise<string>;
   setTableView(id: string, view: TableViewId): void;
   openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<string>;
   closeTab(id: string): void;
   /** `force` skips the opt-in unsaved-changes confirmation (BASED-TAB-CLOSE-CONFIRM). */
   closeTabs(ids: string[], opts?: { force?: boolean }): void;
+  patchTableGrid(id: string, patch: Partial<TableGridSession>): void;
   /** BASED-TAB-REOPEN: restore the most recent batch of closed tabs for this connection. */
   reopenClosedTabs(): Promise<void>;
   /** True when this connection has a closed-tab batch to restore. */
@@ -366,9 +415,18 @@ interface DiagramTabMeta {
   schemaScope: string;
 }
 
+// Traces: BASED-UI-ERROR-BOUNDARY — a view that failed to draw is saved as Data, so a restart never reopens into it.
+const failedTableViews = new Set<string>();
+let persistAfterFailure = () => {};
+export function markTableViewFailed(tabId: string, view: TableViewId): void {
+  failedTableViews.add(`${tabId}:${view}`);
+  persistAfterFailure();
+}
+
 function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
   if (t.kind === "table") {
-    const meta: TableTabMeta = { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+    const view = failedTableViews.has(`${t.id}:${t.view}`) ? "data" : t.view;
+    const meta: TableTabMeta = { schema: t.schema, table: t.table, objectType: t.objectType, view };
     if (t.openedBy) meta.openedBy = t.openedBy;
     return meta;
   }
@@ -396,7 +454,7 @@ const connectionCache = new Map<string, ConnectionSnapshot>();
 /** BASED-TAB-REOPEN: what a closed tab needs to come back; results are not kept. */
 type ClosedTab =
   | { kind: "query"; title: string; content: string; filePath: string | null; dirty: boolean; openedBy?: "capi" }
-  | { kind: "table"; schema: string; table: string; objectType: "table" | "view"; view: TableViewId }
+  | { kind: "table"; schema: string; table: string; objectType: "table" | "view"; view: TableViewId; grid?: Partial<TableGridSession> }
   | { kind: "routine"; schema: string; name: string; routineType: "procedure" | "function" }
   | { kind: "diagram"; schemaScope: string }
   | { kind: "docs" };
@@ -406,7 +464,7 @@ function closedSnapshot(t: TabState): ClosedTab {
     case "query":
       return { kind: "query", title: t.title, content: t.content, filePath: t.filePath, dirty: t.dirty, openedBy: t.openedBy };
     case "table":
-      return { kind: "table", schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+      return { kind: "table", schema: t.schema, table: t.table, objectType: t.objectType, view: t.view, grid: t.grid };
     case "routine":
       return { kind: "routine", schema: t.schema, name: t.name, routineType: t.routineType };
     case "diagram":
@@ -484,6 +542,7 @@ export const useStore = create<AppState>((set, get) => {
     }).catch(() => {});
   }
 
+  persistAfterFailure = () => persistTabsSoon();
   function persistTabsSoon(): void {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(flushPendingTabs, 700);
@@ -711,6 +770,14 @@ export const useStore = create<AppState>((set, get) => {
     rerankerProfiles: [],
     aiProfiles: [],
     activeAiProfileId: null,
+    agentReady: null,
+    async refreshAgentReady() {
+      try {
+        set({ agentReady: await getAgentReadiness() });
+      } catch {
+        set({ agentReady: null });
+      }
+    },
     databases: [],
     database: null,
     schemas: [],
@@ -734,6 +801,10 @@ export const useStore = create<AppState>((set, get) => {
     confirmCloseUnsaved: false,
     focusEditorFor: null,
     closeConfirm: null,
+    settingsRequest: null,
+    openSettings(section) {
+      set({ settingsRequest: section });
+    },
     capturePlan: false,
     captureStats: false,
 
@@ -1059,7 +1130,15 @@ export const useStore = create<AppState>((set, get) => {
       const id = await get().openTableTab(schema, table, "table", "data");
       set({
         tabs: get().tabs.map((t) =>
-          t.id === id && t.kind === "table" ? { ...t, view: "data" as TableViewId, prefillWhere: where ?? null } : t,
+          t.id === id && t.kind === "table"
+            ? {
+                ...t,
+                view: "data" as TableViewId,
+                prefillWhere: where ?? null,
+                // An agent filter never throws away the user's pending edits.
+                ...(gridPendingCount(t.grid) === 0 ? { grid: { ...t.grid, browseWhere: where ?? "", page: null } } : {}),
+              }
+            : t,
         ),
         activeTabId: id,
       });
@@ -1067,7 +1146,7 @@ export const useStore = create<AppState>((set, get) => {
       return id;
     },
 
-    async openTableTab(schema, table, objectType, view) {
+    async openTableTab(schema, table, objectType, view, grid) {
       const existing = get().tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
       if (existing) {
         set({ activeTabId: existing.id });
@@ -1090,6 +1169,7 @@ export const useStore = create<AppState>((set, get) => {
         prefillWhere: null,
         error: null,
         view: view ?? "details",
+        ...(grid ? { grid } : {}),
       };
       set({ tabs: [...get().tabs, tab], activeTabId: id });
       persistTabsSoon();
@@ -1146,9 +1226,16 @@ export const useStore = create<AppState>((set, get) => {
       if (remaining.length === tabs.length) return;
       const closing = tabs.filter((t) => idSet.has(t.id) && !(t.kind === "query" && t.parentTabId));
       if (!opts?.force && get().confirmCloseUnsaved) {
-        const unsaved = closing.filter((t): t is QueryTabState => t.kind === "query" && t.dirty && t.content.trim() !== "");
-        if (unsaved.length > 0) {
-          set({ closeConfirm: { ids, titles: unsaved.map((t) => t.title) } });
+        const titles: string[] = [];
+        for (const t of closing) {
+          if (t.kind === "query" && t.dirty && t.content.trim() !== "") titles.push(t.title);
+          if (t.kind === "table") {
+            const n = gridPendingCount(t.grid);
+            if (n > 0) titles.push(`${t.title} — ${n} pending change${n === 1 ? "" : "s"}`);
+          }
+        }
+        if (titles.length > 0) {
+          set({ closeConfirm: { ids, titles } });
           return;
         }
       }
@@ -1167,6 +1254,10 @@ export const useStore = create<AppState>((set, get) => {
       // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
       // query), so restore no longer accumulates every table ever opened.
       persistTabsSoon();
+    },
+
+    patchTableGrid(id, patch) {
+      set({ tabs: get().tabs.map((t) => (t.id === id && t.kind === "table" ? { ...t, grid: { ...t.grid, ...patch } } : t)) });
     },
 
     cancelCloseConfirm() {
@@ -1200,9 +1291,10 @@ export const useStore = create<AppState>((set, get) => {
             getModel(tab.id, snap.content);
             break;
           }
-          case "table":
-            await get().openTableTab(snap.schema, snap.table, snap.objectType, snap.view);
+          case "table": {
+            await get().openTableTab(snap.schema, snap.table, snap.objectType, snap.view, gridPendingCount(snap.grid) > 0 ? snap.grid : undefined);
             break;
+          }
           case "routine":
             await get().openRoutineTab(snap.schema, snap.name, snap.routineType);
             break;

@@ -20,6 +20,8 @@ import { isReadOnly } from "../lib/sqlText";
 import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
 import { IconButton } from "./IconButton";
+import { RunButton } from "./RunButton";
+import { AgentReadyLine } from "./AgentReadyLine";
 import { deriveMood, HAPPY_WINDOW_MS } from "../agent/capiMood";
 
 function SendIcon() {
@@ -168,9 +170,7 @@ function SqlActions({ text }: { text: string }) {
             </button>
             {/* BASED-CHAT-SQL-RUN-GATE: agent-written SQL that may change data never runs on one click. */}
             {isReadOnly(b.sql) ? (
-              <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => void run(b.sql)}>
-                Run
-              </button>
+              <RunButton size="sm" onClick={() => void run(b.sql)} />
             ) : (
               <button
                 className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0"
@@ -284,6 +284,7 @@ export function CapiChat() {
       // treatment in the render below; a user-initiated Stop is not a failure.
       if (!isAbortError(err)) {
         addMessage({ id: `error_${Date.now()}`, role: "assistant", content: `Error: ${describeRunError(err)}` });
+        void useStore.getState().refreshAgentReady();
       }
     } finally {
       sendingRef.current = false;
@@ -505,6 +506,7 @@ export function CapiChat() {
         </div>
       </div>
       <div className="border-t border-line-soft pl-2 pr-3 py-2">
+        <AgentReadyLine />
         <div className="flex items-stretch gap-2">
           <div className="flex w-20 shrink-0 items-center justify-center">
             <CapiAvatar className="h-20 w-auto" mood={mood} speaking={speaking} variant="full" />

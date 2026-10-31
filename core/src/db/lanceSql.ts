@@ -8,6 +8,7 @@
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { duckErrorLine, statementStartLines } from "./errorLine";
 import { RowCollector } from "./rowcap";
 import { serializeLanceValue } from "./lanceSerialize";
 import { serializeValue } from "./serialize";
@@ -184,9 +185,11 @@ export class LanceSqlBridge {
         conn = await this.newConnection();
         if (profilePath) await this.enableProfiling(conn, profilePath);
         const extracted = await conn.extractStatements(sqlText);
+        const starts = statementStartLines(sqlText);
+        const startOf = (i: number) => (starts.length === extracted.count ? starts[i] : undefined);
         for (let i = 0; i < extracted.count; i++) {
           if (cancelled) break;
-          const ok = await this.runStatement(duckdb, extracted, i, onChunk, opts, () => cancelled, profilePath);
+          const ok = await this.runStatement(duckdb, extracted, i, onChunk, opts, () => cancelled, profilePath, startOf(i));
           if (!ok) {
             errored = true;
             break; // DuckDB has no per-statement error recovery within one script; stop like a failed batch.
@@ -195,7 +198,8 @@ export class LanceSqlBridge {
       } catch (err) {
         if (!cancelled) {
           errored = true;
-          onChunk({ type: "error", message: errMessage(err) });
+          const message = errMessage(err);
+          onChunk({ type: "error", message, textLine: duckErrorLine(message) ?? undefined });
         }
       } finally {
         try {
@@ -249,6 +253,7 @@ export class LanceSqlBridge {
     opts: ExecuteOptions,
     isCancelled: () => boolean,
     profilePath: string | null,
+    startLine?: number,
   ): Promise<boolean> {
     try {
       const prepared = await extracted.prepare(index);
@@ -279,7 +284,11 @@ export class LanceSqlBridge {
       if (changed > 0) onChunk({ type: "message", text: `(${changed} row${changed === 1 ? "" : "s"} affected)` });
       return true;
     } catch (err) {
-      if (!isCancelled()) onChunk({ type: "error", message: errMessage(err) });
+      if (!isCancelled()) {
+        const message = errMessage(err);
+        // Traces: BASED-QUERY-ERROR-LINE — DuckDB's LINE n counts script lines; without one, mark the statement's first line.
+        onChunk({ type: "error", message, textLine: duckErrorLine(message) ?? startLine });
+      }
       return false;
     }
   }

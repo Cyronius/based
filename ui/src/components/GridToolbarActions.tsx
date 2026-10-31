@@ -8,6 +8,9 @@ import { useState } from "react";
 import { api } from "../api/client";
 import type { WireValue } from "../api/types";
 import { selectionMarkdown, selectionTsv, sliceRows, type SelectionSlice } from "../gridSelectionText";
+import { IconButton } from "./IconButton";
+import { CopyIcon } from "./icons";
+import { MenuButton } from "./MenuButton";
 
 export interface GridExportActions {
   notice: string | null;
@@ -72,7 +75,6 @@ export function useGridExportActions({
  *  content + 8px padding + 2px border. Keeps all controls flush at any --font-scale. */
 const controlH = "h-[calc(var(--fs-md)*1.5_+_10px)]";
 const btn = `inline-flex items-center ${controlH} px-2 text-[length:var(--fs-sm)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60 disabled:opacity-35`;
-const iconBtn = `grid place-items-center ${controlH} w-[26px] rounded border border-line text-muted hover:text-brass hover:border-brass-soft/60 disabled:opacity-35`;
 
 export function MarkdownIcon() {
   return (
@@ -110,31 +112,29 @@ export function GridToolbarActions({ actions, onFitColumns }: { actions: GridExp
   return (
     <>
       {actions.notice && <span className="text-[length:var(--fs-sm)] text-brass mr-1">{actions.notice}</span>}
-      <button className={btn} title="Reset column widths to fit their content" onClick={onFitColumns}>
+      <button className={`${btn} whitespace-nowrap shrink-0`} title="Reset column widths to fit their content" onClick={onFitColumns}>
         Fit columns
       </button>
-      <button className={btn} title="Copy selection (or all) to clipboard" onClick={() => void actions.copy()}>
-        Copy
-      </button>
-      <button
-        className={iconBtn}
-        title="Copy selection (or all) as a markdown table"
-        aria-label="Copy as markdown table"
-        onClick={() => void actions.copyMarkdown()}
+      <IconButton
+        size="bar"
+        className="text-muted hover:text-brass hover:border-brass-soft/60"
+        title="Copy selection (or all) to clipboard"
+        aria-label="Copy"
+        onClick={() => void actions.copy()}
       >
-        <MarkdownIcon />
-      </button>
-      <button className={iconBtn} title="Save as CSV" aria-label="Save as CSV" onClick={() => void actions.exportFile("csv")}>
-        <CsvIcon />
-      </button>
-      <button
-        className={iconBtn}
-        title="Open in Excel"
-        aria-label="Open in Excel"
-        onClick={() => void actions.exportFile("xlsx", { openAfter: true })}
+        <CopyIcon />
+      </IconButton>
+      <MenuButton
+        className={`${btn} whitespace-nowrap shrink-0`}
+        title="Copy as markdown, save as CSV, or open in Excel"
+        items={[
+          { label: "Copy as Markdown", icon: <MarkdownIcon />, run: () => void actions.copyMarkdown() },
+          { label: "Save as CSV", icon: <CsvIcon />, run: () => void actions.exportFile("csv"), separatorBefore: true },
+          { label: "Open in Excel", icon: <ExcelIcon />, run: () => void actions.exportFile("xlsx", { openAfter: true }) },
+        ]}
       >
-        <ExcelIcon />
-      </button>
+        Export ▾
+      </MenuButton>
     </>
   );
 }

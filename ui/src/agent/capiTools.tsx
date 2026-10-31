@@ -10,13 +10,14 @@
 // user in a real grid rather than in chat — a query tab where SQL exists, the table's data grid
 // where it doesn't. Agent-opened tabs need no thread bookkeeping — the chat is per-window
 // (BASED-AGENT-THREADS).
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
 import { api, inspectCsv, runAgentCreateTable, runAgentMutation, streamCsvImport, type CreateTableRequest, type CsvImportChunk } from "../api/client";
 import type { EngineCapabilities, MutationResult, TableColumn } from "../api/types";
 import { capiToolDefs, filterToolsByCapabilities } from "./capiToolDefs";
 import { useStore, type QueryTabState } from "../store";
 import { buildTabContext, serializeResultRows } from "./tabContext";
+import { describeStatements, isDestructive, type StatementInfo } from "../lib/sqlText";
 
 let pendingResolve: ((v: string) => void) | null = null;
 
@@ -46,8 +47,41 @@ function ApprovalTarget() {
   );
 }
 
+// Traces: BASED-APPROVAL-RISK — one badge per statement kind; data-removing kinds use the error color.
+function StatementBadges({ statements }: { statements: StatementInfo[] }) {
+  const counts = new Map<string, { n: number; danger: boolean }>();
+  for (const s of statements) {
+    const c = counts.get(s.kind) ?? { n: 0, danger: false };
+    counts.set(s.kind, { n: c.n + 1, danger: c.danger || isDestructive(s) });
+  }
+  return (
+    <>
+      {[...counts].map(([kind, { n, danger }]) => (
+        <span
+          key={kind}
+          className={`rounded border px-1.5 font-mono text-[length:var(--fs-xs)] leading-[1.4] ${danger ? "border-err/50 text-err" : "border-line text-muted"}`}
+        >
+          {kind === "OTHER" ? "other" : kind}
+          {n > 1 ? ` · ${n}` : ""}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function everyRowWarnings(statements: StatementInfo[]): string[] {
+  return statements.flatMap((s) => {
+    const where = s.table ? `in ${s.table}` : "in the table";
+    if (s.kind === "TRUNCATE") return [`TRUNCATE removes every row ${where}`];
+    if (s.noWhere) return [`No WHERE — ${s.kind === "DELETE" ? "deletes" : "changes"} every row ${where}`];
+    return [];
+  });
+}
+
 function ApprovalFrame({
   title,
+  badges,
+  danger,
   reason,
   phase,
   approveLabel,
@@ -60,6 +94,9 @@ function ApprovalFrame({
   children,
 }: {
   title: string;
+  badges?: ReactNode;
+  /** Approve in the error color: the change removes data or objects. */
+  danger?: boolean;
   reason?: string;
   phase: ApprovalPhase;
   approveLabel: string;
@@ -73,7 +110,10 @@ function ApprovalFrame({
 }) {
   return (
     <div role="group" aria-label={title} className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
-      <div className="ledger-label mb-1 text-brass">{title}</div>
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="ledger-label text-brass">{title}</span>
+        {badges}
+      </div>
       {phase === "idle" && (
         <span role="status" className="sr-only">
           Capi asks for approval: {title}
@@ -85,7 +125,9 @@ function ApprovalFrame({
       {phase === "idle" ? (
         <div className="flex gap-2">
           <button
-            className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30"
+            className={`rounded px-3 py-1 text-[length:var(--fs-base)] border ${
+              danger ? "bg-err/15 text-err border-err/50 hover:bg-err/25" : "bg-ok/20 text-ok border-ok/40 hover:bg-ok/30"
+            }`}
             onClick={onApprove}
           >
             {approveLabel}
@@ -113,6 +155,8 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
   const [outcome, setOutcome] = useState<string>("");
   const [failed, setFailed] = useState(false);
   const sql = args?.sql ?? "";
+  const statements = useMemo(() => describeStatements(sql), [sql]);
+  const warnings = everyRowWarnings(statements);
 
   const approve = async () => {
     setPhase("running");
@@ -142,6 +186,8 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
   return (
     <ApprovalFrame
       title="Mutation approval"
+      badges={<StatementBadges statements={statements} />}
+      danger={statements.some(isDestructive)}
       reason={args?.reason}
       phase={phase}
       approveLabel="Approve & run"
@@ -152,6 +198,11 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
       onApprove={approve}
       onReject={reject}
     >
+      {warnings.map((w, i) => (
+        <div key={i} className="mb-1 text-[length:var(--fs-base)] font-semibold text-err">
+          {w}
+        </div>
+      ))}
       <pre className={APPROVAL_PRE}>{sql}</pre>
     </ApprovalFrame>
   );

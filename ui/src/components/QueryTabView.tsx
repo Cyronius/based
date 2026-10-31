@@ -11,6 +11,11 @@ import { ChevronUpIcon } from "./icons";
 import { accel, cancelLabel } from "../platform";
 import { runFromEditor } from "../editorRun";
 import { FetchSizeInput } from "./FetchSizeInput";
+import { RunButton } from "./RunButton";
+import { MenuButton } from "./MenuButton";
+
+const fileBtn =
+  "shrink-0 whitespace-nowrap px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60";
 
 type BottomTabId = "output" | "cell";
 
@@ -92,53 +97,72 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex items-center gap-1.5 px-2 py-1 border-b border-line-soft shrink-0">
+      <div className="@container border-b border-line-soft shrink-0">
+      <div className="flex items-center gap-1.5 px-2 py-1 min-w-0">
         {tab.running ? (
           <button
-            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
+            className="shrink-0 whitespace-nowrap px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
             title={`Cancel (${cancelLabel})`}
             onClick={() => void cancelQuery(tab.id)}
           >
             ■ Cancel
           </button>
         ) : (
-          <button
-            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
+          <RunButton
             title={`Run selection or all (F5) · statement at cursor (${accel("Enter")})`}
             disabled={!canRun}
             onClick={() => runFromEditor(tab.id, "all")}
-          >
-            ▶ Run
-          </button>
+          />
         )}
         <FetchSizeInput />
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Open a .sql file (${accel("O")})`}
           onClick={() => void openSqlFile()}
         >
           Open…
         </button>
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Save to .sql (${accel("S")})`}
           onClick={() => void saveTab(tab.id)}
         >
           Save{tab.dirty ? " •" : ""}
         </button>
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Save to a new .sql file (${accel("Shift+S")})`}
           onClick={() => void saveTab(tab.id, { as: true })}
         >
           Save As…
         </button>
-        {tab.filePath && <span className="text-[length:var(--fs-sm)] text-faint font-mono truncate">{tab.filePath}</span>}
+        <span className="hidden @max-xl:contents">
+          <MenuButton
+            className="grid place-items-center shrink-0 h-7 w-7 rounded text-muted hover:text-paper hover:bg-ink-800/70"
+            title="More file actions"
+            label="More file actions"
+            items={[
+              { label: `Open… (${accel("O")})`, run: () => void openSqlFile() },
+              { label: `Save${tab.dirty ? " •" : ""} (${accel("S")})`, run: () => void saveTab(tab.id) },
+              { label: `Save As… (${accel("Shift+S")})`, run: () => void saveTab(tab.id, { as: true }) },
+            ]}
+          >
+            ⋯
+          </MenuButton>
+        </span>
+        {tab.filePath && <span className="min-w-0 text-[length:var(--fs-sm)] text-faint font-mono truncate @max-xl:hidden">{tab.filePath}</span>}
         <div className="flex-1" />
-        <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-faint hover:text-paper cursor-pointer">
-          <input type="checkbox" checked={openTabs.has("output")} onChange={toggleOutput} />
+        <button
+          className={`shrink-0 px-2 py-0.5 rounded border text-[length:var(--fs-sm)] ${
+            openTabs.has("output") ? "border-brass-soft/60 text-brass bg-brass/10" : "border-transparent text-muted hover:text-paper"
+          }`}
+          aria-pressed={openTabs.has("output")}
+          title="Show the Output panel"
+          onClick={toggleOutput}
+        >
           Output
-        </label>
+        </button>
+      </div>
       </div>
 
       <PanelGroup ref={groupRef} direction="vertical" className="flex-1 min-h-0" autoSaveId={`panes:${tab.id}`}>

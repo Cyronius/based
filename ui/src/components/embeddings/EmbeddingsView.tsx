@@ -148,7 +148,8 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
 
   // Projected label positions — recomputed on camera moves (viewTick) and layout updates.
   const labelSpots = useMemo(() => {
-    if (!labelsOn || !clusters || !deck || snap.status !== "ready") return [];
+    // getViewports asserts until the GPU device is up, which can lag the first layout.
+    if (!labelsOn || !clusters || !deck?.isInitialized || snap.status !== "ready") return [];
     const viewport = deck.getViewports()[0];
     if (!viewport) return [];
     const spots: Array<{ c: number; x: number; y: number; bx: number; by: number }> = [];

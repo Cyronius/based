@@ -8,7 +8,10 @@ import { PlanView } from "./PlanView";
 import { GridContextMenu } from "./GridContextMenu";
 import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
 import { IconButton } from "./IconButton";
+import { Tabs } from "./Tabs";
 import { ChevronDownIcon } from "./icons";
+import { ErrorDetail } from "./ErrorDetail";
+import { revealLine } from "../editorModels";
 
 type View = "grid" | "text" | "plan";
 
@@ -50,41 +53,39 @@ export function ResultsPane({
 
   return (
     <div className="h-full flex flex-col bg-ink-900">
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-line-soft shrink-0 overflow-x-auto">
-        <div className="flex items-stretch h-6 border-r border-line-soft mr-2 shrink-0">
-          {views.map((v) => (
-            <button
-              key={v}
-              className={`px-2.5 border-r border-line-soft text-[length:var(--fs-sm)] capitalize ${
-                view === v
-                  ? "bg-ink-800 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
-                  : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
-              }`}
-              onClick={() => setView(v)}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
+      <div className="@container border-b border-line-soft shrink-0">
+      <div className="flex flex-wrap items-center gap-1 px-2 py-1 min-w-0">
+        <Tabs
+          label="Results view"
+          className="mr-2 shrink-0"
+          tabs={views.map((v) => ({ id: v, label: v === "grid" ? "Grid" : v === "text" ? "Text" : "Plan" }))}
+          value={view}
+          onChange={setView}
+        />
 
+        {/* Traces: BASED-UI-RESULTS — set buttons only for a batch; only they scroll, the rest stays put. */}
+        {tab.resultSets.length > 1 && (
+        <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
         {tab.resultSets.map((s, i) => (
           <button
             key={i}
-            className={`px-2 py-0.5 text-[length:var(--fs-sm)] rounded ${
+            className={`shrink-0 whitespace-nowrap px-2 py-0.5 text-[length:var(--fs-sm)] rounded ${
               i === tab.activeResult ? "bg-ink-800 text-brass border border-brass-soft/50" : "text-muted hover:text-paper border border-transparent"
             }`}
             onClick={() => setActiveResult(tab.id, i)}
           >
             Results {i + 1}
-            <span className="text-faint ml-1 font-mono">{s.rowCount}</span>
+            <span className="text-muted ml-1 font-mono">{s.rowCount}</span>
           </button>
         ))}
+        </div>
+        )}
         <div className="flex-1" />
         {rs && (
           <>
-            <span className="text-[length:var(--fs-sm)] text-muted font-mono mr-1">
+            <span className="shrink-0 whitespace-nowrap text-[length:var(--fs-sm)] text-muted font-mono mr-1">
               {rs.complete ? `${rs.rowCount.toLocaleString()} rows` : `${rs.rows.length.toLocaleString()}…`}
-              {tab.stats ? ` · ${tab.stats.durationMs.toLocaleString()} ms` : ""}
+              {tab.stats && <span className="@max-md:hidden"> · {tab.stats.durationMs.toLocaleString()} ms</span>}
             </span>
             <GridToolbarActions actions={exportActions} onFitColumns={() => fitColumnsRef.current()} />
           </>
@@ -94,6 +95,7 @@ export function ResultsPane({
             <ChevronDownIcon />
           </IconButton>
         )}
+      </div>
       </div>
 
       {rs?.truncated && (
@@ -129,11 +131,15 @@ export function ResultsPane({
           )
         ) : !tab.running && tab.queryErrors && tab.queryErrors.length > 0 ? (
           // Traces: BASED-UI-QUERY-ERROR — a failed run shows why here, not the "run a query" prompt.
-          <div role="alert" className="h-full overflow-auto px-4 py-3 space-y-2">
+          <div role="alert" className="h-full overflow-auto px-4 py-3 space-y-3 text-[length:var(--fs-base)]">
             {tab.queryErrors.map((e, i) => (
-              <div key={i} className="font-mono text-[length:var(--fs-base)] text-err whitespace-pre-wrap break-words">
-                {e.line != null && <span className="text-muted">Line {e.line}: </span>}
-                {e.message}
+              <div key={i}>
+                {e.line != null && (
+                  <button className="mb-1 text-[length:var(--fs-sm)] text-muted hover:text-brass" title="Put the cursor on this line" onClick={() => revealLine(tab.id, e.line!)}>
+                    Line {e.line} · go to line
+                  </button>
+                )}
+                <ErrorDetail message={e.message} />
               </div>
             ))}
           </div>
