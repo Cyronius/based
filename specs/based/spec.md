@@ -271,6 +271,8 @@ Every user-initiated execution shall append a history row (connection, database,
 **Acceptance criteria:**
 - After an execution completes, history returns it with status `ok` and duration ≥ 0
 - A failed execution records status `error` with the message
+- A LanceDB connection has no database name; its runs are still recorded, with an empty database (`integration.server.test.ts`)
+- Each row also records `statementCount` (statements or GO batches, when the engine split the text; from the `done` chunk) and `failedStatement` (the first error's `statement` or `batch`); on LanceDB, `select 1;` / `select bogus from plain;` / `select 3;` → error, 3, 2, and a one-statement run → ok, 1, null
 
 ### BASED-TABSTORE: Tab persistence
 **Applies to:** based (core)
@@ -911,7 +913,7 @@ update actions, disabled), **Constraints** (checks + defaults with definitions),
 server-computed CREATE script (exactly how views already show their definition), with a copy icon
 button beside its label that writes the full CREATE statement to the clipboard and flashes a ✓
 confirmation. A **Script ▾**
-dropdown sits next to the Details/Data/SQL sub-tab buttons (tables/views) and in the routine tab
+dropdown sits next to the Details/Data/SQL sub-tab buttons, under the table name (tables/views) and in the routine tab
 header (procedures/functions), offering the SSMS-parity action set per object type (no ALTER for
 tables; SELECT for tables/views; INSERT for tables only); each action opens the generated script
 in a new query tab (not run) via `POST /api/session/script`.
@@ -1751,7 +1753,7 @@ field, tag, or color, because environments differ for every user (they put that 
 **Applies to:** based (ui)
 **Test category:** manual
 
-Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Functions — each header showing a count; collapsed groups hide members. Double-clicking a table/view opens a table-details tab (Name, Data Type, Size/Precision/Scale, Nullable, Key) sourced from the same introspection endpoint as everything else. Double-clicking a stored procedure/function opens a routine tab showing its parameter list (BASED-ROUTINE-DETAILS) and SQL definition text (BASED-VIEW-DEFINITION) — no Edit Data/SQL tabs, since a routine has no natural row set.
+Collapsible accordion grouped by type — Tables, Views, Stored Procedures, Functions — each header showing a count; collapsed groups hide members. Double-clicking a table/view opens a table-details tab (Name, Data Type, Size/Precision/Scale, Nullable, Key) sourced from the same introspection endpoint as everything else. Key, Size, and References columns (and the index Metric column) show only when some row has a value; a vector's dimension is in its type, never in Size, so a LanceDB table shows Name, Data Type, Nullable. Double-clicking a stored procedure/function opens a routine tab showing its parameter list (BASED-ROUTINE-DETAILS) and SQL definition text (BASED-VIEW-DEFINITION) — no Edit Data/SQL tabs, since a routine has no natural row set.
 
 The explorer is a `tree` with one tab stop (roving tabindex): ↑/↓/Home/End move, → expands a group or enters it, ← collapses a group or returns to its header, Enter opens (same as double-click) or toggles a group, Space selects, Shift+F10 / Menu opens the context menu (arrow keys walk its items), and typing a name moves to the next match (`BASED-UI-A11Y-KEYBOARD`).
 
@@ -1803,7 +1805,7 @@ tab. Engines lacking the needed capability degrade to `details`.
 
 Connection-scoped multi-tabs; auto-persisted across restarts; the strip is a `tablist` with one tab stop (←/→/Home/End switch tabs, Delete closes the focused tab, Shift+F10 opens its menu; clicking a tab focuses its editor, keyboard switching keeps focus on the tab); a dirty mark (•) on query tabs with unsaved text and on table tabs with pending grid changes (BASED-TABLE-EDIT-RETAIN); explicit Save/Save-As to `.sql` (Ctrl+S; Ctrl+Shift+S / toolbar "Save As…" always re-dialogs, plain Ctrl+S on a file-backed tab overwrites in place); F5 runs the selection or the whole tab, Ctrl+Enter the selection or the statement at the cursor (BASED-RUN-SCOPE); closed tabs come back with Ctrl+Shift+T or the tab menu's "Reopen Closed Tab" (BASED-TAB-REOPEN); Cancel toolbar button + Ctrl+Break while running; each tab = three vertically stacked, independently resizable panes (editor → results → output), output collapsible.
 
-Only the tablist scrolls. "+", the All tabs menu (shown only while the tabs overflow), and the plan/stats toggles stay at the right edge. The active tab scrolls into view, also on keyboard switching. Each tab's close button is a sibling of its `role="tab"` element, so the tab's accessible name is its title only. Tabs with the same title show a display-only " (2)", " (3)" suffix (BASED-TAB-TITLE-DEDUPE). The statistics toggle's tooltip names `STATISTICS TIME, IO` only on SQL Server.
+After a run that returns results, the editor pane shrinks to its text (at least 6 lines, at most 45% of the tab) until the user drags the editor/results divider on that tab; from then on that tab keeps the user's split (a per-tab flag in localStorage, with the layout saved as before). Only the tablist scrolls, and it snaps to tab edges, so no tab rests half cut at the left. "+", the All tabs menu (shown only while the tabs overflow), and the plan/stats toggles stay at the right edge. The active tab scrolls into view, also on keyboard switching. Each tab's close button is a sibling of its `role="tab"` element, so the tab's accessible name is its title only. Tabs with the same title show a display-only " (2)", " (3)" suffix (BASED-TAB-TITLE-DEDUPE). The statistics toggle's tooltip names `STATISTICS TIME, IO` only on SQL Server.
 
 **Verification procedure:**
 1. Open 2 tabs, type SQL, close app, reopen → both tabs restored with content
@@ -1812,6 +1814,55 @@ Only the tablist scrolls. "+", the All tabs menu (shown only while the tabs over
 4. F5 runs; run `WAITFOR DELAY '00:00:30'` → Cancel button (and Ctrl+Break) stops it with "cancelled" in Output
 5. Drag both pane dividers; collapse/expand Output
 6. Open 15 tabs at 1024px → "+", the All tabs menu, and the toggles stay visible; All tabs activates a tab and scrolls it into view; a screen reader names each tab by its title, with "Close <title>" on its close button
+
+### BASED-TYPE-NAMES: Plain words beside engine type names
+**Applies to:** based (ui)
+**Test category:** unit (`unit.typeNames.test.ts`)
+
+The Details view shows a plain word after Arrow-style column types (`Utf8 · text`, `Float64 · number`)
+via `plainTypeName` (`ui/src/lib/typeNames.ts`), and on search-capable engines names index kinds as
+people say them (`plainIndexType`: `fts` → "full-text"). The index row counts read "Rows indexed" /
+"Rows not indexed". Types that already read plainly, vectors, and SQL Server types get no extra word.
+
+**Acceptance criteria:**
+- Utf8, LargeUtf8 → text; Int64, UInt8 → integer; Float64, Float32 → number; Boolean → true/false; Date32 → date; Timestamp(…) → date and time; Binary → bytes
+- date, string, `vector[8] float32`, nvarchar, int → none
+- fts, INVERTED → full-text; BTREE → sorted (btree); IVF_PQ → vector (IVF_PQ); other kinds unchanged
+
+### BASED-UI-NARROW-LAYOUT: The work column keeps room on a laptop
+**Applies to:** based (ui)
+**Test category:** unit (`unit.railFit.test.ts`) + manual
+
+The column between the rails keeps at least 520px. `railFit` (`ui/src/lib/railFit.ts`) gives each
+rail a width for the window, in this order, until the work column fits:
+1. Capi shrinks toward its 280px minimum.
+2. The explorer shrinks toward its 220px minimum.
+3. The explorer collapses to a 36px strip ("Explorer", an expand button); Capi takes back the room.
+4. Capi collapses to its 36px strip.
+
+Below 1200px, an open Capi collapses the explorer first (step 3 comes before steps 1–2), unless the user expanded the explorer after opening Capi. Saved widths do not change, so a wider window gives them back. The rail the user expands while
+narrow wins: an expanded explorer makes Capi collapse first; an expanded Capi stays open even
+when the work column then gets less than 520px. Ctrl+J and Capi's own buttons use the same rule
+(an open Capi that was squeezed shut expands; it does not close). The explorer header has a
+collapse button; a hand-collapsed explorer stays collapsed at any width, and the choice persists
+in localStorage. Table tabs put the table name first and the Details/Data/SQL/Embeddings tabs
+under it; the name truncates instead of wrapping.
+
+**Acceptance criteria:**
+- 1440px, saved 280 / 384, Capi open → 280 / 384
+- 1250px, saved 460 / 384 → explorer 450, Capi 280 (work column 520)
+- 1024px, Capi open → explorer collapsed, Capi 384
+- 1100px, explorer expanded by the user → explorer 280, Capi 300
+- 900px → explorer collapsed (36), Capi 344
+- 760px → both collapsed
+- 1024px, Capi closed → explorer 280
+- 900px, explorer expanded by the user → explorer 280, Capi collapsed
+- 760px, Capi expanded by the user → explorer collapsed, Capi 280
+- A hand-collapsed explorer stays collapsed at 1440px
+
+**Verification procedure:** at 1100×768 open Capi → the explorer collapses to its strip and Capi keeps its width; at 1024×768 open a LanceDB table's Data tab → the browse toolbar is one row; at 900px the explorer is a strip and Fit columns /
+Copy / Export sit in the ⋯ menu; expand the explorer → Capi collapses; widen to 1440px → both rails
+return to their saved widths.
 
 ### BASED-RUN-SCOPE: What a run sends
 **Applies to:** based (ui)
@@ -1920,10 +1971,10 @@ When a query run completes with status `ok` and the tab's title still matches th
 **Applies to:** based (ui)
 **Test category:** manual
 
-At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. Result-set buttons per result set, shown only when a run returns 2 or more result sets (a single set repeats nothing the row count already says). Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the query toolbar's fetch-size input value, not a fixed constant).
+At the far left of the results toolbar, Grid/Text (and Plan, when a plan was captured — see BASED-UI-EXEC-PLAN) render as real tabs matching the document tab bar's visual language (border dividers, brass inset-shadow active indicator), not a filled pill. The run's slots (BASED-QUERY-BATCH-FAILURE) follow as a second `Tabs` list ("Result sets"), shown only when there are 2 or more slots: one tab per result set labelled "1 · 40 rows", plus error and skipped slots. Counts say "1 row", never "1 rows". Under 40rem of toolbar width, Fit columns, Copy, and Export fold into one "More actions" (⋯) menu (BASED-UI-NARROW-LAYOUT). A vector column shows `vec[dim]` once, in its header; its cells show only the values. Both grids (query results and the Data tab) use 26px rows and a 30px header, with row numbers in the muted text color at 11px. Text cut at a cell's edge ends with "…" (drawn over the cut; data and copy unchanged). Toolbar: row-count + execution-time stats; Copy cell/row/column/selection; a CSV icon (save via dialog) and an Excel icon (open in Excel), each with a hover tooltip. Row numbers are clickable to multi-select whole rows (shift/ctrl); Copy honors row, column, and range selections. Grid renders NULL, binary, XML, geography safely (placeholder/summary, no crash); truncation notice at the row cap (now the query toolbar's fetch-size input value, not a fixed constant).
 
 **Verification procedure:**
-1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 result-set buttons, each with stats; run `SELECT 1` → no result-set buttons
+1. Run `SELECT 1 AS a; SELECT 2 AS b GO SELECT 3` → 3 result-set tabs ("1 · 1 row" …); run `SELECT 1` → no result-set tabs
 2. Toggle grid/text views (far left of the toolbar, styled as tabs)
 3. Run a query with NULL, varbinary, and XML columns → placeholders render
 4. Copy a cell-range, click row numbers to select whole rows, and click column headers to select columns → Copy clipboard contents match each selection; click the CSV icon → Save dialog; click the Excel icon → Excel launches with the temp file (no repair prompt, even with control/surrogate chars in the data)
@@ -2066,12 +2117,13 @@ The query toolbar is a size container: below about 36rem of toolbar width, Open�
 **Applies to:** based (ui)
 **Test category:** manual
 
-Errors (syntax, permissions, timeout) appear as readable text in the Output pane, with their line breaks kept, and also in the results pane and as editor squiggles (`BASED-UI-QUERY-ERROR`). The query toolbar's Output control is a toggle button (`aria-pressed`); the pane has no inner heading, because its tab names it. A dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
+Query errors appear in one place: the results pane and editor squiggles (`BASED-UI-QUERY-ERROR`), not Output. Output holds server messages (PRINT, notices, statistics, "(n rows affected)") and errors that never reached the results pane (the run request itself failed), with their line breaks kept. Output is closed on a new query tab. It opens by itself when the last run left an error line, a message other than "(n rows affected)", or a "(n rows affected)" message with no result set to show. When new lines arrive, the pane scrolls to the first new line, so a long entry shows from its start. The Output control is a quiet toggle button (`aria-pressed`, neutral fill when pressed); while closed it shows the message count. The pane has no inner heading, because its tab names it, and no run-status header, because the status bar shows the last run. When the last run failed and Output has no lines, it says "No server messages. Errors are in Results." A dropped connection or expired token shows a visible "reconnecting…" state (status strip), never a silent hang.
 
 **Verification procedure:**
-1. Run `SELECT FROM` → syntax error text in Output, tab flips to Output pane
-2. Run `SELECT 1/0` → divide-by-zero message
-3. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
+1. Open a new query tab → Output is closed; run `SELECT FROM` → the error shows in the results pane, Output stays closed and gets no error line
+2. On SQL Server, run `PRINT 'hi'` → Output opens with "hi"; run `SELECT 1/0` → divide-by-zero message in the results pane
+3. Run `UPDATE … ` with no result set → Output opens with "(n rows affected)"; run a `SELECT` → Output does not open
+4. Leave the app idle past token expiry (~1 h) then run a query → status shows reconnecting, query then succeeds
 
 ### BASED-UI-ERROR-BOUNDARY: A render error replaces one region, never the whole window
 **Applies to:** based (ui)
@@ -2093,16 +2145,19 @@ A boundary clears when its key changes (another tab, another view).
 **Applies to:** based (ui, core)
 **Test category:** manual (batch-line mapping: unit; DuckDB line mapping: BASED-QUERY-ERROR-LINE)
 
-When a run fails with no result set, the results pane shows each error instead of the "run a query"
-prompt, in the shared error look (`BASED-ERROR-HEADLINE`): the headline, with the full text behind
+A failed run shows its errors in the results pane, never only in Output: alone when nothing else
+ran, or as an error slot among the result sets (BASED-QUERY-BATCH-FAILURE). The error uses the
+shared error look (`BASED-ERROR-HEADLINE`): the headline, with the full text behind
 "Full error". An error with a line has a "Line N · go to line" button that puts the editor cursor
-on that line. When the error has a line, the editor marks that line with an
-error squiggle whose hover shows the message; the next run clears the marks. SQL Server reports
+on that line. When the error has a line, the editor marks it with an error squiggle whose hover
+shows the message: on the word the engine points at when it gives a column (DuckDB's `^` caret,
+BASED-QUERY-ERROR-LINE), else on the whole line. The next run clears the marks. SQL Server reports
 lines relative to the GO batch, so core adds `textLine` — the line in the submitted text, from
 `splitBatchesWithLines` — and the UI adds the line where the run's text started in the editor
-(`BASED-RUN-SCOPE`). The Output pane keeps the batch-relative `Error N (line L): …` text.
+(`BASED-RUN-SCOPE`). Query errors are not repeated in Output (BASED-UI-OUTPUT).
 LanceDB SQL (DuckDB) and Snowflake also send `textLine` (BASED-QUERY-ERROR-LINE), so their errors
-get the same marks.
+get the same marks. Capi's view of a query tab (`get_tab`) reads these errors with their statement
+or batch and line.
 
 **Acceptance criteria (unit — `unit.batch.test.ts`):** `splitBatchesWithLines` returns each trimmed
 batch with the 1-based line of its first non-blank line in the submitted text.
@@ -2112,20 +2167,52 @@ batch with the 1-based line of its first non-blank line in the submitted text.
 2. On SQL Server, run three lines, then `GO`, then a line with `SELECT FROM` → the squiggle is on
    the `SELECT FROM` line; hover shows the message; run again after a fix → the squiggle is gone
 3. Select only that bad line and press F5 → the squiggle lands on the same editor line
-4. On LanceDB, run `select 1;` / `select 2;` / `selec 3 fom t;` on three lines → squiggle on line 3,
-   the headline in the results pane, and "Line 3 · go to line" moves the cursor there
+4. On LanceDB, run `select 1;` / `select 2;` / `selec 3 fom t;` on three lines → squiggle under `selec`
+   on line 3, the headline in the results pane, and "Line 3 · go to line" moves the cursor there
+
+### BASED-QUERY-BATCH-FAILURE: A run that fails partway looks failed
+**Applies to:** based (ui, core)
+**Test category:** unit (`unit.resultSlots.test.ts`) + integration (`integration.lanceSql.test.ts`)
+
+A run's results are an ordered list of slots: one per result set, one per failure at the position
+where it happened, and one "N skipped" slot when the engine stopped the script. Core tells the UI
+where an error happened: the LanceDB SQL bridge sends `statement` and `statementCount` (DuckDB
+stops at the first failed statement); SQL Server sends `batch` when the text has more than one GO
+batch (later batches still run, so nothing is skipped). `resultSlots(resultSets, errors)`
+(`ui/src/lib/resultSlots.ts`) builds the list; repeated messages for one failure share one slot.
+When the run ends with an error, the first error slot is selected. While any result set exists
+next to an error, the results header shows `batchNote(errors)` in the error color. The skipped slot
+says how many statements did not run and which statement stopped them.
+
+**Acceptance criteria:**
+- Two clean result sets of 40 and 1 rows → "1 · 40 rows", "2 · 1 row"
+- One result set, then a failure at statement 2 of 3 → "1 · 1 row", "Statement 2 failed", "1 skipped"
+- A failure at statement 1 of 4 before any result set → "Statement 1 failed", "3 skipped"
+- A SQL Server batch-2 error between two result sets → "1 · 2 rows", "Batch 2 failed", "2 · 5 rows"
+- Two messages with the same position and label → one slot holding both
+- An error with no position → "Error"
+- `batchNote`: a stopped script → "Stopped at statement 2 of 3"; one unplaced failure → "Finished with
+  an error"; two → "Finished with 2 errors"; none → null
+- On LanceDB, `SELECT 1 AS a;` / `-- note` / `SELECT id,` / `  bogus FROM docs;` / `SELECT 3` →
+  one result set, then an error with statement 2 of 3, text line 4, column 3
+
+**Verification procedure:** on LanceDB, run `select 1 as a;` / `select bogus from plain;` / `select 3;`
+→ tabs "1 · 1 row", "Statement 2 failed" (selected), "1 skipped"; the header reads "Stopped at
+statement 2 of 3"; the squiggle is under `bogus`; Output stays closed.
 
 ### BASED-QUERY-ERROR-LINE: DuckDB and Snowflake errors carry a text line
 **Applies to:** based (core)
 **Test category:** unit (`unit.queryErrorLine.test.ts`)
 
-`duckErrorLine(message)` (`core/src/db/errorLine.ts`) reads DuckDB's `LINE n:` suffix; n counts lines of the whole submitted script. When an error has no such suffix, the LanceDB SQL bridge uses the failed statement's first line from `statementStartLines(script)`, but only when that count matches DuckDB's statement count. Otherwise it sends no `textLine`; the error still shows, with no mark. Snowflake runs the editor text as one statement, so its error `line` is already the text line.
+`duckErrorPosition(message)` (`core/src/db/errorLine.ts`) reads DuckDB's `LINE n:` suffix and the `^` caret under it; n counts lines of the whole submitted script. The column is the caret's place in that line, or null when DuckDB cut the line short (`...`). Parser errors (raised while the script is split) carry the true column. Errors raised when one statement runs (binder, catalog) carry a caret shifted right by the statement's offset in the script, so the bridge subtracts `statementStarts(script)[i].offset` (the character just after the `;` that ended the statement before); a result below 1 sends no column. When an error has no `LINE n:`, the bridge uses the failed statement's first line from `statementStarts`, but only when that count matches DuckDB's statement count. Otherwise it sends no `textLine`; the error still shows, with no mark. Snowflake runs the editor text as one statement, so its error `line` is already the text line.
 
 **Acceptance criteria:**
 - `…Parser Error: syntax error at or near "selec"\n\nLINE 4: selec 3 fom t;` → 4
 - A message with no `LINE n:` → null
 - `statementStartLines("select 1;\n\n-- note\nselect 2\nfrom t;\nselect\n  3;")` → `[1, 4, 6]`
 - A `;` inside a string or a comment does not split; empty statements are dropped
+- A parser caret under `selec` in `LINE 2:     selec 3 fom t;` → line 2, column 5
+- A cut line (`LINE 1: ...,x,x, from;`) → its line, no column
 
 ### BASED-UI-TABLE-TAB-ERROR: An unreadable table tab says so
 **Applies to:** based (ui)
@@ -2189,9 +2276,11 @@ Concurrent triggers collapse to a single in-flight resume attempt. If the backof
 The left rail's lower pane hosts a segmented **Objects | History** toggle (choice persisted in
 localStorage). History replaces the object explorer with a panel of two sub-tabs — **Queries**
 (BASED-HISTORY, `GET /api/history`) and **Agent** (BASED-AGENT-AUDIT, `GET /api/agent/audit`) —
-scoped to the active connection, most-recent-first, fetched on open with a manual refresh button.
+scoped to the active connection, most-recent-first, fetched on open, again shortly after any query
+tab's run finishes, and with a manual refresh button.
 Each row shows a status dot (ok / error / cancelled), the first SQL line (mono, truncated), and
-relative time · duration · database. A search box filters client-side (substring over the SQL);
+a second line: the status as a word (so color is never the only cue), "N statements · failed at K"
+for a run of more than one statement, relative time · duration · database. A search box filters client-side (substring over the SQL);
 status chips filter by outcome. Clicking a row expands it inline: full SQL, error text if any, and
 actions — **Insert** (into the active query tab via the existing `insertSqlIntoEditor`), **Open in
 new tab** (a fresh query tab with the SQL, not auto-run), **Copy**. The Agent sub-tab is read-only
@@ -2212,7 +2301,7 @@ the mutation gate).
 **Applies to:** based (ui)
 **Test category:** manual
 
-The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run** (or **Open** for SQL that is not read-only — `BASED-CHAT-SQL-RUN-GATE`), labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card (`BASED-UI-APPROVAL-CARD`) whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` (full body, ~80 px tall, mood-driven — `BASED-CAPI-AVATAR`) sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail.
+The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-rendered assistant markdown with Shiki SQL highlighting; each SQL block offers **Insert into editor** and **Run** (or **Open** for SQL that is not read-only — `BASED-CHAT-SQL-RUN-GATE`), labeled with the block's leading `--` purpose comment plus its first SQL line (falling back to "sql N" when no comment is present — see `BASED-CHAT-SQL-LABELS`); `run_mutation` renders an approval card (`BASED-UI-APPROVAL-CARD`) whose Approve calls the gated endpoint. Run errors surface in the rail — both mid-stream failures (the server's `RUN_ERROR` events) and pre-stream ones (the endpoint answering with an HTTP error — no AI profile configured, session not connected, 500 — or the server being unreachable), which reject `runAgent` before any event arrives; the send path catches these and renders the reason as an error block in the thread (`describeRunError` extracts the server's JSON `error` body from the transport's wrapper; user-initiated Stop is never reported as a failure). A third shape reaches neither path: a run that completes having emitted no text, no tool calls and no `RUN_ERROR`, and therefore never rejects. A provider that answers an unknown path with HTTP 200 and a JSON error body produces exactly this — every layer below reads 200 as success and the response simply carries no choices, so a typo in a profile's base URL renders as silence plus a turn-duration readout. `classifySettledTurn` detects it from the settled transcript and the rail reuses the `BASED-AGENT-CONTINUE-PROMPT` block to report it. Unit coverage: `unit.uiRunError.test.ts`. A mid-stream provider rejection is described by `describeProviderError` before it becomes a `RUN_ERROR`: the AI SDK's `APICallError` message is little more than the HTTP status (`AI_APICallError: Bad Request`), while the reason the provider gave — an unsupported parameter, an unknown model, a rejected tool schema — sits in `responseBody`/`data`/`cause` and was being discarded. It unwraps the OpenAI-compatible `{"error":{"message":…}}` envelope, appends `param` when the sentence omits it, truncates at 600 chars, and does not repeat a body the message already contains. Unit coverage: `integration.contextRecovery.test.ts`. `CapiAvatar` (full body, ~80 px tall, mood-driven — `BASED-CAPI-AVATAR`) sits at the bottom-left of the prompt input row, stretched to that row's full height; the send control is an icon button positioned inside the textarea's bottom-right corner (Enter also sends). AI provider setup lives in the settings popover's Agent tab (`BASED-AI-PROVIDER-PROFILES`), not in this rail. An empty thread shows one line of intro and three example prompts; a click puts the prompt in the composer and focuses it, and nothing is sent. The prompts follow the active tab: "What is in <table>, and what is it for?" on a table tab, "Explain the last error and fix my query" on a query tab whose last run failed.
 
 **Verification procedure (requires a healthy model backend — LM Studio engine on the configured host):**
 1. Connect to a DB → open the Capi rail → ask "what tables are there?" → answer streams
@@ -2224,6 +2313,7 @@ The right rail hosts the AG-UI chat (`useAgent`/`AgentProvider`), Streamdown-ren
 7. Ask something that takes several rounds of tool calls ("exercise every query tool and report what breaks") → with the browser console open, no `Encountered two children with the same key` warning and no `Maximum update depth exceeded`; each narration paragraph and each tool card appears exactly once in the transcript. Message ids are not unique — the Mastra bridge pins every post-tool text segment of a run to one `-agui-text` continuation id — so the rail numbers repeated ids into distinct React keys; without that the reconciler mismatches fibers and replays whole blocks on screen
 8. With no AI profile configured (Settings → Agent, all profiles removed), send a message → an error block appears in the thread reading "No agent profile configured — add one in Settings → Agent." (not silence, not a raw `HTTP 400: {...}` dump), and the chat stays usable. Same with the model backend down: send → a readable error block, no dead spinner, no unhandled rejection in the console
 9. Break the active profile's base URL so it points at a path the backend does not serve but still answers 200 — e.g. `http://localhost:1234/v1a` against LM Studio, which replies `{"error":"Unexpected endpoint or method…"}` with HTTP 200 — then send a message. The console shows `RunStarted` → `RunFinished` with no events between and no `RunError`, and the rail shows the empty-turn prompt (`BASED-AGENT-CONTINUE-PROMPT`) rather than only a duration readout. **Try again** resends the original message. Restore the URL → the same message answers normally
+10. On an empty thread, click an example prompt → it fills the composer; nothing is sent until Enter
 
 **Status note:** endpoint wiring, streaming plumbing, and the RUN_ERROR path are verified live (RUN_STARTED streamed; a model-load failure surfaced cleanly). A successful token stream is pending a healthy LM Studio engine on the host. The persona instructs the agent that user-facing results live in tabs (`show_results`), not pasted into chat — BASED-AGENT-TAB-TOOLS, BASED-AGENT-SHOW-RESULTS.
 
@@ -2678,9 +2768,12 @@ a session that doesn't exist. A help tab opened with no connection carries forwa
 connection made from that window (and persists there from then on) rather than being discarded;
 switching between two existing connections does not drag it along.
 
-Content, at minimum: the keyboard-shortcut table from BASED-UI-SHORTCUTS, and a vim-mode section
+Content, at minimum: the keyboard-shortcut table from BASED-UI-SHORTCUTS, a vim-mode section
 (how to enable the keymap, `:w` / `:q` / `:wq`, and the note that app shortcuts keep working in
-every vim mode — see BASED-EDITOR-VIM).
+every vim mode — see BASED-EDITOR-VIM), "Searching a LanceDB table" (the three modes, each Tuning
+control, and what the score columns mean), and "Embeddings map" (what the map, colors, names and
+toolbar controls do). `openDocsTab(section)` opens or focuses the tab and scrolls it to that section;
+the ? buttons in the search row and the Embeddings toolbar use it.
 
 **Verification procedure:**
 1. Click `?` → a help tab opens and activates; click `?` again → it focuses, no second tab. Close
@@ -2692,6 +2785,8 @@ every vim mode — see BASED-EDITOR-VIM).
    still open and stays active
 4. The shortcut list matches the BASED-UI-SHORTCUTS table; the vim section matches
    BASED-EDITOR-VIM; no uppercase labels; the page recolors with the app on a theme switch
+5. In a LanceDB Data tab's search row, click ? → the help tab opens at "Searching a LanceDB table";
+   on the Embeddings toolbar, ? opens it at "Embeddings map"
 
 ---
 
@@ -3210,22 +3305,44 @@ per-column lookup and the index panel cost one call between them.
 **Applies to:** based (ui)
 **Test category:** manual
 
-For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab leads with rows. The browse toolbar holds a "Search rows…" field with the `Ctrl+F` hint; a click on it, or `Ctrl+F` with focus in the Data tab, opens the search row and focuses its query. The search row holds: a mode selector (text/vector/hybrid), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
+For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), the Data tab leads with rows. The browse toolbar holds a "Search rows…" field with the `Ctrl+F` hint; a click on it, or `Ctrl+F` with focus in the Data tab, opens the search row and focuses its query. The search row holds: a mode selector (Keyword/Vector/Hybrid — "Keyword" is the one name for full-text search, on the button, in the menu, and in the tooltip "Keyword — full-text search (BM25)"), a query text input, an embedding-profile picker (hidden in text mode), a reranker-profile picker with `top_n`/`temperature` inputs, `pool`/`keep`/`min score`/`max gap` number inputs (BASED-SEARCH-PARAM-NAMES), a vector-column picker on tables with more than one embedding (BASED-LANCE-VECTOR-COLUMN), a `where` prefilter text input, and Run/Clear buttons. Results render read-only through the same grid component used for browsing, by normalizing the `SearchRows` response into a `TablePage`-shaped value (every column comes back `isPrimaryKey: false`, so the grid's existing PK-based edit gate makes results read-only with no additional logic).
 
-**Modes the table can run:** Text and Hybrid need a full-text (FTS/INVERTED) index, from the tab's index list; Vector and Hybrid need a vector column. The mode control is a menu button ("Text ▾"); a mode the table cannot run is a disabled menu item with the reason under its label, and arrow keys skip it. When the index list or the page is not loaded yet, the mode stays on. Until the user picks a mode, the opening mode follows BASED-LANCE-SEARCH-DEFAULT; if the selected mode becomes blocked, it moves to the first mode the table can run. A table that can run none shows the field as a disabled "No search index", with the reason in its tooltip. Vector or Hybrid with no embedding profile shows "Choose embedding profile" in place of Run: it opens Tuning and focuses the Embedding picker; with no profiles at all, "Add embedding profile" opens Settings on Search. Run uses the shared green Run style.
+**Modes the table can run:** Text and Hybrid need a full-text (FTS/INVERTED) index, from the tab's index list; Vector and Hybrid need a vector column. The mode control is a menu button ("Keyword ▾"); a mode the table cannot run is a disabled menu item with the reason under its label, and arrow keys skip it. When the index list or the page is not loaded yet, the mode stays on. Until the user picks a mode, the opening mode follows BASED-LANCE-SEARCH-DEFAULT; if the selected mode becomes blocked, it moves to the first mode the table can run. A table that can run none shows the field as a disabled "No search index", with the reason in its tooltip. Vector or Hybrid with no embedding profile shows "Choose embedding profile" in place of Run: it opens Tuning and focuses the Embedding picker; with no profiles at all, "Add embedding profile" opens Settings on Search. Run uses the shared green Run style.
 
-**Layout:** before a search, the Data tab has one toolbar row (paging, row range, the search field, edit actions, export). The search row holds only the mode menu, the query input, **Run**, **Clear** (after a search), the result count, a **Tuning** disclosure, and ✕. ✕ or `Esc` in the query closes search: it clears the result and returns to the browse row. Whether search is open is part of the tab's grid session (BASED-TABLE-EDIT-RETAIN), so it survives a view switch. The row wraps instead of overflowing, so Run stays visible at 1024px with the Capi rail open. Tuning holds every other control, each with a visible label (Where, Embedding, Vector column, Min score, Max gap, Reranker, Rerank column, Top n, Temperature, Pool, Keep). Collapsed, Tuning shows each non-default value as a chip ("min score 0.5 ✕"); ✕ resets that one value; the toggle shows the chip count. The open/closed state lasts for the window's session. The Data view's edit actions (+, Import CSV, Delete row, Review SQL, Commit, Discard) are hidden when the table, the view, or the connection (`capabilities.write` false) cannot be edited, with one line saying why.
+**Layout:** before a search, the Data tab has one toolbar row (paging, row range, the search field, edit actions, export). The search row holds only the mode menu, the query input, **Run**, the result count, a **Tuning** disclosure, a ? help button (BASED-HELP-DOCS), and ✕. There is no separate Clear: ✕ or `Esc` in the query closes search, clears the result, and returns to the browse row. When a result reaches the Keep limit, the count reads "10 rows (top 10)", with a tooltip pointing at Keep. The mode menu opens rightward from its button, over the work area. Whether search is open is part of the tab's grid session (BASED-TABLE-EDIT-RETAIN), so it survives a view switch. The row wraps instead of overflowing, so Run stays visible at 1024px with the Capi rail open. Tuning holds every other control, each with a visible label (Where, Keep, Embedding, Vector column, Min score, Max gap, Reranker, Rerank column, Top n, Temperature, Pool). Keep shows in every mode and is always sent; without a reranker the pool grows to at least Keep, because core caps Keep at the pool. Collapsed, Tuning shows each non-default value as a chip ("min score 0.5 ✕"); ✕ resets that one value; the toggle shows the chip count. The open/closed state lasts for the window's session. The Data view's edit actions (+, Import CSV, Delete row, Review SQL, Commit, Discard) are hidden when the table, the view, or the connection (`capabilities.write` false) cannot be edited. A view or a table with no primary key gets one line saying why; a read-only connection gets none, because the status bar already shows "read-only". The Tuning **Where** example comes from the table and starts with "e.g.": `e.g. <first numeric column> > 0`, else `e.g. <first text column> = '…'`, else no example. Results draw scores and matches per BASED-LANCE-SEARCH-SCORE.
 
 **Verification procedure:**
 1. Open a LanceDB table's Data tab → one toolbar row with the "Search rows…" field; `Ctrl+F` (or a click on the field) opens the search row with the query focused; `Esc` returns to the browse row
 2. Pick Vector in the mode menu, enter a query, pick an embedding profile under Tuning, Run → results render in the grid, read-only
-3. Clear → the original paginated rows reappear unaffected
+3. ✕ → the original paginated rows reappear unaffected
 4. Set `min score`/`max gap`/`pool`/`keep` and rerun → the result count and order change accordingly; collapse Tuning → each set value shows as a chip; ✕ on one resets only it
 5. At 1024px wide with the Capi rail open → Run is visible without sideways scroll
-6. On a read-only connection → no Review SQL / Commit / Discard; the row says the connection is read-only
+6. On a read-only connection → no Review SQL / Commit / Discard and no read-only note in the toolbar; the status bar shows "read-only"
 7. A table with no full-text index → Text and Hybrid are disabled menu items that say why; a table with no vector column → Vector and Hybrid are disabled; a table with neither → the field reads "No search index" and is disabled
 8. Vector mode with no embedding profile → "Choose embedding profile" in place of Run opens Tuning on the Embedding picker; with no profiles at all, "Add embedding profile" opens Settings → Search
 9. A search error shows its headline with "Full error" behind it (BASED-ERROR-HEADLINE)
+
+### BASED-LANCE-SEARCH-SCORE: Search results show their score and their match
+**Applies to:** based (ui)
+**Test category:** unit (`unit.searchDisplay.test.ts`) + manual
+
+In search results, the engine's score columns (`_score`, `_distance`, `_relevance_score`,
+`_rerank_score`, per `SCORE_COLUMN`) show 3 significant figures, right-aligned, over a thin bar whose
+length is the value divided by that column's largest absolute value. After a Keyword or Hybrid
+search, each whole-word, case-insensitive match of a query term in a text cell's first line gets a
+tinted mark behind it. Query terms are the query's words of 2 or more letters, without AND/OR/NOT
+and repeats. Only the drawing changes: Copy, Export, and the data keep the full values.
+
+**Acceptance criteria:**
+- `formatScore`: 0.123456789 → "0.123"; 12.3456 → "12.3"; 1234.5 → "1230"; 0.5 → "0.5"
+- `SCORE_COLUMN` matches the four score names and not `score` or `_rowid`
+- `queryTerms('Refund "late" AND a refund')` → `["refund", "late"]`
+- `matchRanges("Refunds: refund the late fee. Late!", ["refund", "late"])` → `[[9,15],[20,24],[30,34]]`
+- No terms → no ranges
+
+**Verification procedure:** on a table with a full-text index, run a Keyword search for two words →
+`_score` shows 3 figures with a bar; both words are marked in the text columns; Copy a score cell →
+the full value.
 
 ### BASED-LANCE-SEARCH-DEFAULT: The Data tab opens search on a mode that can run
 **Applies to:** based (ui)
@@ -3245,9 +3362,10 @@ For a LanceDB table (gated on `capabilities.search`, BASED-CAPABILITIES-WIRE), t
 **Applies to:** based (ui)
 **Test category:** manual
 
-The settings popover (gear icon in the left rail, `ThemePicker`) has four tabs — General, Theme, Search,
-Agent (`BASED-AI-PROVIDER-PROFILES`) — at a fixed width/height (480×560) that does not change when
-switching tabs; a tab whose content is taller than that scrolls internally. The Search tab lists
+The settings dialog (gear icon in the left rail, `ThemePicker`) lists four sections — General, Theme, Search,
+Agent (`BASED-AI-PROVIDER-PROFILES`) — as a vertical `Tabs` side list (Up/Down keys), at a fixed size
+(min(80vw, 960px) × min(640px, 85vh)) that does not change or move when switching sections; a section
+taller than that scrolls internally. General's dropdowns are at most 280px wide. The Search tab lists
 embedding and reranker profiles with inline Add/Edit/Delete forms (`name`/`baseUrl`/`model`/API key,
 blank key on edit = keep stored). The tab is CRUD only — it carries no active/default marker (unlike
 the Agent tab's profiles), just a line pointing at the connection dialog as where a profile is chosen
@@ -3629,23 +3747,39 @@ on completion).
 **Applies to:** based (ui)
 **Test category:** manual
 
-A fourth sub-view button, "Embeddings", appears on table tabs only when the engine is search-capable AND the table has a vector column. It renders a deck.gl scatter (ScatterplotLayer/Orthographic in 2D, PointCloudLayer/Orbit in 3D) themed from the live CSS variables, with: live epoch-streamed layout ("galaxy condensing"), cluster tints + legend chips (click dims a cluster), numbered callout-badge cluster labels tethered to their centroids by leader lines, always full-strength at any zoom (TF-IDF terms in legend tooltips; AI names on demand replace the numbers), hover tooltip, click → point details panel (a resizable side panel with the row cells + Find similar via client-side cosine kNN, neighbours ringed and the rest dimmed), lasso selection (2D) → ResultGrid panel with a Cell viewer tab (double-click/Enter on a cell), and a points/vector-column/text-column/seed toolbar. Layout state lives in a per-tab engine registry: switching sub-views mid-run does not kill the worker; closing the tab does. Before it builds the scatter, the view checks for WebGL 2; with none, or when deck.gl reports a device error, the map area shows "The embeddings map needs WebGL 2, and this window could not start it." instead of throwing. Label projection and the lasso wait until deck.gl's device is ready, and labels draw as soon as it is (BASED-UI-ERROR-BOUNDARY catches anything else).
+A fourth sub-view button, "Embeddings", appears on table tabs only when the engine is search-capable AND the table has a vector column. It renders a deck.gl scatter (ScatterplotLayer/Orthographic in 2D, PointCloudLayer/Orbit in 3D) themed from the live CSS variables, with: live epoch-streamed layout ("galaxy condensing"), cluster tints + legend chips (name and point count; click dims a cluster), callout-badge cluster labels named from their own words (BASED-EMBED-CLUSTER-NAMES) and tethered to their centroids by leader lines, pushed apart so no two badges overlap, always full-strength at any zoom (TF-IDF terms in legend tooltips; "Improve names with AI" replaces them on demand, and its tooltip says it uses the agent's model, which may cost money), hover tooltip, click → point details panel (a resizable side panel with the row cells + Find similar via client-side cosine kNN, neighbours ringed and the rest dimmed), lasso selection (2D) → ResultGrid panel with a Cell viewer tab (double-click/Enter on a cell), and a toolbar in plain words: Vector column, Text column, Sample size (choices stop at the table's row count, ending with "All N rows"), Rebuild map (Shift+click: new arrangement), Select area (the lasso), Labels, Improve names with AI, and a ? button that opens the help tab at "Embeddings map" (BASED-HELP-DOCS). Layout state lives in a per-tab engine registry: switching sub-views mid-run does not kill the worker; closing the tab does. Before it builds the scatter, the view checks for WebGL 2; with none, or when deck.gl reports a device error, the map area shows "The embeddings map needs WebGL 2, and this window could not start it." instead of throwing. Label projection and the lasso wait until deck.gl's device is ready, and labels draw as soon as it is (BASED-UI-ERROR-BOUNDARY catches anything else).
 
 **Verification procedure:**
 1. Connect to a LanceDB database with an embeddings table (vector column + a text column); open the table → an "Embeddings" button appears beside Details/Data/SQL (absent on MSSQL tables and vector-less Lance tables).
 2. Open it → vectors fetch and the layout animates from noise into structure; the toolbar shows "N rows" (or "N of M rows" with sampling) and epoch progress while running.
 3. Toggle 3D → the same layout becomes an orbitable point cloud; drag rotates; toggle back.
-4. After clustering: points tint by cluster; numbered callout badges point at each centroid and legend-chip tooltips show the TF-IDF terms; click a legend chip → that cluster dims; zoom in → labels stay fully legible (the "labels" toggle hides them).
+4. After clustering: points tint by cluster; word-named callout badges ("refund · invoice") point at each centroid without overlapping; legend chips show name and count, and their tooltips the TF-IDF terms; click a legend chip → that cluster dims; zoom in → labels stay fully legible (the "labels" toggle hides them).
 5. Hover a point → tooltip with the text snippet and cluster name. Click → right panel opens with the row's cells; drag the panel's left edge to resize it; "Find similar" rings its nearest neighbours and dims the rest; "Clear similar" restores.
-6. Lasso (2D only): arm the Lasso button, drag a loop → bottom panel shows the enclosed rows in a grid with a Cell viewer pane underneath; click a cell → the pane shows its full value while the grid stays in view; drag the pane closed, then double-click (or Enter on) a cell → the pane re-expands; close the Selection tab to clear.
-7. "AI label" (requires a reachable AI profile) → clusters rename to short model-generated names; on failure an inline error shows and TF-IDF labels stay.
+6. Select area (2D only): arm the Select area button, drag a loop → bottom panel shows the enclosed rows in a grid with a Cell viewer pane underneath; click a cell → the pane shows its full value while the grid stays in view; drag the pane closed, then double-click (or Enter on) a cell → the pane re-expands; close the Selection tab to clear.
+7. "Improve names with AI" (requires a reachable AI profile) → clusters rename to short model-generated names; on failure an inline error shows and TF-IDF labels stay.
 8. Switch to Data and back mid-layout → the run continues (no restart). Close the tab → the worker terminates (no orphan in devtools).
 9. Switch among a dark, midtone, and light theme → canvas background, point tints, labels, and legend recolor live.
 10. Tiny table (<50 rows) → instant PCA layout with a "PCA (too few rows for UMAP)" note.
-11. Launch the browser with `--disable-webgl` → the WebGL message in the map area, no white screen; in a normal headless browser the map and the numbered labels draw.
+11. Launch the browser with `--disable-webgl` → the WebGL message in the map area, no white screen; in a normal headless browser the map and the cluster labels draw.
 
 Record: PASS/FAIL + date below.
 - 2026-07-25 PASS (automated Playwright pass against the dev app, steps 1-6 + 10-equivalent: 3-cluster fixture laid out, labels/legend/tooltip/click-details/find-similar/lasso-grid/2D-3D all verified by screenshot; found and fixed ortho depth-clipping and a lasso pointer-event crash). Steps 7 (AI label — LM Studio was down) and 8-9 (worker survival, theme sweep) pending a human pass.
+
+### BASED-EMBED-CLUSTER-NAMES: Clusters name themselves
+**Applies to:** based (ui)
+**Test category:** unit (`unit.clusterNames.test.ts`)
+
+`clusterDisplayName(aiLabel, terms, c)` (`ui/src/embeddings/clusterNames.ts`) names a cluster: its AI
+label when one exists; else its top two TF-IDF terms of 3 or more characters that are not plain
+numbers, joined with " · "; else its 1-based number. `separateBadges(badges, width, height)` moves
+overlapping label badges apart along the axis that needs less travel and keeps them on screen.
+
+**Acceptance criteria:**
+- An AI label wins over terms
+- Terms `["refund", "charge", "late"]` → "refund · charge"
+- `["2024", "ok", "invoice"]` → "invoice"; `["12", "a1"]` for cluster 6 → "7"; no terms for cluster 0 → "1"
+- Two badges on one spot end apart; six crowded badges end with no overlaps, all inside the bounds
+- Badges that do not touch do not move
 
 ## Packaging, platform paths & file association
 

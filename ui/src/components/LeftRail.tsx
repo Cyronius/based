@@ -5,19 +5,13 @@ import { HistoryPanel } from "./HistoryPanel";
 import { ThemePicker } from "./ThemePicker";
 import { IconButton } from "./IconButton";
 import { Tabs } from "./Tabs";
-import { authLabel, connSubtitle, profileFor } from "../lib/engineProfile";
+import { authLabel, connTarget, profileFor } from "../lib/engineProfile";
+import { LEFT_RANGE, useRailFit, useRailLayout } from "../railLayout";
+import { ChevronLeftIcon, ExplorerIcon } from "./icons";
+import { MiddleTruncate } from "./MiddleTruncate";
 
-const WIDTH_KEY = "based:leftRailWidth";
 // Traces: BASED-HISTORY-UI — which lower-pane view the rail shows, persisted across restarts.
 const RAIL_VIEW_KEY = "based:leftRailView";
-const MIN_WIDTH = 220;
-const MAX_WIDTH = 560;
-const DEFAULT_WIDTH = 288;
-
-function loadWidth(): number {
-  const stored = Number(localStorage.getItem(WIDTH_KEY));
-  return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
-}
 
 // Traces: BASED-LANCE-CREATE-TABLE-UI — right-click menu on a connection row. "New table…" appears
 // only for the active, connected connection on engines with the createTable capability (creation
@@ -176,7 +170,12 @@ function ConnectionSelector() {
                 <div className="truncate" title={c.name}>
                   {c.name}
                 </div>
-                <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c, engines)}</div>
+                <MiddleTruncate
+                  className="text-[length:var(--fs-sm)] text-muted"
+                  before={`${profileFor(c, engines)?.label ?? ""} · `}
+                  text={connTarget(c, engines) || "local"}
+                  after={authLabel(c, engines) ? ` · ${authLabel(c, engines)}` : ""}
+                />
               </button>
               <IconButton
                 title="Edit connection"
@@ -244,7 +243,8 @@ export function LeftRail() {
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft disabled:opacity-40";
 
-  const [width, setWidth] = useState(loadWidth);
+  const fit = useRailFit();
+  const setLeft = useRailLayout((l) => l.setLeft);
   const [dragging, setDragging] = useState(false);
   const [railView, setRailView] = useState<"objects" | "history">(() =>
     localStorage.getItem(RAIL_VIEW_KEY) === "history" ? "history" : "objects",
@@ -253,9 +253,7 @@ export function LeftRail() {
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e: MouseEvent) => {
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX));
-      setWidth(next);
-      localStorage.setItem(WIDTH_KEY, String(next));
+      setLeft(Math.min(LEFT_RANGE.max, Math.max(LEFT_RANGE.min, e.clientX)));
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -266,8 +264,28 @@ export function LeftRail() {
     };
   }, [dragging]);
 
+  if (fit.leftCollapsed)
+    return (
+      <aside className="shrink-0 flex flex-col bg-ink-950" style={{ width: fit.left }}>
+        <button
+          className="flex-1 flex flex-col items-center pt-3 gap-2 text-paper-dim hover:text-brass hover:bg-ink-900/50"
+          title={activeConn ? `Expand explorer — ${activeConn.name}` : "Expand explorer"}
+          aria-label="Expand explorer"
+          onClick={() => {
+            useRailLayout.getState().setExplorerCollapsed(false);
+            useRailLayout.getState().setKeep("left");
+          }}
+        >
+          <ExplorerIcon />
+          <span className="text-[length:var(--fs-base)] font-semibold" style={{ writingMode: "vertical-rl" }}>
+            Explorer
+          </span>
+        </button>
+      </aside>
+    );
+
   return (
-    <aside className="relative shrink-0 flex flex-col bg-ink-950" style={{ width }}>
+    <aside className="relative shrink-0 flex flex-col bg-ink-950" style={{ width: fit.left }}>
       <div
         className="absolute right-0 top-0 z-10 h-full w-1 translate-x-1/2 cursor-ew-resize hover:bg-brass/40 active:bg-brass/50"
         title="Drag to resize"
@@ -289,6 +307,17 @@ export function LeftRail() {
             ?
           </IconButton>
           <ThemePicker />
+          <IconButton
+            className="text-faint hover:text-paper"
+            title="Collapse explorer"
+            aria-label="Collapse explorer"
+            onClick={() => {
+              useRailLayout.getState().setExplorerCollapsed(true);
+              useRailLayout.getState().setKeep(undefined);
+            }}
+          >
+            <ChevronLeftIcon />
+          </IconButton>
         </div>
       </div>
 

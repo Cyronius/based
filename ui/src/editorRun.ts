@@ -30,6 +30,8 @@ export function runFromEditor(tabId: string, scope: "all" | "statement"): void {
     void store.runQuery(tabId);
     return;
   }
+  // A run is the end of typing; an open completion list would sit over the SQL that ran.
+  editor.trigger("run", "hideSuggestWidget", null);
   const selection = editor.getSelection();
   if (selection && !selection.isEmpty()) {
     const sql = model.getValueInRange(selection);

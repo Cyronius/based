@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { QueryTabState } from "../store";
 import { useStore } from "../store";
+import { editorTextHeight } from "../editorModels";
 import { EditorPane } from "./EditorPane";
 import { ResultsPane } from "./ResultsPane";
 import { OutputPane } from "./OutputPane";
@@ -19,6 +20,30 @@ const fileBtn =
 
 type BottomTabId = "output" | "cell";
 
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string): void {
+  try {
+    localStorage.setItem(key, "1");
+  } catch {
+    // a lost flag only means the editor may auto-fit once more
+  }
+}
+
+const ROWS_AFFECTED = /^\(\d+ rows? affected\)$/;
+
+function outputWorthShowing(tab: QueryTabState): boolean {
+  return tab.output.some(
+    (l) => l.kind === "error" || (l.kind === "message" && (!ROWS_AFFECTED.test(l.text) || tab.resultSets.length === 0)),
+  );
+}
+
 export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const cancelQuery = useStore((s) => s.cancelQuery);
   const saveTab = useStore((s) => s.saveTab);
@@ -30,7 +55,8 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const [resultsMin, setResultsMin] = useState(false);
   const [bottomMin, setBottomMin] = useState(false);
 
-  const [openTabs, setOpenTabs] = useState<Set<BottomTabId>>(() => new Set(["output"]));
+  // Traces: BASED-UI-OUTPUT — closed by default; it opens itself only when the run said something Results cannot.
+  const [openTabs, setOpenTabs] = useState<Set<BottomTabId>>(() => new Set(outputWorthShowing(tab) ? ["output"] : []));
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTabId>("output");
   const [cellText, setCellText] = useState<string | null>(null);
 
@@ -39,6 +65,8 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   useLayoutEffect(() => {
     setResultsMin(resultsRef.current?.isCollapsed() ?? false);
     setBottomMin(outputRef.current?.isCollapsed() ?? false);
+    if (openTabs.size === 0) setSizes(null, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Panel.collapse()/expand() redistribute the freed space among siblings, which can silently
@@ -60,6 +88,29 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
     if (tab.running) expandResults();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.running]);
+
+  // Traces: BASED-UI-TABS — after a run with results, the editor fits its text until the user drags the split.
+  const manualKey = `based:splitManual:${tab.id}`;
+  const groupBoxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tab.running || tab.resultSets.length === 0 || readFlag(manualKey)) return;
+    const text = editorTextHeight(tab.id);
+    const box = groupBoxRef.current?.clientHeight;
+    const layout = groupRef.current?.getLayout();
+    if (!text || !box || layout?.length !== 3) return;
+    const editor = Math.min(45, ((Math.max(text.content, 6 * text.line) + 8) / box) * 100);
+    groupRef.current!.setLayout([editor, 100 - editor - layout[2]!, layout[2]!]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.running]);
+
+  useEffect(() => {
+    if (!openTabs.has("output") && outputWorthShowing(tab)) {
+      setOpenTabs(new Set(openTabs).add("output"));
+      setActiveBottomTab("output");
+      expandBottom();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.output.length]);
 
   const toggleOutput = () => {
     if (openTabs.has("output")) {
@@ -153,23 +204,29 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
         {tab.filePath && <span className="min-w-0 text-[length:var(--fs-sm)] text-faint font-mono truncate @max-xl:hidden">{tab.filePath}</span>}
         <div className="flex-1" />
         <button
-          className={`shrink-0 px-2 py-0.5 rounded border text-[length:var(--fs-sm)] ${
-            openTabs.has("output") ? "border-brass-soft/60 text-brass bg-brass/10" : "border-transparent text-muted hover:text-paper"
+          className={`shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[length:var(--fs-sm)] ${
+            openTabs.has("output") ? "bg-ink-800 text-paper" : "text-muted hover:text-paper"
           }`}
           aria-pressed={openTabs.has("output")}
           title="Show the Output panel"
           onClick={toggleOutput}
         >
           Output
+          {!openTabs.has("output") && tab.output.length > 0 && (
+            <span className="font-mono text-faint" aria-label={`${tab.output.length} messages`}>
+              {tab.output.length}
+            </span>
+          )}
         </button>
       </div>
       </div>
 
+      <div ref={groupBoxRef} className="flex-1 min-h-0 flex flex-col">
       <PanelGroup ref={groupRef} direction="vertical" className="flex-1 min-h-0" autoSaveId={`panes:${tab.id}`}>
         <Panel defaultSize={45} minSize={12}>
           <EditorPane tabId={tab.id} initialContent={tab.content} />
         </Panel>
-        <PanelResizeHandle className="pane-handle" />
+        <PanelResizeHandle className="pane-handle" onDragging={(d) => d && writeFlag(manualKey)} />
         <Panel
           ref={resultsRef}
           defaultSize={40}
@@ -200,6 +257,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
           />
         </Panel>
       </PanelGroup>
+      </div>
 
       {(resultsMin || (bottomMin && bottomTabs.length > 0)) && (
         <div className="h-6 shrink-0 flex items-stretch border-t border-line-soft bg-ink-950">

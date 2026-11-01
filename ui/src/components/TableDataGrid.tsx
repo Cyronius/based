@@ -16,6 +16,7 @@ import {
   type GridCell,
   type GridSelection,
   type Item,
+  type DataEditorProps,
 } from "@glideapps/glide-data-grid";
 import type { TableGridSession, TableTabState } from "../store";
 import { useStore } from "../store";
@@ -23,6 +24,8 @@ import { gridPendingCount } from "../lib/gridPending";
 import { commitTableEdit, fetchTablePage, previewTableEdit, runLanceSearch } from "../api/client";
 import {
   cellText,
+  vecHeaderSuffix,
+  vecValues,
   type DbCommandPreview,
   type LanceSearchMode,
   type SearchRows,
@@ -47,6 +50,8 @@ import { RunButton } from "./RunButton";
 import { accel } from "../platform";
 import { MenuButton } from "./MenuButton";
 import { defaultSearchMode } from "../lib/searchDefault";
+import { formatScore, matchRanges, queryTerms, SCORE_COLUMN } from "../lib/searchDisplay";
+import { plural } from "../lib/plural";
 
 const NUMERIC_TYPES = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney)$/;
 
@@ -82,6 +87,15 @@ const viewKey = (where: string, sort: TableSort | null, filters: Record<string, 
   JSON.stringify([where, sort ? `${sort.column}:${sort.dir}` : "", filters]);
 
 const numOrUndef = (s: string): number | undefined => (s.trim() === "" ? undefined : Number(s));
+
+// Traces: BASED-LANCE-SEARCH-UI — the Where example names a real column of this table.
+function wherePlaceholder(columns: TableTabState["columns"]): string | undefined {
+  const cols = (columns ?? []).filter((c) => !c.isVector);
+  const num = cols.find((c) => /int|float|double|decimal|numeric|real/i.test(c.type));
+  if (num) return `e.g. ${num.name} > 0`;
+  const str = cols.find((c) => /utf8|string|char|text/i.test(c.type));
+  return str ? `e.g. ${str.name} = '…'` : undefined;
+}
 
 const DEFAULT_POOL = "50";
 const DEFAULT_KEEP = "10";
@@ -141,8 +155,8 @@ const SEARCH_MODES: { id: LanceSearchMode; short: string; label: string; icon: (
   },
   {
     id: "text",
-    short: "Text",
-    label: "Keyword — BM25 full-text search",
+    short: "Keyword",
+    label: "Keyword — full-text search (BM25)",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
         <circle cx="6.5" cy="6.5" r="4" />
@@ -153,7 +167,7 @@ const SEARCH_MODES: { id: LanceSearchMode; short: string; label: string; icon: (
   {
     id: "hybrid",
     short: "Hybrid",
-    label: "Hybrid — vector + keyword combined",
+    label: "Hybrid — vector + keyword",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
         <circle cx="6" cy="8" r="4.2" />
@@ -177,6 +191,7 @@ export function TableDataGrid({
   onCellActivate?: (text: string) => void;
 }) {
   const pageSize = useStore((s) => s.rowPageSize);
+  const openDocsTab = useStore((s) => s.openDocsTab);
   const [page, setPage] = useGridField(tab.id, "page", null);
   const [offset, setOffset] = useGridField(tab.id, "offset", 0);
   const [, setLoadedPageSize] = useGridField(tab.id, "loadedPageSize", null);
@@ -217,6 +232,7 @@ export function TableDataGrid({
   const [maxGapText, setMaxGapText] = useGridField(tab.id, "maxGapText", "");
   const [vectorColumn, setVectorColumn] = useGridField(tab.id, "vectorColumn", "");
   const [searchResult, setSearchResult] = useGridField(tab.id, "searchResult", null);
+  const [searchTerms, setSearchTerms] = useGridField(tab.id, "searchTerms", []);
   // Traces: BASED-LANCE-SEARCH-UI — the Data tab leads with rows; the search row opens on demand.
   const [searchOpen, setSearchOpen] = useGridField(tab.id, "searchOpen", false);
   const [modeTouched, setModeTouched] = useGridField(tab.id, "modeTouched", false);
@@ -425,14 +441,15 @@ export function TableDataGrid({
   const headerInteractive = orderedBrowse && !hasSearchResult;
   const columns = useMemo<DataGridColumnDef[]>(
     () =>
-      (effectivePage?.columns ?? []).map((c) => {
-        const base = c.isPrimaryKey ? `⚿ ${c.name}` : c.name;
+      (effectivePage?.columns ?? []).map((c, i) => {
+        const base = `${c.isPrimaryKey ? `⚿ ${c.name}` : c.name}${vecHeaderSuffix(effectivePage?.rows[0]?.[i])}`;
         if (!headerInteractive) return { id: c.name, title: base };
         const arrow = sort?.column === c.name ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
         const mark = (filterExprs[c.name] ?? "").trim() ? " •" : "";
         return { id: c.name, title: `${base}${mark}${arrow}`, hasMenu: true };
       }),
-    [effectivePage?.columns, headerInteractive, sort, filterExprs],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [effectivePage?.columns, effectivePage?.rows[0], headerInteractive, sort, filterExprs],
   );
 
   const handleHeaderClicked = useCallback(
@@ -475,18 +492,67 @@ export function TableDataGrid({
       const dirty = ref.kind === "existing" && edits[ref.orig]?.[meta.name] !== undefined;
       const cellEditable = editable || ref.kind === "new";
       const text = value === null ? "" : typeof value === "object" ? cellText(value) : String(value);
+      if (hasSearchResult && typeof value === "number" && SCORE_COLUMN.test(meta.name))
+        return { kind: GridCellKind.Text, data: text, displayData: formatScore(value), allowOverlay: false, readonly: true, contentAlign: "right" };
       const themeOverride =
         ref.kind === "new" ? overrides.fresh : dirty ? overrides.dirty : value === null ? { textDark: overrides.nullText } : undefined;
       return {
         kind: GridCellKind.Text,
         data: text,
-        displayData: value === null ? "NULL" : text,
+        displayData: value === null ? "NULL" : typeof value === "object" && value.$ === "vec" ? vecValues(value) : text,
         allowOverlay: cellEditable,
         readonly: !cellEditable,
         themeOverride,
       };
     },
-    [display, effectivePage, valueAt, edits, editable, overrides],
+    [display, effectivePage, valueAt, edits, editable, overrides, hasSearchResult],
+  );
+
+  const scoreMax = useMemo(() => {
+    const max = new Map<number, number>();
+    if (!searchResult) return max;
+    searchResult.columns.forEach((c, i) => {
+      if (!SCORE_COLUMN.test(c.name)) return;
+      const vals = searchResult.rows.map((r) => r[i]).filter((v): v is number => typeof v === "number");
+      if (vals.length) max.set(i, Math.max(...vals.map(Math.abs)));
+    });
+    return max;
+  }, [searchResult]);
+
+  // Traces: BASED-LANCE-SEARCH-SCORE — a bar under each score and a mark under each matched word.
+  const drawSearchCell = useCallback<NonNullable<DataEditorProps["drawCell"]>>(
+    (args, drawContent) => {
+      const { ctx, rect, theme, col, cell } = args;
+      const pad = theme.cellHorizontalPadding;
+      const max = scoreMax.get(col);
+      if (max != null && cell.kind === GridCellKind.Text && max > 0) {
+        const v = Math.abs(Number(cell.data));
+        ctx.save();
+        ctx.fillStyle = theme.accentColor;
+        ctx.globalAlpha = 0.45;
+        ctx.fillRect(rect.x + pad, rect.y + rect.height - 4, ((rect.width - 2 * pad) * v) / max, 2);
+        ctx.restore();
+      } else if (searchTerms.length > 0 && cell.kind === GridCellKind.Text && cell.displayData) {
+        const line = cell.displayData.split(/\r?\n/, 1)[0]!;
+        const ranges = matchRanges(line, searchTerms);
+        if (ranges.length) {
+          ctx.save();
+          ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+          ctx.fillStyle = theme.accentColor;
+          ctx.globalAlpha = 0.28;
+          const h = (parseFloat(theme.baseFontStyle.replace(/^\D+/, "")) || 12) + 6;
+          for (const [a, b] of ranges) {
+            const x = rect.x + pad + ctx.measureText(line.slice(0, a)).width;
+            if (x > rect.x + rect.width) break;
+            const w = Math.min(ctx.measureText(line.slice(a, b)).width, rect.x + rect.width - x);
+            ctx.fillRect(x - 1, rect.y + (rect.height - h) / 2, w + 2, h);
+          }
+          ctx.restore();
+        }
+      }
+      drawContent();
+    },
+    [scoreMax, searchTerms],
   );
 
   const onCellEdited = useCallback(
@@ -602,7 +668,10 @@ export function TableDataGrid({
   };
 
   const rangeLabel = page && page.rows.length > 0 ? `${offset + 1}–${offset + page.rows.length}` : page ? "No rows" : "";
-  const searchRangeLabel = searchResult ? `${searchResult.rows.length} row${searchResult.rows.length === 1 ? "" : "s"}` : "";
+  // Traces: BASED-LANCE-SEARCH-UI — a full result says it hit the Keep limit, not that only that many rows match.
+  const keepLimit = Number(keepSize) || Number(DEFAULT_KEEP);
+  const searchCapped = !!searchResult && searchResult.rows.length >= keepLimit;
+  const searchRangeLabel = searchResult ? `${plural(searchResult.rows.length, "row")}${searchCapped ? ` (top ${keepLimit})` : ""}` : "";
 
   // Reranking only makes sense over an embedding-scored candidate set; the score thresholds trim
   // that score, and pool/keep tune the reranker's candidate pool — each is meaningless without its
@@ -695,7 +764,7 @@ export function TableDataGrid({
   if (hasReranker && rerankTemperature.trim())
     tuningChips.push({ key: "temp", name: "temperature", label: `temperature ${rerankTemperature.trim()}`, reset: () => setRerankTemperature("") });
   if (hasReranker && candidatePool !== DEFAULT_POOL) tuningChips.push({ key: "pool", name: "pool", label: `pool ${candidatePool}`, reset: () => setCandidatePool(DEFAULT_POOL) });
-  if (hasReranker && keepSize !== DEFAULT_KEEP) tuningChips.push({ key: "keep", name: "keep", label: `keep ${keepSize}`, reset: () => setKeepSize(DEFAULT_KEEP) });
+  if (keepSize !== DEFAULT_KEEP) tuningChips.push({ key: "keep", name: "keep", label: `keep ${keepSize}`, reset: () => setKeepSize(DEFAULT_KEEP) });
 
   async function runSearch() {
     clearPending();
@@ -711,8 +780,9 @@ export function TableDataGrid({
         query: query.trim() || undefined,
         where: whereText.trim() || undefined,
         vectorColumn: hasEmbedding && vectorColumn ? vectorColumn : undefined,
-        candidatePool: hasReranker ? numOrUndef(candidatePool) : undefined,
-        keepSize: hasReranker ? numOrUndef(keepSize) : undefined,
+        // Core caps Keep at the pool, so without a reranker the pool grows to fit Keep.
+        candidatePool: hasReranker ? numOrUndef(candidatePool) : Math.max(Number(DEFAULT_POOL), numOrUndef(keepSize) ?? 0),
+        keepSize: numOrUndef(keepSize),
         embeddingProfileId: hasEmbedding ? embeddingProfileId : undefined,
         rerankerProfileId: hasEmbedding && rerankerProfileId ? rerankerProfileId : undefined,
         rerankerOptions:
@@ -724,6 +794,7 @@ export function TableDataGrid({
         maxScoreGapFromTop: hasEmbedding ? numOrUndef(maxGapText) : undefined,
       });
       setSearchResult(res);
+      setSearchTerms(searchMode === "vector" ? [] : queryTerms(query));
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : String(err));
       setSearchResult(null);
@@ -799,11 +870,13 @@ export function TableDataGrid({
                 </RunButton>
               )}
               {searchResult && (
-                <button className="shrink-0 px-2 py-1 rounded border border-line text-muted hover:text-paper" onClick={() => setSearchResult(null)}>
-                  Clear
-                </button>
+                <span
+                  className="shrink-0 text-muted font-mono"
+                  title={searchCapped ? "The search returns at most this many rows; change Keep under Tuning" : undefined}
+                >
+                  {searchRangeLabel}
+                </span>
               )}
-              {searchResult && <span className="shrink-0 text-muted font-mono">{searchRangeLabel}</span>}
               <button
                 className="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-line text-muted hover:text-paper"
                 aria-expanded={tuningOpen}
@@ -812,7 +885,22 @@ export function TableDataGrid({
                 Tuning{!tuningOpen && tuningChips.length > 0 ? ` (${tuningChips.length})` : ""}
                 <span className={`text-[length:var(--fs-xs)] transition-transform ${tuningOpen ? "rotate-180" : ""}`}>▾</span>
               </button>
-              <IconButton size="bar" title="Close search (Esc)" aria-label="Close search" className="text-muted hover:text-paper" onClick={closeSearch}>
+              <IconButton
+                size="bar"
+                title="Help: search modes and Tuning"
+                aria-label="Help: search modes and Tuning"
+                className="text-muted hover:text-paper"
+                onClick={() => openDocsTab("search")}
+              >
+                ?
+              </IconButton>
+              <IconButton
+                size="bar"
+                title="Close search and clear results (Esc)"
+                aria-label="Close search"
+                className="text-muted hover:text-paper"
+                onClick={closeSearch}
+              >
                 ✕
               </IconButton>
             </div>
@@ -836,11 +924,15 @@ export function TableDataGrid({
                   <span className="text-muted">Where</span>
                   <input
                     className={`${tuneField} w-56`}
-                    placeholder="year > 2020"
+                    placeholder={wherePlaceholder(tab.columns)}
                     value={whereText}
                     onChange={(e) => setWhereText(e.target.value)}
                     title="LanceDB filter predicate applied before the search"
                   />
+                </label>
+                <label className={tuneLabel}>
+                  <span className="text-muted">Keep</span>
+                  <input className={`${tuneField} w-14`} value={keepSize} onChange={(e) => setKeepSize(e.target.value)} title="How many results the search returns" />
                 </label>
                 {searchMode !== "text" && (
                   <label className={tuneLabel}>
@@ -963,10 +1055,6 @@ export function TableDataGrid({
                         title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
                       />
                     </label>
-                    <label className={tuneLabel}>
-                      <span className="text-muted">Keep</span>
-                      <input className={`${tuneField} w-14`} value={keepSize} onChange={(e) => setKeepSize(e.target.value)} title="Keep size (final result count)" />
-                    </label>
                   </>
                 )}
               </div>
@@ -975,6 +1063,7 @@ export function TableDataGrid({
         )}
 
         {!hasSearchResult && (
+          <div className="@container">
           <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]">
             <button
               className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
@@ -1070,13 +1159,12 @@ export function TableDataGrid({
                 </IconButton>
               </>
             ) : (
-              <span className="text-[length:var(--fs-sm)] text-faint italic">
-                {!canWrite
-                  ? "This connection is read-only."
-                  : tab.objectType === "view"
-                    ? "Views are read-only."
-                    : "No primary key — read-only. Add a PK to edit."}
-              </span>
+              // The status bar already badges a read-only connection; only table-level reasons show here.
+              canWrite && (
+                <span className="text-[length:var(--fs-sm)] text-faint italic">
+                  {tab.objectType === "view" ? "Views are read-only." : "No primary key — read-only. Add a PK to edit."}
+                </span>
+              )
             )}
 
             <div className="flex-1" />
@@ -1109,6 +1197,7 @@ export function TableDataGrid({
                 </button>
               </>
             )}
+          </div>
           </div>
         )}
       </div>
@@ -1151,6 +1240,7 @@ export function TableDataGrid({
             columns={columns}
             rowCount={display.length}
             getCellContent={getCellContent}
+            drawCell={hasSearchResult ? drawSearchCell : undefined}
             dataVersion={`${hasSearchResult ? "search" : "browse"}:${offset}:${Object.keys(edits).length}:${newRows.length}:${deleted.size}:${searchResult?.rows.length ?? 0}`}
             onCellEdited={editable || newRows.length > 0 ? onCellEdited : undefined}
             rowMarkers="both"

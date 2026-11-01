@@ -13,6 +13,7 @@ import { DiagramView } from "./components/DiagramView";
 import { DocsView } from "./components/DocsView";
 import { ErrorBoundary, ErrorPanel, panelBtn } from "./components/ErrorBoundary";
 import { RightRail } from "./components/RightRail";
+import { toggleCapi } from "./railLayout";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { NewTableDialog } from "./components/NewTableDialog";
@@ -195,7 +196,7 @@ export function App() {
         if (tab?.running) void state.cancelQuery(tab.id);
       } else if (e.key.toLowerCase() === "j" && isAccel(e)) {
         e.preventDefault();
-        state.toggleRightRail();
+        toggleCapi();
       } else if (e.key.toLowerCase() === "t" && isAccel(e) && e.shiftKey) {
         e.preventDefault();
         void state.reopenClosedTabs();

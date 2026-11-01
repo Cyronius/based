@@ -10,6 +10,10 @@ export interface HistoryEntry {
   durationMs: number | null;
   status: "ok" | "error" | "cancelled";
   error: string | null;
+  /** Statements (or GO batches) in the run, when the engine split the text. */
+  statementCount?: number | null;
+  /** 1-based statement or batch that failed first, when the engine said. */
+  failedStatement?: number | null;
 }
 
 export class HistoryStore {
@@ -17,8 +21,18 @@ export class HistoryStore {
 
   add(entry: Omit<HistoryEntry, "id">): void {
     this.db.run(
-      "INSERT INTO history (connection_id, database, sql, started_at, duration_ms, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [entry.connectionId, entry.database, entry.sql, entry.startedAt, entry.durationMs, entry.status, entry.error],
+      "INSERT INTO history (connection_id, database, sql, started_at, duration_ms, status, error, statement_count, failed_statement) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        entry.connectionId,
+        entry.database,
+        entry.sql,
+        entry.startedAt,
+        entry.durationMs,
+        entry.status,
+        entry.error,
+        entry.statementCount ?? null,
+        entry.failedStatement ?? null,
+      ],
     );
   }
 
@@ -34,6 +48,8 @@ export class HistoryStore {
           duration_ms: number | null;
           status: string;
           error: string | null;
+          statement_count: number | null;
+          failed_statement: number | null;
         },
         [string, number]
       >("SELECT * FROM history WHERE connection_id = ? ORDER BY id DESC LIMIT ?")
@@ -47,6 +63,8 @@ export class HistoryStore {
       durationMs: r.duration_ms,
       status: r.status as HistoryEntry["status"],
       error: r.error,
+      statementCount: r.statement_count,
+      failedStatement: r.failed_statement,
     }));
   }
 }

@@ -125,10 +125,22 @@ export type QueryChunk =
   | { type: "plan"; format: "showplan-xml"; xml: string }
   | { type: "plan"; format: "duckdb-json"; json: string }
   | { type: "message"; text: string }
-  /** `line` is batch-relative (as SQL Server reports it); `textLine` is the line in the submitted text. */
-  | { type: "error"; message: string; line?: number; textLine?: number; code?: number }
+  /** `line` is batch-relative, `textLine` is in the submitted text; `statement` = the script stopped there, `batch` = later batches still ran. */
+  | {
+      type: "error";
+      message: string;
+      line?: number;
+      textLine?: number;
+      /** 1-based column on textLine where the engine points, when it says. */
+      textColumn?: number;
+      code?: number;
+      statement?: number;
+      statementCount?: number;
+      batch?: number;
+    }
   | { type: "cancelled" }
-  | { type: "done"; durationMs: number; status: "ok" | "error" | "cancelled" };
+  /** `statementCount`: how many statements (or GO batches) the text held, when the engine split it. */
+  | { type: "done"; durationMs: number; status: "ok" | "error" | "cancelled"; statementCount?: number };
 
 /** Per-run overrides for execute(). `capturePlan`/`captureStats` wrap the batch with
  *  SET STATISTICS XML/IO/TIME ON; `rowCap` overrides the adapter's default row cap

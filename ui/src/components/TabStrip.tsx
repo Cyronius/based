@@ -38,21 +38,27 @@ export function TabStrip() {
   const stripRef = useRef<HTMLDivElement>(null);
   const titles = useMemo(() => dedupeTitles(visible), [visible]);
 
-  // The All tabs menu exists only while the tablist overflows.
+  const revealActive = () => {
+    const id = useStore.getState().activeTabId;
+    if (id) stripRef.current?.querySelector(`[data-tab-id="${id}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
+  // The All tabs menu exists only while the tablist overflows; a narrower strip must not hide the active tab.
   const [overflow, setOverflow] = useState(false);
   useLayoutEffect(() => {
     const el = stripRef.current;
     if (!el) return;
-    const check = () => setOverflow(el.scrollWidth > el.clientWidth + 1);
+    const check = () => {
+      setOverflow(el.scrollWidth > el.clientWidth + 1);
+      revealActive();
+    };
     check();
     const ro = new ResizeObserver(check);
     ro.observe(el);
     return () => ro.disconnect();
   }, [visible.length]);
 
-  useEffect(() => {
-    if (activeTabId) stripRef.current?.querySelector(`[data-tab-id="${activeTabId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeTabId, visible.length]);
+  useEffect(revealActive, [activeTabId, visible.length]);
 
   // Traces: BASED-UI-A11Y-KEYBOARD — tablist keys: arrows/Home/End move and activate, Delete closes.
   const focusTab = (id: string) => stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)?.focus();
@@ -93,7 +99,7 @@ export function TabStrip() {
   return (
     <div className="flex items-stretch h-9 border-b border-line-soft bg-ink-950 shrink-0 min-w-0">
       {/* Traces: BASED-UI-TABS — only the tabs scroll; "+", All tabs, and the toggles stay put. */}
-      <div ref={stripRef} role="tablist" aria-label="Open tabs" className="flex items-stretch min-w-0 overflow-x-auto overflow-y-hidden tab-scroll">
+      <div ref={stripRef} role="tablist" aria-label="Open tabs" className="flex items-stretch min-w-0 overflow-x-auto overflow-y-hidden tab-scroll snap-x snap-proximity">
       {visible.map((t, idx) => {
         const active = t.id === activeTabId;
         const running = t.kind === "query" && t.running;
@@ -104,7 +110,7 @@ export function TabStrip() {
             key={t.id}
             role="presentation"
             draggable
-            className={`group relative flex items-center shrink-0 border-r border-line-soft cursor-pointer max-w-56 select-none has-[[role=tab]:focus-visible]:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
+            className={`group relative flex items-center shrink-0 snap-start border-r border-line-soft cursor-pointer max-w-56 select-none has-[[role=tab]:focus-visible]:shadow-[inset_0_0_0_1px_var(--color-brass)] ${
               active ? "bg-ink-900 text-paper shadow-[inset_0_2px_0_var(--color-brass)]" : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
             } ${draggedId === t.id ? "opacity-40" : ""}`}
             onClick={() => {

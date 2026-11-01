@@ -3,19 +3,7 @@ import { fetchHealth } from "../api/client";
 import { activeQueryTab, useStore } from "../store";
 import { VIM_STATUS_NODE_ID } from "../vimMode";
 import { connTarget, profileFor } from "../lib/engineProfile";
-
-/** Long paths lose their middle, not their end: the folder and database name stay visible. */
-function TargetText({ text }: { text: string }) {
-  const cut = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
-  const head = cut > 0 && text.length > 40 ? text.slice(0, cut + 1) : text;
-  const tail = head === text ? "" : text.slice(cut + 1);
-  return (
-    <span className="flex min-w-0 text-muted" title={text}>
-      <span className="truncate">{head}</span>
-      {tail && <span className="shrink-0">{tail}</span>}
-    </span>
-  );
-}
+import { MiddleTruncate } from "./MiddleTruncate";
 
 export function StatusBar() {
   // The running build's version, so a bug report can name it. Fetched once; a failure just leaves
@@ -66,7 +54,7 @@ export function StatusBar() {
           <span className="font-sans font-bold text-paper truncate shrink-0 max-w-80" title={conn.name}>
             {conn.name}
           </span>
-          <TargetText text={`${connTarget(conn, engines)}${database ? ` · ${database}` : ""}`} />
+          <MiddleTruncate className="text-muted" text={`${connTarget(conn, engines)}${database ? ` · ${database}` : ""}`} />
           {capabilities && !capabilities.write && (
             <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0" title="This connection cannot write data">
               read-only

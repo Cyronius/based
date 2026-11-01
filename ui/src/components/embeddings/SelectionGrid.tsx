@@ -10,6 +10,7 @@ import { computeSelectionSlice, type SelectionSlice } from "../../gridSelectionT
 import { ResultGrid } from "../ResultGrid";
 import { GridContextMenu } from "../GridContextMenu";
 import { GridToolbarActions, useGridExportActions } from "../GridToolbarActions";
+import { plural } from "../../lib/plural";
 
 export function SelectionGrid({
   header,
@@ -50,7 +51,7 @@ export function SelectionGrid({
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-1 px-2 py-1 border-b border-line-soft shrink-0">
-        <span className="text-[length:var(--fs-sm)] text-muted font-mono">{rs.rowCount.toLocaleString()} rows</span>
+        <span className="text-[length:var(--fs-sm)] text-muted font-mono">{plural(rs.rowCount, "row")}</span>
         <div className="flex-1" />
         <GridToolbarActions actions={exportActions} onFitColumns={() => fitColumnsRef.current()} />
       </div>

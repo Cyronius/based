@@ -108,10 +108,26 @@ export function ExcelIcon() {
   );
 }
 
+// Traces: BASED-UI-NARROW-LAYOUT — under 40rem of toolbar the set folds into one menu so the row never wraps.
 export function GridToolbarActions({ actions, onFitColumns }: { actions: GridExportActions; onFitColumns: () => void }) {
   return (
     <>
       {actions.notice && <span className="text-[length:var(--fs-sm)] text-brass mr-1">{actions.notice}</span>}
+      <MenuButton
+        className={`${btn} shrink-0 justify-center w-[calc(var(--fs-md)*1.5_+_10px)] px-0 @min-[40rem]:hidden`}
+        title="Fit columns, copy, or export"
+        label="More actions"
+        items={[
+          { label: "Fit columns", run: onFitColumns },
+          { label: "Copy", icon: <CopyIcon />, run: () => void actions.copy(), separatorBefore: true },
+          { label: "Copy as Markdown", icon: <MarkdownIcon />, run: () => void actions.copyMarkdown() },
+          { label: "Save as CSV", icon: <CsvIcon />, run: () => void actions.exportFile("csv"), separatorBefore: true },
+          { label: "Open in Excel", icon: <ExcelIcon />, run: () => void actions.exportFile("xlsx", { openAfter: true }) },
+        ]}
+      >
+        ⋯
+      </MenuButton>
+      <span className="contents @max-[40rem]:hidden">
       <button className={`${btn} whitespace-nowrap shrink-0`} title="Reset column widths to fit their content" onClick={onFitColumns}>
         Fit columns
       </button>
@@ -135,6 +151,7 @@ export function GridToolbarActions({ actions, onFitColumns }: { actions: GridExp
       >
         Export ▾
       </MenuButton>
+      </span>
     </>
   );
 }

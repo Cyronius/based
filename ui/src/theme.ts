@@ -331,7 +331,8 @@ export function gridThemeFromCss(): Partial<GridTheme> {
     bgHeaderHovered: readVar("--color-ink-800"),
     textDark: readVar("--color-paper"),
     textMedium: readVar("--color-muted"),
-    textLight: readVar("--color-faint"),
+    // Row numbers draw in textLight; faint was unreadable at marker size.
+    textLight: readVar("--color-muted"),
     textHeader: readVar("--color-muted"),
     borderColor: readVar("--color-line"),
     horizontalBorderColor: readVar("--color-line-soft"),
@@ -340,6 +341,7 @@ export function gridThemeFromCss(): Partial<GridTheme> {
     cellHorizontalPadding: 8,
     cellVerticalPadding: 3,
     headerFontStyle: "600 11px",
+    markerFontStyle: "11px",
     baseFontStyle: "12px",
     fontFamily: readVar("--font-mono"),
   };

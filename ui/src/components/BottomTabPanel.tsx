@@ -57,7 +57,7 @@ export function BottomTabPanel({
         ))}
         <div className="flex-1" />
         {onMinimize && (
-          <IconButton size="sm" className="self-center text-faint hover:text-paper" title="Minimize panel" aria-label="Minimize panel" onClick={onMinimize}>
+          <IconButton className="self-center text-faint hover:text-paper" title="Minimize panel" aria-label="Minimize panel" onClick={onMinimize}>
             <ChevronDownIcon />
           </IconButton>
         )}

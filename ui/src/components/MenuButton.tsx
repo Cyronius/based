@@ -38,7 +38,9 @@ export function MenuButton({
   useLayoutEffect(() => {
     if (!open || !btnRef.current) return;
     const r = btnRef.current.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(8, Math.min(r.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8)) });
+    // A button in the left half opens its menu rightward, so the list stays over the work area, not the side rail.
+    const left = r.left < window.innerWidth / 2 ? r.left : r.right - MENU_WIDTH;
+    setPos({ top: r.bottom + 4, left: Math.max(8, Math.min(left, window.innerWidth - MENU_WIDTH - 8)) });
     menuRef.current?.querySelector<HTMLElement>(ENABLED)?.focus();
   }, [open]);
 

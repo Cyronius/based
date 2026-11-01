@@ -3,7 +3,7 @@
 // (BASED-AGENT-AUDIT), most-recent-first, with client-side search + status filtering and inline
 // expand. The Agent sub-tab is read-only — never a re-run affordance (that would bypass the
 // mutation gate).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { fetchHistory, fetchAgentAudit } from "../api/client";
 import type { AuditEntry, HistoryEntry } from "../api/types";
@@ -31,6 +31,12 @@ function firstLine(sql: string): string {
     if (t) return t;
   }
   return sql.trim();
+}
+
+// Traces: BASED-HISTORY-UI — a batch row says what it held, so its first line is not read as the whole run.
+function batchSummary(e: HistoryEntry): string | null {
+  if (!e.statementCount || e.statementCount < 2) return null;
+  return `${e.statementCount} statements${e.failedStatement ? ` · failed at ${e.failedStatement}` : ""}`;
 }
 
 function statusDot(status: string): string {
@@ -76,6 +82,17 @@ export function HistoryPanel() {
     setExpandedId(null);
     load();
   }, [load]);
+
+  // A finished run adds a row; core writes it just after the stream ends, hence the short delay.
+  const runningCount = useStore((s) => s.tabs.reduce((n, t) => n + (t.kind === "query" && t.running ? 1 : 0), 0));
+  const prevRunning = useRef(runningCount);
+  useEffect(() => {
+    const finished = runningCount < prevRunning.current;
+    prevRunning.current = runningCount;
+    if (!finished) return;
+    const t = setTimeout(load, 300);
+    return () => clearTimeout(t);
+  }, [runningCount, load]);
 
   if (!activeConnectionId) {
     return <div className="p-4 text-faint text-[length:var(--fs-base)] italic">No connection.</div>;
@@ -142,12 +159,16 @@ export function HistoryPanel() {
                 onClick={() => setExpandedId(expanded ? null : e.id)}
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className={`size-1.5 rounded-full shrink-0 ${statusDot(e.status)}`} />
+                  <span className={`size-1.5 rounded-full shrink-0 ${statusDot(e.status)}`} aria-hidden="true" />
                   <span className="truncate font-mono text-[length:var(--fs-sm)] text-paper-dim group-hover:text-paper">
                     {firstLine(e.sql)}
                   </span>
                 </div>
                 <div className="pl-3.5 text-[length:var(--fs-xs)] text-faint truncate">
+                  {!audit && (
+                    <span className={e.status === "error" ? "text-err font-bold" : e.status === "ok" ? "text-ok" : ""}>{e.status} · </span>
+                  )}
+                  {!audit && batchSummary(e as HistoryEntry) && <span className="text-paper-dim">{batchSummary(e as HistoryEntry)} · </span>}
                   {relativeTime(e.startedAt)}
                   {e.durationMs != null && ` · ${e.durationMs} ms`}
                   {e.database && ` · ${e.database}`}

@@ -904,3 +904,46 @@ describe("BASED-CONN-SWITCH-FAILURE: connect-then-swap", () => {
     }
   }, 60_000);
 });
+
+// LanceDB connections carry no database name; their runs must still reach history.
+describe("BASED-HISTORY: a LanceDB run is recorded", () => {
+  const SID = "lance-history";
+
+  test("a query on a connection with no database still adds a history row", async () => {
+    const lancedb = await import("@lancedb/lancedb");
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-lance-hist-"));
+    const ldb = await lancedb.connect(dir);
+    await ldb.createTable("plain", [{ id: 1 }, { id: 2 }], { mode: "overwrite" });
+
+    const conn = (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({ name: "srv-lance-hist", engine: "lancedb", authType: "lancedb-local", uri: dir }),
+      })
+    ).json()) as ConnectionConfig;
+    try {
+      expect((await api(`/api/session/connect?sid=${SID}`, { method: "POST", body: JSON.stringify({ connectionId: conn.id }) })).status).toBe(200);
+      const run = async (sql: string) => {
+        await (await api(`/api/session/query?sid=${SID}`, { method: "POST", body: JSON.stringify({ sql }) })).text();
+        // History is written when the run completes, just after the stream closes.
+        await Bun.sleep(200);
+      };
+      await run("select count(*) from plain");
+      await run("select 1;\nselect bogus from plain;\nselect 3;");
+      const hist = (await (await api(`/api/history?connectionId=${conn.id}`)).json()) as Array<{
+        sql: string;
+        status: string;
+        statementCount: number | null;
+        failedStatement: number | null;
+      }>;
+      // Traces: BASED-HISTORY — a batch records how many statements it held and which one failed.
+      expect(hist.map((h) => [h.status, h.statementCount, h.failedStatement])).toEqual([
+        ["error", 3, 2],
+        ["ok", 1, null],
+      ]);
+      expect(hist[1]!.sql).toBe("select count(*) from plain");
+    } finally {
+      await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+    }
+  }, 120_000);
+});

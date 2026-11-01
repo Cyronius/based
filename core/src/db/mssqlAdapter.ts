@@ -815,9 +815,10 @@ export class MssqlAdapter implements DatabaseAdapter {
           if (Date.now() - this.lastActivity > IDLE_PING_AGE_MS) await p.request().query("SELECT 1");
           return p;
         });
-        for (const batch of batches) {
+        for (const [i, batch] of batches.entries()) {
           if (cancelled) break;
-          const res = await this.runBatchStream(pool, batch.text, batch.startLine, onChunk, (req) => (currentRequest = req), opts);
+          const batchNo = batches.length > 1 ? i + 1 : undefined;
+          const res = await this.runBatchStream(pool, batch.text, batch.startLine, batchNo, onChunk, (req) => (currentRequest = req), opts);
           if (res.errored) errored = true;
           if (res.cancelled) cancelled = true;
         }
@@ -829,7 +830,7 @@ export class MssqlAdapter implements DatabaseAdapter {
       const durationMs = Math.round(performance.now() - start);
       const status = cancelled ? "cancelled" : errored ? "error" : "ok";
       if (cancelled) onChunk({ type: "cancelled" });
-      onChunk({ type: "done", durationMs, status });
+      onChunk({ type: "done", durationMs, status, statementCount: batches.length });
       return { status, durationMs } as const;
     })();
 
@@ -850,6 +851,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     pool: sql.ConnectionPool,
     batchSql: string,
     batchStartLine: number,
+    batchNo: number | undefined,
     onChunk: (chunk: QueryChunk) => void,
     setRequest: (req: sql.Request) => void,
     opts: ExecuteOptions,
@@ -909,7 +911,7 @@ export class MssqlAdapter implements DatabaseAdapter {
         }
         errored = true;
         const textLine = e?.lineNumber != null ? batchStartLine + e.lineNumber - 1 : undefined;
-        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, textLine, code: e?.number });
+        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, textLine, code: e?.number, batch: batchNo });
       });
       request.on("done", () => {
         endResultSet();

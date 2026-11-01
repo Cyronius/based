@@ -36,6 +36,7 @@ import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
 import { popClosed, pushClosed } from "./lib/closedTabs";
 import { gridPendingCount } from "./lib/gridPending";
+import { resultSlots, type SlotError } from "./lib/resultSlots";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
   AiProfile,
@@ -116,7 +117,13 @@ export interface QueryTabState {
   /** BASED-RUN-SCOPE: editor line where the last run's text starts (1 for a whole-buffer run). */
   runStartLine?: number;
   /** BASED-UI-QUERY-ERROR: errors from the last run, `line` already mapped to the editor. */
-  queryErrors?: Array<{ message: string; line: number | null }>;
+  queryErrors?: QueryError[];
+}
+
+export interface QueryError extends SlotError {
+  message: string;
+  line: number | null;
+  column: number | null;
 }
 
 /** BASED-TABLE-EDIT-RETAIN: the Data view's browse page, pending edits, and search, kept per tab in
@@ -148,6 +155,8 @@ export interface TableGridSession {
   maxGapText: string;
   vectorColumn: string;
   searchResult: SearchRows | null;
+  /** Keyword terms of the query that produced searchResult, for match highlighting. */
+  searchTerms: string[];
   searchOpen: boolean;
   /** The user picked a mode, so the opening-mode rule stops choosing for them. */
   modeTouched: boolean;
@@ -381,7 +390,10 @@ export interface AppState {
   openDiagramTab(scope: string): string | null;
   /** Open (or focus) the help tab (BASED-HELP-DOCS). One per window, and the only tab that may be
    *  opened with no connection active. */
-  openDocsTab(): void;
+  /** Opens (or focuses) the help tab; `section` scrolls it to that part ("search", "embeddings"). */
+  openDocsTab(section?: string): void;
+  /** Help section waiting for the help tab to scroll to it. */
+  docsSection: string | null;
   /** Change a diagram tab's schema scope and refetch its graph. */
   setDiagramScope(id: string, scope: string): void;
   /** BASED-WINDOW-RESTORE: called once at boot — reconnects this window to whatever connection/tab/
@@ -789,6 +801,7 @@ export const useStore = create<AppState>((set, get) => {
     dialog: { mode: "closed" },
     newTableOpen: false,
     rightRailOpen: false,
+    docsSection: null,
     banner: null,
     connectFailure: null,
     theme: themeHint(),
@@ -1408,15 +1421,21 @@ export const useStore = create<AppState>((set, get) => {
                 break;
               case "error": {
                 const line = chunk.textLine != null ? (opts?.startLine ?? 1) + chunk.textLine - 1 : null;
-                const queryErrors = [...(t.queryErrors ?? []), { message: chunk.message, line }];
-                setRunMarkers(id, queryErrors.flatMap((e) => (e.line != null ? [{ line: e.line, message: e.message }] : [])));
-                patch({
-                  queryErrors,
-                  output: [
-                    ...t.output,
-                    { kind: "error", text: chunk.line != null ? `Error${chunk.code ? ` ${chunk.code}` : ""} (line ${chunk.line}): ${chunk.message}` : chunk.message },
-                  ],
-                });
+                const queryErrors: QueryError[] = [
+                  ...(t.queryErrors ?? []),
+                  {
+                    message: chunk.message,
+                    line,
+                    column: line != null ? (chunk.textColumn ?? null) : null,
+                    afterResult: t.resultSets.length,
+                    statement: chunk.statement,
+                    statementCount: chunk.statementCount,
+                    batch: chunk.batch,
+                  },
+                ];
+                setRunMarkers(id, queryErrors.flatMap((e) => (e.line != null ? [{ line: e.line, column: e.column, message: e.message }] : [])));
+                // Traces: BASED-UI-OUTPUT — query errors live in Results only, not repeated in Output.
+                patch({ queryErrors });
                 break;
               }
               case "cancelled":
@@ -1424,6 +1443,11 @@ export const useStore = create<AppState>((set, get) => {
                 break;
               case "done": {
                 patch({ stats: { durationMs: chunk.durationMs, status: chunk.status }, running: false, queryId: null });
+                // Traces: BASED-QUERY-BATCH-FAILURE — a failed run opens on its first failure, not on an earlier grid.
+                if (t.queryErrors?.length) {
+                  const first = resultSlots(t.resultSets, t.queryErrors).findIndex((sl) => sl.kind === "error");
+                  if (first >= 0) patch({ activeResult: first });
+                }
                 // Traces: BASED-TAB-AUTONAME-APPLY — name the tab once, on its first successful
                 // run, from the SQL that actually ran. Only default "Query N" titles qualify, so
                 // file-backed, manually renamed, and already-auto-named tabs are never touched.
@@ -1599,14 +1623,14 @@ export const useStore = create<AppState>((set, get) => {
 
     // Traces: BASED-HELP-DOCS — one help tab per window, deduped by kind (there's nothing else to
     // key it on). Persists with the connection it was opened under, like any other tab.
-    openDocsTab() {
+    openDocsTab(section) {
       const existing = get().tabs.find((t) => t.kind === "docs");
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ activeTabId: existing.id, docsSection: section ?? null });
         return;
       }
       const tab: DocsTabState = { kind: "docs", id: crypto.randomUUID(), title: "Help" };
-      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id, docsSection: section ?? null });
       persistTabsSoon();
     },
 

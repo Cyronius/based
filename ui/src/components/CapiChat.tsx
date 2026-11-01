@@ -205,6 +205,12 @@ export function CapiChat() {
     terminateRun,
   } = useAgentContext();
   const [input, setInput] = useState("");
+  const activeTab = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId));
+  const starterPrompts = [
+    "Which tables have the most rows?",
+    activeTab?.kind === "table" ? `What is in ${activeTab.table}, and what is it for?` : "What is in this database?",
+    activeTab?.kind === "query" && activeTab.queryErrors?.length ? "Explain the last error and fix my query" : "Write a query that finds duplicate rows",
+  ];
   // Wall-clock of the most recently completed turn; cleared at the start of each new send so the
   // readout only ever belongs to the last answer.
   const [lastTurnMs, setLastTurnMs] = useState<number | null>(null);
@@ -383,11 +389,26 @@ export function CapiChat() {
       </div>
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         <div ref={contentRef} className="pl-3 pr-4 py-2 space-y-3">
+        {/* Traces: BASED-CHAT-UI — example prompts fill the composer; nothing is sent until the user sends it. */}
         {messages.length === 0 && !isStreaming && (
-          <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">
-            Ask about your schema, generate SQL, or request a change. Answers stream here; SQL blocks
-            get <span className="text-brass">Insert</span> / <span className="text-brass">Run</span> actions.
-          </p>
+          <div className="space-y-2">
+            <p className="text-[length:var(--fs-base)] text-muted leading-relaxed [text-wrap:pretty]">
+              Ask about your data, get SQL you can insert or run, or ask for a change. Try:
+            </p>
+            {starterPrompts.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className="block w-full text-left px-2.5 py-1.5 rounded border border-line text-[length:var(--fs-base)] text-paper-dim hover:text-paper hover:border-brass-soft/60"
+                onClick={() => {
+                  setInput(p);
+                  inputRef.current?.focus();
+                }}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
         )}
         {rendered.map(({ m, key }) => {
           const toolCalls = (m as unknown as { toolCalls?: Array<{ id: string; function?: { name?: string; arguments?: string } }> }).toolCalls;

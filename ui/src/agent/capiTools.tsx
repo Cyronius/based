@@ -249,7 +249,14 @@ function summarizeQueryTab(tab: QueryTabState, previewRows: number) {
     durationMs: tab.stats?.durationMs,
     resultSets: tab.resultSets.map((rs) => ({ columns: rs.columns.map((c) => c.name), rowCount: rs.rowCount, truncated: rs.truncated })),
     preview: tab.resultSets[0] ? serializeResultRows(tab.resultSets[0], previewRows) : null,
-    errors: tab.output.filter((l) => l.kind === "error").map((l) => l.text),
+    errors: [
+      ...(tab.queryErrors ?? []).map((e) => {
+        const where = e.statement != null ? `statement ${e.statement}` : e.batch != null ? `batch ${e.batch}` : null;
+        const at = [where, e.line != null ? `line ${e.line}` : null].filter(Boolean).join(", ");
+        return at ? `(${at}) ${e.message}` : e.message;
+      }),
+      ...tab.output.filter((l) => l.kind === "error").map((l) => l.text),
+    ],
   };
 }
 

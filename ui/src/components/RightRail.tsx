@@ -30,21 +30,13 @@ import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
 import { agentReadyText } from "./AgentReadyLine";
 import { CapiMark } from "./icons";
+import { RIGHT_RANGE, toggleCapi, useRailFit, useRailLayout } from "../railLayout";
 import { SLEEPY_AFTER_MS } from "../agent/capiMood";
 import { CapiChat } from "./CapiChat";
 import { relativeTime } from "./HistoryPanel";
 import { IconButton } from "./IconButton";
 import { DownloadIcon, HistoryIcon } from "./icons";
 
-const WIDTH_KEY = "based:rightRailWidth";
-const MIN_WIDTH = 280;
-const MAX_WIDTH = 720;
-const DEFAULT_WIDTH = 384;
-
-function loadWidth(): number {
-  const stored = Number(localStorage.getItem(WIDTH_KEY));
-  return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
-}
 
 // A speech bubble with a plus: "new conversation", distinct from the ✎ edit glyph.
 function NewChatIcon() {
@@ -354,18 +346,17 @@ function CapiRail({ toggle, connectionId }: { toggle: () => void; connectionId: 
 }
 
 export function RightRail() {
-  const open = useStore((s) => s.rightRailOpen);
-  const toggle = useStore((s) => s.toggleRightRail);
+  const fit = useRailFit();
+  const open = !fit.rightCollapsed;
+  const toggle = toggleCapi;
   const connected = useStore((s) => s.activeConnectionId);
-  const [width, setWidth] = useState(loadWidth);
+  const setRight = useRailLayout((l) => l.setRight);
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e: MouseEvent) => {
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
-      setWidth(next);
-      localStorage.setItem(WIDTH_KEY, String(next));
+      setRight(Math.min(RIGHT_RANGE.max, Math.max(RIGHT_RANGE.min, window.innerWidth - e.clientX)));
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -392,7 +383,7 @@ export function RightRail() {
     <aside
       onPointerMove={touch}
       className={`relative shrink-0 flex border-l border-line-soft bg-ink-950 ${dragging ? "" : "transition-[width]"}`}
-      style={{ width: open ? width : 36 }}
+      style={{ width: fit.right }}
     >
       {open && (
         <div

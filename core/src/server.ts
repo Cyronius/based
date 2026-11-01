@@ -943,7 +943,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const columns = await adapter.getTableColumns(body.schema, body.table);
       if (columns.length === 0) return json({ error: `No columns for ${body.schema}.${body.table}` }, 400);
       const connectionId = session.connectionId!;
-      const database = session.database!;
+      const database = session.database ?? "";
       const startedAt = new Date().toISOString();
       let closed = false;
       const stream = new ReadableStream<Uint8Array>({
@@ -1118,9 +1118,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const startedAt = new Date().toISOString();
     const session = getSession(sid);
     const connectionId = session.connectionId!;
-    const database = session.database!;
+    // LanceDB connections have no database name; history needs a value (BASED-HISTORY).
+    const database = session.database ?? "";
     let closed = false;
     let firstError: string | null = null;
+    let failedStatement: number | null = null;
+    let statementCount: number | null = null;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1136,7 +1139,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         const exec = adapter.execute(
           sqlText,
           (chunk) => {
-            if (chunk.type === "error" && !firstError) firstError = chunk.message;
+            if (chunk.type === "error" && !firstError) {
+              firstError = chunk.message;
+              failedStatement = chunk.statement ?? chunk.batch ?? null;
+            }
+            if (chunk.type === "done") statementCount = chunk.statementCount ?? null;
             send(chunk);
           },
           opts,
@@ -1144,7 +1151,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         executions.set(queryId, exec);
         exec.completion
           .then(({ status, durationMs }) => {
-            history.add({ connectionId, database, sql: sqlText, startedAt, durationMs, status, error: firstError });
+            history.add({ connectionId, database, sql: sqlText, startedAt, durationMs, status, error: firstError, statementCount, failedStatement });
           })
           .catch(() => {})
           .finally(() => {
@@ -1194,7 +1201,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const session = getSession(sid);
     history.add({
       connectionId: session.connectionId!,
-      database: session.database!,
+      database: session.database ?? "",
       sql: commands.map((c) => c.sql).join(";\n"),
       startedAt,
       durationMs,
@@ -1228,7 +1235,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const t0 = performance.now();
     const record = (status: "ok" | "error", error: string | null) => {
       const durationMs = Math.round(performance.now() - t0);
-      const base = { connectionId: session.connectionId!, database: session.database!, startedAt, durationMs, status, error };
+      const base = { connectionId: session.connectionId!, database: session.database ?? "", startedAt, durationMs, status, error };
       if (opts.audited) audit.add({ ...base, kind: "mutation", sql: summary, approved: true });
       else history.add({ ...base, sql: summary });
       return durationMs;
@@ -1259,7 +1266,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const session = getSession(sid);
     audit.add({
       connectionId: session.connectionId!,
-      database: session.database!,
+      database: session.database ?? "",
       kind: "mutation",
       sql: sqlText,
       approved: true,

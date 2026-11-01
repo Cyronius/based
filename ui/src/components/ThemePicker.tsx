@@ -64,11 +64,14 @@ function GeneralTab() {
   const setConfirmCloseUnsaved = useStore((s) => s.setConfirmCloseUnsaved);
 
   const selectCls =
-    "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
+    "w-full max-w-[280px] px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
 
   return (
     <div className="px-3 py-3 space-y-2">
-      <div className="ledger-label">Font size</div>
+      <div className="flex items-baseline gap-2">
+        <span className="ledger-label">Font size</span>
+        <span className="text-[length:var(--fs-sm)] text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
+      </div>
       <input
         type="range"
         min={FONT_SCALE_MIN}
@@ -82,7 +85,6 @@ function GeneralTab() {
       />
       <div className="flex items-center justify-between text-[length:var(--fs-sm)] text-faint">
         <span>Small</span>
-        <span className="text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
         <span>Large</span>
       </div>
       {/* Traces: BASED-UI-SHORTCUTS discoverability — the gesture shares this control's action. */}
@@ -104,7 +106,7 @@ function GeneralTab() {
       {/* Traces: BASED-EXPLORER-ACTION — default double-click behavior in the object explorer. */}
       <div className="ledger-label pt-2">Double-click opens</div>
       <label className="block">
-        <span className="text-[length:var(--fs-sm)] text-muted">Tables and views</span>
+        <span className="block mb-1 text-[length:var(--fs-sm)] text-muted">Tables and views</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerTableAction}
@@ -117,7 +119,7 @@ function GeneralTab() {
         </select>
       </label>
       <label className="block">
-        <span className="text-[length:var(--fs-sm)] text-muted">Procedures and functions</span>
+        <span className="block mb-1 text-[length:var(--fs-sm)] text-muted">Procedures and functions</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerRoutineAction}
@@ -1041,11 +1043,13 @@ export function ThemePicker() {
         <GearIcon />
       </IconButton>
       {open && (
-        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] max-h-[85vh] flex flex-col">
+        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] h-[min(640px,85vh)] flex flex-col">
+          {/* Traces: BASED-LANCE-SEARCH-PROFILES-UI — a side list and a fixed size, so switching sections never moves the dialog. */}
+          <div className="flex flex-1 min-h-0">
             <Tabs
               label="Settings section"
-              fill
-              className="border-b border-line-soft shrink-0"
+              vertical
+              className="w-36 shrink-0 border-r border-line-soft py-2"
               tabs={[
                 { id: "general", label: "General" },
                 { id: "theme", label: "Theme" },
@@ -1055,9 +1059,10 @@ export function ThemePicker() {
               value={tab}
               onChange={setTab}
             />
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            <div className="flex-1 min-w-0 overflow-y-auto">
               {tab === "general" ? <GeneralTab /> : tab === "theme" ? <ThemeTab /> : tab === "search" ? <SearchProfilesTab /> : <AgentTab />}
             </div>
+          </div>
         </Dialog>
       )}
     </>
