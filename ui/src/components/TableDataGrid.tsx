@@ -2,7 +2,8 @@
 // SSMS-style editable data grid for a table tab's Data view. Browses rows page-by-page and, when the
 // table has a primary key, edits cells / inserts / deletes rows into a pending change set, previews the
 // generated parameterized SQL (Review SQL), and commits it in one transaction. Pending edits, new rows,
-// and deletions live in local state; nothing touches the DB until Commit.
+// and deletions live in the tab's grid session in the store (BASED-TABLE-EDIT-RETAIN), so they
+// outlive this component; nothing touches the DB until Commit.
 // When `searchCapable` (LanceDB), the search toolbar (vector/keyword/hybrid) is always shown above
 // the browse toolbar. The grid itself shows the raw browsed page until a search is run; the search
 // result then takes over (read-only) until cleared, by normalizing SearchRows into a TablePage shape
@@ -15,12 +16,16 @@ import {
   type GridCell,
   type GridSelection,
   type Item,
+  type DataEditorProps,
 } from "@glideapps/glide-data-grid";
-import type { TableTabState } from "../store";
+import type { TableGridSession, TableTabState } from "../store";
 import { useStore } from "../store";
+import { gridPendingCount } from "../lib/gridPending";
 import { commitTableEdit, fetchTablePage, previewTableEdit, runLanceSearch } from "../api/client";
 import {
   cellText,
+  vecHeaderSuffix,
+  vecValues,
   type DbCommandPreview,
   type LanceSearchMode,
   type SearchRows,
@@ -40,6 +45,13 @@ import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
 import { ImportCsvDialog } from "./ImportCsvDialog";
 import { IconButton } from "./IconButton";
 import { TrashIcon } from "./icons";
+import { ErrorBox } from "./ErrorDetail";
+import { RunButton } from "./RunButton";
+import { accel } from "../platform";
+import { MenuButton } from "./MenuButton";
+import { defaultSearchMode } from "../lib/searchDefault";
+import { formatScore, matchRanges, queryTerms, SCORE_COLUMN } from "../lib/searchDisplay";
+import { plural } from "../lib/plural";
 
 const NUMERIC_TYPES = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney)$/;
 
@@ -71,11 +83,68 @@ function toTablePage(res: SearchRows): TablePage {
   };
 }
 
+const viewKey = (where: string, sort: TableSort | null, filters: Record<string, string>) =>
+  JSON.stringify([where, sort ? `${sort.column}:${sort.dir}` : "", filters]);
+
 const numOrUndef = (s: string): number | undefined => (s.trim() === "" ? undefined : Number(s));
 
-const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { className?: string }) => ReactElement }[] = [
+// Traces: BASED-LANCE-SEARCH-UI — the Where example names a real column of this table.
+function wherePlaceholder(columns: TableTabState["columns"]): string | undefined {
+  const cols = (columns ?? []).filter((c) => !c.isVector);
+  const num = cols.find((c) => /int|float|double|decimal|numeric|real/i.test(c.type));
+  if (num) return `e.g. ${num.name} > 0`;
+  const str = cols.find((c) => /utf8|string|char|text/i.test(c.type));
+  return str ? `e.g. ${str.name} = '…'` : undefined;
+}
+
+const DEFAULT_POOL = "50";
+const DEFAULT_KEEP = "10";
+const tuneLabel = "flex items-center gap-1.5";
+const tuneField = "px-2 py-1 rounded border border-line bg-ink-950 text-paper";
+
+// The Tuning disclosure is per window: session storage lives exactly as long as this webview.
+const TUNING_KEY = "based.searchTuningOpen";
+function readTuningOpen(): boolean {
+  try {
+    return sessionStorage.getItem(TUNING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function writeTuningOpen(open: boolean): void {
+  try {
+    sessionStorage.setItem(TUNING_KEY, open ? "1" : "0");
+  } catch {
+    // storage unavailable — the toggle still works for this view
+  }
+}
+
+type SetState<T> = (v: T | ((prev: T) => T)) => void;
+
+/** useState over one field of the tab's grid session; `initial` stands in until the field is set. */
+function useGridField<K extends keyof TableGridSession>(tabId: string, key: K, initial: TableGridSession[K]): [TableGridSession[K], SetState<TableGridSession[K]>] {
+  const stored = useStore((s) => {
+    const t = s.tabs.find((x) => x.id === tabId);
+    return t?.kind === "table" ? t.grid?.[key] : undefined;
+  });
+  const initialRef = useRef(initial);
+  const set = useCallback<SetState<TableGridSession[K]>>(
+    (v) => {
+      const st = useStore.getState();
+      const t = st.tabs.find((x) => x.id === tabId);
+      const cur = (t?.kind === "table" ? t.grid?.[key] : undefined) ?? initialRef.current;
+      const next = typeof v === "function" ? (v as (p: TableGridSession[K]) => TableGridSession[K])(cur as TableGridSession[K]) : v;
+      st.patchTableGrid(tabId, { [key]: next } as Partial<TableGridSession>);
+    },
+    [tabId, key],
+  );
+  return [(stored === undefined ? initialRef.current : stored) as TableGridSession[K], set];
+}
+
+const SEARCH_MODES: { id: LanceSearchMode; short: string; label: string; icon: (props: { className?: string }) => ReactElement }[] = [
   {
     id: "vector",
+    short: "Vector",
     label: "Vector — meaning-based search over embeddings",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -86,7 +155,8 @@ const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { classN
   },
   {
     id: "text",
-    label: "Keyword — BM25 full-text search",
+    short: "Keyword",
+    label: "Keyword — full-text search (BM25)",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
         <circle cx="6.5" cy="6.5" r="4" />
@@ -96,7 +166,8 @@ const SEARCH_MODES: { id: LanceSearchMode; label: string; icon: (props: { classN
   },
   {
     id: "hybrid",
-    label: "Hybrid — vector + keyword combined",
+    short: "Hybrid",
+    label: "Hybrid — vector + keyword",
     icon: (p) => (
       <svg {...p} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
         <circle cx="6" cy="8" r="4.2" />
@@ -119,20 +190,24 @@ export function TableDataGrid({
   /** Fires on double-click/Enter/Space on a cell, with its full text — opens the Cell viewer tab. */
   onCellActivate?: (text: string) => void;
 }) {
-  const [page, setPage] = useState<TablePage | null>(null);
-  const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const pageSize = useStore((s) => s.rowPageSize);
+  const openDocsTab = useStore((s) => s.openDocsTab);
+  const [page, setPage] = useGridField(tab.id, "page", null);
+  const [offset, setOffset] = useGridField(tab.id, "offset", 0);
+  const [, setLoadedPageSize] = useGridField(tab.id, "loadedPageSize", null);
+  const [, setLoadedKey] = useGridField(tab.id, "loadedKey", "");
+  const [loading, setLoading] = useState(page == null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Traces: BASED-TABLE-FILTER-UI — server-side sort + per-column filter expressions (mini-language,
   // parsed into structured TableFilters at fetch time). Gated on capabilities.orderedBrowse.
-  const [sort, setSort] = useState<TableSort | null>(null);
+  const [sort, setSort] = useGridField(tab.id, "sort", null);
   // Traces: BASED-LANCE-SCAN, BASED-AGENT-SHOW-RESULTS — an engine `where` predicate applied to the
   // BROWSE fetch (distinct from the search tab's prefilter). On an engine without per-column
   // structured filters this is the only way to narrow browsed rows, and it's where a predicate the
   // agent chose lands.
-  const [browseWhere, setBrowseWhere] = useState("");
-  const [filterExprs, setFilterExprs] = useState<Record<string, string>>({});
+  const [browseWhere, setBrowseWhere] = useGridField(tab.id, "browseWhere", tab.prefillWhere ?? "");
+  const [filterExprs, setFilterExprs] = useGridField(tab.id, "filterExprs", {});
   const [headerMenu, setHeaderMenu] = useState<{ col: number; x: number; y: number } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [gateNotice, setGateNotice] = useState(false);
@@ -140,23 +215,33 @@ export function TableDataGrid({
   const capabilities = useStore((s) => s.capabilities);
   const orderedBrowse = capabilities?.orderedBrowse === true;
 
-  const [searchMode, setSearchMode] = useState<LanceSearchMode>("vector");
-  const [query, setQuery] = useState("");
-  const [whereText, setWhereText] = useState("");
-  const [embeddingProfileId, setEmbeddingProfileId] = useState("");
-  const [rerankerProfileId, setRerankerProfileId] = useState("");
-  const [rerankTopN, setRerankTopN] = useState("");
-  const [rerankTemperature, setRerankTemperature] = useState("");
-  const [rerankTextColumn, setRerankTextColumn] = useState("");
+  const [searchMode, setSearchMode] = useGridField(tab.id, "searchMode", "vector");
+  const [query, setQuery] = useGridField(tab.id, "query", "");
+  const [whereText, setWhereText] = useGridField(tab.id, "whereText", "");
+  const [embeddingProfileId, setEmbeddingProfileId] = useGridField(tab.id, "embeddingProfileId", "");
+  const [rerankerProfileId, setRerankerProfileId] = useGridField(tab.id, "rerankerProfileId", "");
+  const [rerankTopN, setRerankTopN] = useGridField(tab.id, "rerankTopN", "");
+  const [rerankTemperature, setRerankTemperature] = useGridField(tab.id, "rerankTemperature", "");
+  const [rerankTextColumn, setRerankTextColumn] = useGridField(tab.id, "rerankTextColumn", "");
   // Traces: BASED-SEARCH-PARAM-NAMES — candidatePool (was sampleSize: it is an over-fetch pool, not
   // a row sample) and minScore/maxScoreGapFromTop (were floor/delta: direction-aware thresholds, so
   // "min" means "keep the better ones" whichever way the score sorts).
-  const [candidatePool, setCandidatePool] = useState("50");
-  const [keepSize, setKeepSize] = useState("10");
-  const [minScoreText, setMinScoreText] = useState("");
-  const [maxGapText, setMaxGapText] = useState("");
-  const [vectorColumn, setVectorColumn] = useState("");
-  const [searchResult, setSearchResult] = useState<SearchRows | null>(null);
+  const [candidatePool, setCandidatePool] = useGridField(tab.id, "candidatePool", DEFAULT_POOL);
+  const [keepSize, setKeepSize] = useGridField(tab.id, "keepSize", DEFAULT_KEEP);
+  const [minScoreText, setMinScoreText] = useGridField(tab.id, "minScoreText", "");
+  const [maxGapText, setMaxGapText] = useGridField(tab.id, "maxGapText", "");
+  const [vectorColumn, setVectorColumn] = useGridField(tab.id, "vectorColumn", "");
+  const [searchResult, setSearchResult] = useGridField(tab.id, "searchResult", null);
+  const [searchTerms, setSearchTerms] = useGridField(tab.id, "searchTerms", []);
+  // Traces: BASED-LANCE-SEARCH-UI — the Data tab leads with rows; the search row opens on demand.
+  const [searchOpen, setSearchOpen] = useGridField(tab.id, "searchOpen", false);
+  const [modeTouched, setModeTouched] = useGridField(tab.id, "modeTouched", false);
+  const queryRef = useRef<HTMLInputElement>(null);
+  const [tuningOpen, setTuningOpenState] = useState(() => readTuningOpen());
+  const setTuningOpen = (open: boolean) => {
+    setTuningOpenState(open);
+    writeTuningOpen(open);
+  };
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -173,17 +258,18 @@ export function TableDataGrid({
   const activeConn = connections.find((c) => c.id === activeConnectionId);
   const defaultEmbeddingId = activeConn?.defaultEmbeddingProfileId ?? "";
   const defaultRerankerId = activeConn?.defaultRerankerProfileId ?? "";
-  const profilesTouched = useRef(false);
+  const [profilesTouched, setProfilesTouched] = useGridField(tab.id, "profilesTouched", false);
   useEffect(() => {
-    if (profilesTouched.current) return;
+    if (profilesTouched) return;
     setEmbeddingProfileId(embeddingProfiles.some((p) => p.id === defaultEmbeddingId) ? defaultEmbeddingId : "");
     setRerankerProfileId(rerankerProfiles.some((p) => p.id === defaultRerankerId) ? defaultRerankerId : "");
-  }, [defaultEmbeddingId, defaultRerankerId, embeddingProfiles, rerankerProfiles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profilesTouched, defaultEmbeddingId, defaultRerankerId, embeddingProfiles, rerankerProfiles]);
 
   // Pending change set (all keyed against the *current* page's original row indexes).
-  const [edits, setEdits] = useState<Record<number, Record<string, WireValue>>>({});
-  const [newRows, setNewRows] = useState<Array<Record<string, WireValue>>>([]);
-  const [deleted, setDeleted] = useState<Set<number>>(new Set());
+  const [edits, setEdits] = useGridField(tab.id, "edits", {});
+  const [newRows, setNewRows] = useGridField(tab.id, "newRows", []);
+  const [deleted, setDeleted] = useGridField(tab.id, "deleted", new Set<number>());
   const [selection, setSelection] = useState<GridSelection | undefined>(undefined);
 
   const [committing, setCommitting] = useState(false);
@@ -191,7 +277,6 @@ export function TableDataGrid({
   const [review, setReview] = useState<DbCommandPreview[] | null>(null);
 
   const themeId = useStore((s) => s.theme);
-  const pageSize = useStore((s) => s.rowPageSize);
   const overrides = useMemo(() => gridCellOverrides(), [themeId]);
   const fitFnRef = useRef<() => void>(() => {});
 
@@ -201,7 +286,8 @@ export function TableDataGrid({
   const hasSearchResult = searchResult !== null;
   const effectivePage = hasSearchResult ? toTablePage(searchResult) : page;
   const hasPk = !!effectivePage?.columns.some((c) => c.isPrimaryKey);
-  const editable = !hasSearchResult && tab.objectType === "table" && hasPk;
+  const canWrite = useStore((s) => s.capabilities?.write ?? true);
+  const editable = !hasSearchResult && tab.objectType === "table" && hasPk && canWrite;
 
   const clearPending = useCallback(() => {
     setEdits({});
@@ -211,15 +297,10 @@ export function TableDataGrid({
     onCellTextChange?.(null);
     setReview(null);
     setCommitError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onCellTextChange]);
 
-  const pendingCount = useMemo(() => {
-    const dirtyUpdates = Object.entries(edits).filter(
-      ([i, changed]) => !deleted.has(Number(i)) && Object.keys(changed).length > 0,
-    ).length;
-    const inserts = newRows.filter((r) => Object.keys(r).length > 0).length;
-    return dirtyUpdates + inserts + deleted.size;
-  }, [edits, newRows, deleted]);
+  const pendingCount = useMemo(() => gridPendingCount({ edits, newRows, deleted }), [edits, newRows, deleted]);
 
   /** Structured server-side filters from the per-column expressions (empty → undefined). */
   const buildFilters = useCallback(
@@ -237,8 +318,10 @@ export function TableDataGrid({
     [],
   );
 
+  const loadSeq = useRef(0);
   const load = useCallback(
     async (off: number, sortArg?: TableSort | null, filtersArg?: Record<string, string>) => {
+      const seq = ++loadSeq.current;
       setLoading(true);
       setLoadError(null);
       const effSort = sortArg === undefined ? sort : sortArg;
@@ -253,22 +336,35 @@ export function TableDataGrid({
           buildFilters(effExprs, page?.columns),
           browseWhere || undefined,
         );
+        if (seq !== loadSeq.current) return;
         setPage(p);
         setOffset(off);
+        setLoadedPageSize(pageSize);
+        setLoadedKey(viewKey(browseWhere, effSort, effExprs));
         clearPending();
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : String(err));
+        if (seq === loadSeq.current) setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (seq === loadSeq.current) setLoading(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tab.schema, tab.table, pageSize, clearPending, sort, filterExprs, page?.columns, buildFilters, browseWhere],
   );
 
+  // Effects compare against what the session last loaded, not "first run" refs: a remount (and
+  // StrictMode's double run) must reuse the saved page, never refetch over pending edits.
+  const gridNow = () => {
+    const t = useStore.getState().tabs.find((x) => x.id === tab.id);
+    return t?.kind === "table" ? t.grid : undefined;
+  };
+
+  // No page yet (new tab, or an agent filter cleared it), or the page size changed: start over at
+  // page 1 with sort/filters reset.
+  const pageMissing = page == null;
   useEffect(() => {
-    // Reload when the target table changes, or the page size changes — start over at page 1 with
-    // sort/filters reset (they belong to the previous table's columns).
+    const g = gridNow();
+    if (g?.page && (g.loadedPageSize === pageSize || gridPendingCount(g) > 0)) return;
     setSort(null);
     setFilterExprs({});
     setHeaderMenu(null);
@@ -276,34 +372,22 @@ export function TableDataGrid({
     setVectorColumn("");
     void load(0, null, {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.schema, tab.table, pageSize]);
+  }, [tab.schema, tab.table, pageSize, pageMissing]);
 
-  // Traces: BASED-AGENT-SHOW-RESULTS — adopt a predicate the agent asked for. Keyed on the tab's
-  // value so a second show_results call with a different `where` re-filters instead of being
-  // swallowed as "already initialized"; the browse fetch depends on browseWhere, so this reloads.
-  useEffect(() => {
-    setBrowseWhere(tab.prefillWhere ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.prefillWhere]);
-
-  // Sort changes reload immediately; filter expressions debounce (typed live in the header menu).
-  const viewInitRef = useRef(true);
+  // Traces: BASED-AGENT-SHOW-RESULTS — where, sort, and filter changes refetch page 1; filter
+  // expressions debounce (typed live in the header menu).
   const sortKey = sort ? `${sort.column}:${sort.dir}` : "";
   const filtersKey = JSON.stringify(filterExprs);
+  const viewStale = () => {
+    const g = gridNow();
+    return !!g?.page && gridPendingCount(g) === 0 && g.loadedKey !== viewKey(browseWhere, sort, filterExprs);
+  };
   useEffect(() => {
-    if (viewInitRef.current) {
-      viewInitRef.current = false;
-      return;
-    }
-    void load(0);
+    if (viewStale()) void load(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortKey]);
-  const filtersInitRef = useRef(true);
+  }, [browseWhere, sortKey]);
   useEffect(() => {
-    if (filtersInitRef.current) {
-      filtersInitRef.current = false;
-      return;
-    }
+    if (!viewStale()) return;
     const t = setTimeout(() => void load(0), 450);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -357,14 +441,15 @@ export function TableDataGrid({
   const headerInteractive = orderedBrowse && !hasSearchResult;
   const columns = useMemo<DataGridColumnDef[]>(
     () =>
-      (effectivePage?.columns ?? []).map((c) => {
-        const base = c.isPrimaryKey ? `⚿ ${c.name}` : c.name;
+      (effectivePage?.columns ?? []).map((c, i) => {
+        const base = `${c.isPrimaryKey ? `⚿ ${c.name}` : c.name}${vecHeaderSuffix(effectivePage?.rows[0]?.[i])}`;
         if (!headerInteractive) return { id: c.name, title: base };
         const arrow = sort?.column === c.name ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
         const mark = (filterExprs[c.name] ?? "").trim() ? " •" : "";
         return { id: c.name, title: `${base}${mark}${arrow}`, hasMenu: true };
       }),
-    [effectivePage?.columns, headerInteractive, sort, filterExprs],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [effectivePage?.columns, effectivePage?.rows[0], headerInteractive, sort, filterExprs],
   );
 
   const handleHeaderClicked = useCallback(
@@ -407,18 +492,67 @@ export function TableDataGrid({
       const dirty = ref.kind === "existing" && edits[ref.orig]?.[meta.name] !== undefined;
       const cellEditable = editable || ref.kind === "new";
       const text = value === null ? "" : typeof value === "object" ? cellText(value) : String(value);
+      if (hasSearchResult && typeof value === "number" && SCORE_COLUMN.test(meta.name))
+        return { kind: GridCellKind.Text, data: text, displayData: formatScore(value), allowOverlay: false, readonly: true, contentAlign: "right" };
       const themeOverride =
         ref.kind === "new" ? overrides.fresh : dirty ? overrides.dirty : value === null ? { textDark: overrides.nullText } : undefined;
       return {
         kind: GridCellKind.Text,
         data: text,
-        displayData: value === null ? "NULL" : text,
+        displayData: value === null ? "NULL" : typeof value === "object" && value.$ === "vec" ? vecValues(value) : text,
         allowOverlay: cellEditable,
         readonly: !cellEditable,
         themeOverride,
       };
     },
-    [display, effectivePage, valueAt, edits, editable, overrides],
+    [display, effectivePage, valueAt, edits, editable, overrides, hasSearchResult],
+  );
+
+  const scoreMax = useMemo(() => {
+    const max = new Map<number, number>();
+    if (!searchResult) return max;
+    searchResult.columns.forEach((c, i) => {
+      if (!SCORE_COLUMN.test(c.name)) return;
+      const vals = searchResult.rows.map((r) => r[i]).filter((v): v is number => typeof v === "number");
+      if (vals.length) max.set(i, Math.max(...vals.map(Math.abs)));
+    });
+    return max;
+  }, [searchResult]);
+
+  // Traces: BASED-LANCE-SEARCH-SCORE — a bar under each score and a mark under each matched word.
+  const drawSearchCell = useCallback<NonNullable<DataEditorProps["drawCell"]>>(
+    (args, drawContent) => {
+      const { ctx, rect, theme, col, cell } = args;
+      const pad = theme.cellHorizontalPadding;
+      const max = scoreMax.get(col);
+      if (max != null && cell.kind === GridCellKind.Text && max > 0) {
+        const v = Math.abs(Number(cell.data));
+        ctx.save();
+        ctx.fillStyle = theme.accentColor;
+        ctx.globalAlpha = 0.45;
+        ctx.fillRect(rect.x + pad, rect.y + rect.height - 4, ((rect.width - 2 * pad) * v) / max, 2);
+        ctx.restore();
+      } else if (searchTerms.length > 0 && cell.kind === GridCellKind.Text && cell.displayData) {
+        const line = cell.displayData.split(/\r?\n/, 1)[0]!;
+        const ranges = matchRanges(line, searchTerms);
+        if (ranges.length) {
+          ctx.save();
+          ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+          ctx.fillStyle = theme.accentColor;
+          ctx.globalAlpha = 0.28;
+          const h = (parseFloat(theme.baseFontStyle.replace(/^\D+/, "")) || 12) + 6;
+          for (const [a, b] of ranges) {
+            const x = rect.x + pad + ctx.measureText(line.slice(0, a)).width;
+            if (x > rect.x + rect.width) break;
+            const w = Math.min(ctx.measureText(line.slice(a, b)).width, rect.x + rect.width - x);
+            ctx.fillRect(x - 1, rect.y + (rect.height - h) / 2, w + 2, h);
+          }
+          ctx.restore();
+        }
+      }
+      drawContent();
+    },
+    [scoreMax, searchTerms],
   );
 
   const onCellEdited = useCallback(
@@ -533,8 +667,11 @@ export function TableDataGrid({
     }
   };
 
-  const rangeLabel = page ? `${page.rows.length === 0 ? 0 : offset + 1}–${offset + page.rows.length}` : "";
-  const searchRangeLabel = searchResult ? `${searchResult.rows.length} row${searchResult.rows.length === 1 ? "" : "s"}` : "";
+  const rangeLabel = page && page.rows.length > 0 ? `${offset + 1}–${offset + page.rows.length}` : page ? "No rows" : "";
+  // Traces: BASED-LANCE-SEARCH-UI — a full result says it hit the Keep limit, not that only that many rows match.
+  const keepLimit = Number(keepSize) || Number(DEFAULT_KEEP);
+  const searchCapped = !!searchResult && searchResult.rows.length >= keepLimit;
+  const searchRangeLabel = searchResult ? `${plural(searchResult.rows.length, "row")}${searchCapped ? ` (top ${keepLimit})` : ""}` : "";
 
   // Reranking only makes sense over an embedding-scored candidate set; the score thresholds trim
   // that score, and pool/keep tune the reranker's candidate pool — each is meaningless without its
@@ -549,12 +686,85 @@ export function TableDataGrid({
     [page?.columns],
   );
 
+  // Traces: BASED-LANCE-SEARCH-UI — offer only the modes this table can run. Unknown (indexes not
+  // loaded, no page yet) leaves a mode on; the server error still explains a miss.
+  const hasFts = tab.indexes == null ? null : tab.indexes.some((i) => /INVERTED|FTS/i.test(i.typeDesc));
+  const hasVectorColumn = page ? vectorColumnOptions.length > 0 : null;
+  const modeBlock = (m: LanceSearchMode): string | null => {
+    if ((m === "text" || m === "hybrid") && hasFts === false) return "Needs a full-text index on a text column";
+    if ((m === "vector" || m === "hybrid") && hasVectorColumn === false) return "Needs a vector column";
+    return null;
+  };
+  const currentBlocked = modeBlock(searchMode) !== null;
+  const anyModeRuns = SEARCH_MODES.some((m) => modeBlock(m.id) === null);
+  useEffect(() => {
+    if (!currentBlocked) return;
+    const first = SEARCH_MODES.find((m) => modeBlock(m.id) === null);
+    if (first) setSearchMode(first.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBlocked, hasFts, hasVectorColumn]);
+  // Until the user picks a mode, open on one that can run right now (BASED-LANCE-SEARCH-DEFAULT).
+  const openingMode = defaultSearchMode({ hasFts, hasVectorColumn, hasEmbeddingProfile: !!embeddingProfileId });
+  useEffect(() => {
+    if (!modeTouched && openingMode && openingMode !== searchMode) setSearchMode(openingMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeTouched, openingMode]);
+  const needsProfile = searchMode !== "text" && !embeddingProfileId && !currentBlocked;
+  const currentMode = SEARCH_MODES.find((m) => m.id === searchMode) ?? SEARCH_MODES[0]!;
+  const searchAvailable = searchCapable && anyModeRuns;
+  const openSearch = () => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => queryRef.current?.focus());
+  };
+  const closeSearch = () => {
+    setSearchResult(null);
+    setSearchError(null);
+    setSearchOpen(false);
+  };
+  const embeddingSelectRef = useRef<HTMLSelectElement>(null);
+  const chooseProfile = () => {
+    if (embeddingProfiles.length === 0) {
+      useStore.getState().openSettings("search");
+      return;
+    }
+    setTuningOpen(true);
+    requestAnimationFrame(() => embeddingSelectRef.current?.focus());
+  };
+
   // Candidate "document text" columns for the reranker — the table's string columns (from the
   // browsed page, which always has the base schema; search results add score columns).
   const rerankColumnOptions = useMemo(
     () => (page?.columns ?? []).filter((c) => /utf8|string/i.test(c.type)).map((c) => c.name),
     [page?.columns],
   );
+
+  // Collapsed Tuning shows each non-default setting as a chip; ✕ puts that one setting back.
+  const profileName = (list: Array<{ id: string; name: string }>, id: string) => list.find((x) => x.id === id)?.name ?? "none";
+  const tuningChips: Array<{ key: string; name: string; label: string; reset: () => void }> = [];
+  if (whereText.trim()) tuningChips.push({ key: "where", name: "where", label: `where ${whereText.trim()}`, reset: () => setWhereText("") });
+  if (searchMode !== "text" && embeddingProfileId !== defaultEmbeddingId)
+    tuningChips.push({
+      key: "embedding",
+      name: "embedding",
+      label: `embedding ${profileName(embeddingProfiles, embeddingProfileId)}`,
+      reset: () => setEmbeddingProfileId(defaultEmbeddingId),
+    });
+  if (hasEmbedding && vectorColumn) tuningChips.push({ key: "vcol", name: "vector column", label: `vector ${vectorColumn}`, reset: () => setVectorColumn("") });
+  if (hasEmbedding && minScoreText.trim()) tuningChips.push({ key: "min", name: "min score", label: `min score ${minScoreText.trim()}`, reset: () => setMinScoreText("") });
+  if (hasEmbedding && maxGapText.trim()) tuningChips.push({ key: "gap", name: "max gap", label: `max gap ${maxGapText.trim()}`, reset: () => setMaxGapText("") });
+  if (hasEmbedding && rerankerProfileId !== defaultRerankerId)
+    tuningChips.push({
+      key: "reranker",
+      name: "reranker",
+      label: `reranker ${profileName(rerankerProfiles, rerankerProfileId)}`,
+      reset: () => setRerankerProfileId(defaultRerankerId),
+    });
+  if (hasReranker && rerankTextColumn) tuningChips.push({ key: "rcol", name: "rerank column", label: `rerank ${rerankTextColumn}`, reset: () => setRerankTextColumn("") });
+  if (hasReranker && rerankTopN.trim()) tuningChips.push({ key: "topn", name: "top n", label: `top n ${rerankTopN.trim()}`, reset: () => setRerankTopN("") });
+  if (hasReranker && rerankTemperature.trim())
+    tuningChips.push({ key: "temp", name: "temperature", label: `temperature ${rerankTemperature.trim()}`, reset: () => setRerankTemperature("") });
+  if (hasReranker && candidatePool !== DEFAULT_POOL) tuningChips.push({ key: "pool", name: "pool", label: `pool ${candidatePool}`, reset: () => setCandidatePool(DEFAULT_POOL) });
+  if (keepSize !== DEFAULT_KEEP) tuningChips.push({ key: "keep", name: "keep", label: `keep ${keepSize}`, reset: () => setKeepSize(DEFAULT_KEEP) });
 
   async function runSearch() {
     clearPending();
@@ -570,8 +780,9 @@ export function TableDataGrid({
         query: query.trim() || undefined,
         where: whereText.trim() || undefined,
         vectorColumn: hasEmbedding && vectorColumn ? vectorColumn : undefined,
-        candidatePool: hasReranker ? numOrUndef(candidatePool) : undefined,
-        keepSize: hasReranker ? numOrUndef(keepSize) : undefined,
+        // Core caps Keep at the pool, so without a reranker the pool grows to fit Keep.
+        candidatePool: hasReranker ? numOrUndef(candidatePool) : Math.max(Number(DEFAULT_POOL), numOrUndef(keepSize) ?? 0),
+        keepSize: numOrUndef(keepSize),
         embeddingProfileId: hasEmbedding ? embeddingProfileId : undefined,
         rerankerProfileId: hasEmbedding && rerankerProfileId ? rerankerProfileId : undefined,
         rerankerOptions:
@@ -583,6 +794,7 @@ export function TableDataGrid({
         maxScoreGapFromTop: hasEmbedding ? numOrUndef(maxGapText) : undefined,
       });
       setSearchResult(res);
+      setSearchTerms(searchMode === "vector" ? [] : queryTerms(query));
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : String(err));
       setSearchResult(null);
@@ -592,174 +804,267 @@ export function TableDataGrid({
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col bg-ink-900">
+    <div
+      className="h-full min-h-0 min-w-0 flex flex-col bg-ink-900"
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f" && searchAvailable) {
+          e.preventDefault();
+          openSearch();
+        }
+      }}
+    >
       <div className="flex flex-col border-b border-line-soft shrink-0">
-        {searchCapable && (
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]${!hasSearchResult ? " border-b border-line-soft" : ""}`}>
-            <div className="flex rounded border border-line overflow-hidden shrink-0">
-              {SEARCH_MODES.map((m, i) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  title={m.label}
-                  aria-label={m.label}
-                  aria-pressed={searchMode === m.id}
-                  onClick={() => setSearchMode(m.id)}
-                  className={`grid place-items-center h-[26px] w-[26px] ${i > 0 ? "border-l border-line" : ""} ${
-                    searchMode === m.id ? "bg-brass/20 text-brass" : "text-muted hover:text-paper hover:bg-ink-950/60"
-                  }`}
-                >
-                  <m.icon />
-                </button>
-              ))}
-            </div>
-            <input
-              className="px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint min-w-[10rem]"
-              placeholder="where (prefilter)"
-              value={whereText}
-              onChange={(e) => setWhereText(e.target.value)}
-              title='LanceDB filter predicate, e.g. "year > 2020"'
-            />
-            <input
-              className="px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint min-w-[16rem]"
-              placeholder={searchMode === "vector" ? "meaning to search for…" : "keywords…"}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void runSearch()}
-            />
-            {searchMode !== "text" && (
-              <select
-                className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
-                value={embeddingProfileId}
-                onChange={(e) => {
-                  profilesTouched.current = true;
-                  setEmbeddingProfileId(e.target.value);
-                }}
-                title="Embedding profile (seeded from this connection's default)"
+        {/* Traces: BASED-LANCE-SEARCH-UI — one primary row (mode, query, Run) that always fits;
+            everything that tunes the search sits behind the Tuning disclosure. */}
+        {searchAvailable && (searchOpen || hasSearchResult) && (
+          <div className={`flex flex-col text-[length:var(--fs-base)]${!hasSearchResult ? " border-b border-line-soft" : ""}`}>
+            <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
+              <MenuButton
+                className="shrink-0 flex items-center gap-1 px-2 h-[26px] rounded border border-brass-soft/60 bg-brass/10 text-brass hover:bg-brass/20"
+                title={`Search mode: ${currentMode.label}`}
+                label={`Search mode: ${currentMode.short}`}
+                items={SEARCH_MODES.map((m) => {
+                  const blocked = modeBlock(m.id);
+                  return {
+                    label: m.short,
+                    icon: m.id === searchMode ? "✓" : <m.icon />,
+                    hint: blocked ?? m.label.split(" — ")[1],
+                    disabled: blocked !== null,
+                    run: () => {
+                      setModeTouched(true);
+                      setSearchMode(m.id);
+                    },
+                  };
+                })}
               >
-                <option value="">Embedding: none</option>
-                {embeddingProfiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            {hasEmbedding && (
-              <>
-                <select
-                  className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[12rem]"
-                  value={rerankerProfileId}
-                  onChange={(e) => {
-                    profilesTouched.current = true;
-                    setRerankerProfileId(e.target.value);
-                  }}
-                  title="Reranker profile (seeded from this connection's default)"
+                <currentMode.icon />
+                {currentMode.short}
+                <span className="text-[length:var(--fs-xs)]">▾</span>
+              </MenuButton>
+              <input
+                ref={queryRef}
+                className="flex-1 basis-48 min-w-[8rem] px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-muted"
+                aria-label="Search query"
+                placeholder={searchMode === "vector" ? "Meaning to search for…" : "Keywords…"}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void runSearch();
+                  else if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeSearch();
+                  }
+                }}
+              />
+              {needsProfile ? (
+                <button
+                  className="shrink-0 whitespace-nowrap px-2 py-1 rounded border border-brass-soft/60 text-brass hover:bg-brass/10"
+                  title={`${currentMode.short} search needs an embedding profile`}
+                  onClick={chooseProfile}
                 >
-                  <option value="">Reranker: none</option>
-                  {rerankerProfiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                {vectorColumnOptions.length > 1 && (
-                  <select
-                    className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[10rem]"
-                    value={vectorColumn}
-                    onChange={(e) => setVectorColumn(e.target.value)}
-                    title="Which vector column to search — this table has more than one embedding"
-                  >
-                    <option value="">Vector: auto</option>
-                    {vectorColumnOptions.map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <input
-                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="min score"
-                  value={minScoreText}
-                  onChange={(e) => setMinScoreText(e.target.value)}
-                  title="Drop results scoring worse than this. Direction-aware: an upper bound on _distance, a lower bound on relevance/rerank scores"
-                />
-                <input
-                  className="w-20 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="max gap"
-                  value={maxGapText}
-                  onChange={(e) => setMaxGapText(e.target.value)}
-                  title="Drop results trailing the top result's score by more than this"
-                />
-              </>
-            )}
-            {hasReranker && (
-              <>
-                <select
-                  className="pl-2 pr-7 py-1 rounded border border-line bg-ink-950 text-paper max-w-[10rem]"
-                  value={rerankTextColumn}
-                  onChange={(e) => setRerankTextColumn(e.target.value)}
-                  title="Column sent to the reranker as document text — auto prefers a content-named or longest text column"
+                  {embeddingProfiles.length === 0 ? "Add embedding profile" : "Choose embedding profile"}
+                </button>
+              ) : (
+                <RunButton disabled={searching || !query.trim()} onClick={() => void runSearch()}>
+                  {searching ? "Searching…" : "Run"}
+                </RunButton>
+              )}
+              {searchResult && (
+                <span
+                  className="shrink-0 text-muted font-mono"
+                  title={searchCapped ? "The search returns at most this many rows; change Keep under Tuning" : undefined}
                 >
-                  <option value="">Rerank col: auto</option>
-                  {rerankColumnOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="top_n"
-                  value={rerankTopN}
-                  onChange={(e) => setRerankTopN(e.target.value)}
-                  title="Rerank top_n"
-                />
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="temp"
-                  value={rerankTemperature}
-                  onChange={(e) => setRerankTemperature(e.target.value)}
-                  title="Rerank temperature"
-                />
-                <input
-                  className="w-16 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="pool"
-                  value={candidatePool}
-                  onChange={(e) => setCandidatePool(e.target.value)}
-                  title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
-                />
-                <input
-                  className="w-14 px-2 py-1 rounded border border-line bg-ink-950 text-paper placeholder:text-faint"
-                  placeholder="keep"
-                  value={keepSize}
-                  onChange={(e) => setKeepSize(e.target.value)}
-                  title="Keep size (final result count)"
-                />
-              </>
-            )}
-
-            <div className="flex-1" />
-
-            {searchResult && <span className="text-faint font-mono">{searchRangeLabel}</span>}
-            <button
-              className="px-2.5 py-1 rounded border border-brass-soft bg-brass/15 text-brass hover:bg-brass/25 disabled:opacity-40"
-              disabled={searching || !query.trim()}
-              onClick={() => void runSearch()}
-            >
-              {searching ? "Searching…" : "Run"}
-            </button>
-            {searchResult && (
-              <button className="px-2 py-1 rounded border border-line text-muted hover:text-paper" onClick={() => setSearchResult(null)}>
-                Clear
+                  {searchRangeLabel}
+                </span>
+              )}
+              <button
+                className="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-line text-muted hover:text-paper"
+                aria-expanded={tuningOpen}
+                onClick={() => setTuningOpen(!tuningOpen)}
+              >
+                Tuning{!tuningOpen && tuningChips.length > 0 ? ` (${tuningChips.length})` : ""}
+                <span className={`text-[length:var(--fs-xs)] transition-transform ${tuningOpen ? "rotate-180" : ""}`}>▾</span>
               </button>
+              <IconButton
+                size="bar"
+                title="Help: search modes and Tuning"
+                aria-label="Help: search modes and Tuning"
+                className="text-muted hover:text-paper"
+                onClick={() => openDocsTab("search")}
+              >
+                ?
+              </IconButton>
+              <IconButton
+                size="bar"
+                title="Close search and clear results (Esc)"
+                aria-label="Close search"
+                className="text-muted hover:text-paper"
+                onClick={closeSearch}
+              >
+                ✕
+              </IconButton>
+            </div>
+
+            {!tuningOpen && tuningChips.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 px-3 pb-1.5">
+                {tuningChips.map((c) => (
+                  <span key={c.key} className="inline-flex items-center gap-0.5 rounded-full border border-brass/50 pl-2 text-[length:var(--fs-sm)] text-brass">
+                    <span className="max-w-[18rem] truncate">{c.label}</span>
+                    <IconButton size="sm" title={`Reset ${c.name}`} aria-label={`Reset ${c.name}`} className="h-5 w-5 text-brass hover:text-paper" onClick={c.reset}>
+                      ✕
+                    </IconButton>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {tuningOpen && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 pb-2">
+                <label className={tuneLabel}>
+                  <span className="text-muted">Where</span>
+                  <input
+                    className={`${tuneField} w-56`}
+                    placeholder={wherePlaceholder(tab.columns)}
+                    value={whereText}
+                    onChange={(e) => setWhereText(e.target.value)}
+                    title="LanceDB filter predicate applied before the search"
+                  />
+                </label>
+                <label className={tuneLabel}>
+                  <span className="text-muted">Keep</span>
+                  <input className={`${tuneField} w-14`} value={keepSize} onChange={(e) => setKeepSize(e.target.value)} title="How many results the search returns" />
+                </label>
+                {searchMode !== "text" && (
+                  <label className={tuneLabel}>
+                    <span className="text-muted">Embedding</span>
+                    <select
+                      ref={embeddingSelectRef}
+                      className={`${tuneField} pr-7 max-w-[12rem]`}
+                      value={embeddingProfileId}
+                      onChange={(e) => {
+                        setProfilesTouched(true);
+                        setEmbeddingProfileId(e.target.value);
+                      }}
+                      title="Embedding profile (seeded from this connection's default)"
+                    >
+                      <option value="">None</option>
+                      {embeddingProfiles.map((pr) => (
+                        <option key={pr.id} value={pr.id}>
+                          {pr.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {hasEmbedding && vectorColumnOptions.length > 1 && (
+                  <label className={tuneLabel}>
+                    <span className="text-muted">Vector column</span>
+                    <select
+                      className={`${tuneField} pr-7 max-w-[10rem]`}
+                      value={vectorColumn}
+                      onChange={(e) => setVectorColumn(e.target.value)}
+                      title="Which vector column to search — this table has more than one embedding"
+                    >
+                      <option value="">Auto</option>
+                      {vectorColumnOptions.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {hasEmbedding && (
+                  <>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Min score</span>
+                      <input
+                        className={`${tuneField} w-16`}
+                        value={minScoreText}
+                        onChange={(e) => setMinScoreText(e.target.value)}
+                        title="Drop results scoring worse than this. Direction-aware: an upper bound on _distance, a lower bound on relevance/rerank scores"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Max gap</span>
+                      <input
+                        className={`${tuneField} w-16`}
+                        value={maxGapText}
+                        onChange={(e) => setMaxGapText(e.target.value)}
+                        title="Drop results trailing the top result's score by more than this"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Reranker</span>
+                      <select
+                        className={`${tuneField} pr-7 max-w-[12rem]`}
+                        value={rerankerProfileId}
+                        onChange={(e) => {
+                          setProfilesTouched(true);
+                          setRerankerProfileId(e.target.value);
+                        }}
+                        title="Reranker profile (seeded from this connection's default)"
+                      >
+                        <option value="">None</option>
+                        {rerankerProfiles.map((pr) => (
+                          <option key={pr.id} value={pr.id}>
+                            {pr.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
+                {hasReranker && (
+                  <>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Rerank column</span>
+                      <select
+                        className={`${tuneField} pr-7 max-w-[10rem]`}
+                        value={rerankTextColumn}
+                        onChange={(e) => setRerankTextColumn(e.target.value)}
+                        title="Column sent to the reranker as document text — auto prefers a content-named or longest text column"
+                      >
+                        <option value="">Auto</option>
+                        {rerankColumnOptions.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Top n</span>
+                      <input className={`${tuneField} w-14`} value={rerankTopN} onChange={(e) => setRerankTopN(e.target.value)} title="Rerank top_n" />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Temperature</span>
+                      <input
+                        className={`${tuneField} w-14`}
+                        value={rerankTemperature}
+                        onChange={(e) => setRerankTemperature(e.target.value)}
+                        title="Rerank temperature"
+                      />
+                    </label>
+                    <label className={tuneLabel}>
+                      <span className="text-muted">Pool</span>
+                      <input
+                        className={`${tuneField} w-14`}
+                        value={candidatePool}
+                        onChange={(e) => setCandidatePool(e.target.value)}
+                        title="Candidate pool — how many candidates to over-fetch before reranking and thresholding"
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}
 
         {!hasSearchResult && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]">
+          <div className="@container">
+          <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 text-[length:var(--fs-base)]">
             <button
               className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
               disabled={loading || offset === 0 || pendingCount > 0}
@@ -778,7 +1083,7 @@ export function TableDataGrid({
             </button>
             <span className="text-faint font-mono">
               {rangeLabel}
-              {tab.rowCount != null && ` of ${tab.rowCount.toLocaleString()}`}
+              {tab.rowCount != null && page && page.rows.length > 0 && ` of ${tab.rowCount.toLocaleString()}`}
             </span>
             {/* Traces: BASED-LANCE-SCAN, BASED-AGENT-SHOW-RESULTS — the browse predicate is visible
                 and clearable, so a filtered grid never silently looks like the whole table. */}
@@ -815,6 +1120,19 @@ export function TableDataGrid({
             {gateNotice && (
               <span className="text-[length:var(--fs-sm)] text-brass">Commit or discard {pendingCount} pending changes first</span>
             )}
+            {searchCapable && !searchOpen && !hasSearchResult && (
+              <button
+                type="button"
+                className="shrink-0 w-56 flex items-center justify-between gap-2 px-2 py-1 rounded border border-line bg-ink-950 text-muted hover:border-brass-soft cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!anyModeRuns}
+                aria-keyshortcuts="Control+F"
+                title={anyModeRuns ? `Search this table (${accel("F")})` : "Search needs a vector column or a full-text index"}
+                onClick={openSearch}
+              >
+                <span>{anyModeRuns ? "Search rows…" : "No search index"}</span>
+                {anyModeRuns && <span className="text-[length:var(--fs-xs)] text-faint font-mono">{accel("F")}</span>}
+              </button>
+            )}
 
             <div className="w-px h-4 bg-line mx-1" />
 
@@ -841,46 +1159,50 @@ export function TableDataGrid({
                 </IconButton>
               </>
             ) : (
-              <span className="text-[length:var(--fs-sm)] text-faint italic">
-                {tab.objectType === "view" ? "Views are read-only." : "No primary key — read-only. Add a PK to edit."}
-              </span>
+              // The status bar already badges a read-only connection; only table-level reasons show here.
+              canWrite && (
+                <span className="text-[length:var(--fs-sm)] text-faint italic">
+                  {tab.objectType === "view" ? "Views are read-only." : "No primary key — read-only. Add a PK to edit."}
+                </span>
+              )
             )}
 
             <div className="flex-1" />
 
             {page && <GridToolbarActions actions={exportActions} onFitColumns={() => fitFnRef.current()} />}
 
-            {pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
-            <button
-              className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
-              disabled={pendingCount === 0}
-              onClick={() => void openReview()}
-            >
-              Review SQL
-            </button>
-            <button
-              className="px-2.5 py-1 rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35"
-              disabled={pendingCount === 0 || committing}
-              onClick={() => void commit()}
-            >
-              {committing ? "Committing…" : "Commit"}
-            </button>
-            <button
-              className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
-              disabled={pendingCount === 0 || committing}
-              onClick={clearPending}
-            >
-              Discard
-            </button>
+            {editable && pendingCount > 0 && <span className="text-brass font-mono text-[length:var(--fs-sm)]">{pendingCount} pending</span>}
+            {editable && (
+              <>
+                <button
+                  className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
+                  disabled={pendingCount === 0}
+                  onClick={() => void openReview()}
+                >
+                  Review SQL
+                </button>
+                <button
+                  className="px-2.5 py-1 rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35"
+                  disabled={pendingCount === 0 || committing}
+                  onClick={() => void commit()}
+                >
+                  {committing ? "Committing…" : "Commit"}
+                </button>
+                <button
+                  className="px-2 py-1 rounded border border-line text-muted hover:text-paper disabled:opacity-35"
+                  disabled={pendingCount === 0 || committing}
+                  onClick={clearPending}
+                >
+                  Discard
+                </button>
+              </>
+            )}
+          </div>
           </div>
         )}
       </div>
 
-      {commitError && (
-        <div className="mx-3 mt-2 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono whitespace-pre-wrap">
-          {commitError}
-        </div>
-      )}
+      {commitError && <ErrorBox message={commitError} className="mx-3 mt-2" />}
 
       {review && (
         <div className="mx-3 mt-2 border border-line rounded bg-ink-950 text-[length:var(--fs-sm)] font-mono max-h-48 overflow-auto">
@@ -911,17 +1233,14 @@ export function TableDataGrid({
         {!searching && !hasSearchResult && loading && (
           <div className="px-5 py-3 text-muted pulse-soft text-[length:var(--fs-base)]">Loading rows…</div>
         )}
-        {!searching && !hasSearchResult && loadError && (
-          <div className="mx-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{loadError}</div>
-        )}
-        {!searching && !hasSearchResult && searchError && (
-          <div className="mx-3 px-3 py-2 text-[length:var(--fs-base)] text-err bg-err/10 border border-err/30 rounded font-mono">{searchError}</div>
-        )}
+        {!searching && !hasSearchResult && loadError && <ErrorBox message={loadError} className="mx-3" />}
+        {!searching && !hasSearchResult && searchError && <ErrorBox message={searchError} className="mx-3 mb-2" />}
         {effectivePage && !(searching || (!hasSearchResult && (loading || loadError))) && (
           <DataGrid
             columns={columns}
             rowCount={display.length}
             getCellContent={getCellContent}
+            drawCell={hasSearchResult ? drawSearchCell : undefined}
             dataVersion={`${hasSearchResult ? "search" : "browse"}:${offset}:${Object.keys(edits).length}:${newRows.length}:${deleted.size}:${searchResult?.rows.length ?? 0}`}
             onCellEdited={editable || newRows.length > 0 ? onCellEdited : undefined}
             rowMarkers="both"

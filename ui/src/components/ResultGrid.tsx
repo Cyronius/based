@@ -3,12 +3,13 @@ import { useCallback, useMemo, useState } from "react";
 import { CompactSelection, GridCellKind, type GridCell, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import type { ResultSetData } from "../store";
 import { useStore } from "../store";
-import { cellText } from "../api/types";
+import { cellText, vecHeaderSuffix, vecValues } from "../api/types";
 import { gridCellOverrides } from "../theme";
 import { computeSelectionSlice, selectionContains, type SelectionSlice } from "../gridSelectionText";
 import { computeViewIndex, NUMERIC_TYPES, type ColumnFilters, type SortState } from "../gridView";
 import { cellDisplayText, DataGrid, type DataGridColumnDef } from "./DataGrid";
 import { GridColumnMenu } from "./GridColumnMenu";
+import { plural } from "../lib/plural";
 
 export function ResultGrid({
   rs,
@@ -62,9 +63,10 @@ export function ResultGrid({
       rs.columns.map((c, i) => {
         const arrow = sort?.col === i ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
         const mark = (filters[i] ?? "").trim() ? " •" : "";
-        return { id: String(i), title: `${c.name}${mark}${arrow}`, hasMenu: true };
+        return { id: String(i), title: `${c.name}${vecHeaderSuffix(rs.rows[0]?.[i])}${mark}${arrow}`, hasMenu: true };
       }),
-    [rs.columns, sort, filters],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rs.columns, sort, filters, rs.rows.length > 0],
   );
 
   const getCellContent = useCallback(
@@ -83,7 +85,8 @@ export function ResultGrid({
         return { kind: GridCellKind.Number, data: v, displayData: String(v), allowOverlay: false, contentAlign: "right" };
       }
       const text = typeof v === "object" ? cellText(v) : String(v);
-      return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false };
+      const shown = typeof v === "object" && v.$ === "vec" ? vecValues(v) : text;
+      return { kind: GridCellKind.Text, data: text, displayData: shown, allowOverlay: false };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rs, version, viewRows, nullText],
@@ -150,7 +153,7 @@ export function ResultGrid({
       {filtersActive && (
         <div className="flex items-center gap-2 px-3 py-1 text-[length:var(--fs-sm)] bg-ink-800/60 border-b border-line-soft shrink-0">
           <span className="text-muted font-mono">
-            {viewRows.length.toLocaleString()} of {rs.rows.length.toLocaleString()} rows
+            {viewRows.length.toLocaleString()} of {plural(rs.rows.length, "row")}
           </span>
           <button
             className="text-brass hover:underline"

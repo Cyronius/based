@@ -112,6 +112,21 @@ describe("BASED-SETTINGS: app settings persistence", () => {
     db.close();
   });
 
+  // Traces: BASED-TAB-CLOSE-CONFIRM — opt-in only: a fresh store must not ask before closing tabs.
+  test("confirmCloseUnsaved defaults to false and round-trips", async () => {
+    const fresh = (await (await api("/api/settings")).json()) as { confirmCloseUnsaved: boolean };
+    expect(fresh.confirmCloseUnsaved).toBe(false);
+
+    const saved = (await (
+      await api("/api/settings", { method: "POST", body: JSON.stringify({ confirmCloseUnsaved: true }) })
+    ).json()) as { confirmCloseUnsaved: boolean };
+    expect(saved.confirmCloseUnsaved).toBe(true);
+
+    const db = openDb(dbPath);
+    expect(new SettingsStore(db).get().confirmCloseUnsaved).toBe(true);
+    db.close();
+  });
+
   test("a partial patch merges over existing settings", () => {
     const db = openDb(dbPath);
     const store = new SettingsStore(db);

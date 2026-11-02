@@ -41,6 +41,13 @@ export function ExplorerContextMenu({
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      // BASED-UI-A11Y-KEYBOARD: arrow keys walk the menu's enabled items.
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && ref.current) {
+        const items = [...ref.current.querySelectorAll<HTMLElement>("button:not([disabled])")];
+        const at = items.indexOf(document.activeElement as HTMLElement);
+        items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+        e.preventDefault();
+      }
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -49,6 +56,15 @@ export function ExplorerContextMenu({
       window.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
+
+  // Mount-only, so a parent re-render (new onClose identity) never yanks focus back and forth.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
+    return () => {
+      if (opener && document.contains(opener)) opener.focus();
+    };
+  }, []);
 
   const first = objects[0];
   if (!first) return null;
@@ -80,7 +96,7 @@ export function ExplorerContextMenu({
           {item("Open details", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "details"))}
           {item("Open data", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "data"))}
           {capabilities?.sql &&
-            item("Open sql", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "sql"))}
+            item("Open SQL", () => void openTableTab(single.schema, single.name, single.type as "table" | "view", "sql"))}
         </>
       )}
       {single && !isTableLike && item("Open details", () => void openRoutineTab(single.schema, single.name, single.type as "procedure" | "function"))}

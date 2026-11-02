@@ -1,6 +1,6 @@
 import sql from "mssql";
 import type { TokenCredential } from "@azure/identity";
-import { splitBatches } from "./batch";
+import { splitBatchesWithLines } from "./batch";
 import { settingBool, settingStr } from "./connectionSettings";
 import { TSQL_DIALECT, type SqlDialect } from "./dialect";
 import { createCredential, mintSqlToken, type SecretProvider } from "./entra";
@@ -803,7 +803,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   execute(sqlText: string, onChunk: (chunk: QueryChunk) => void, opts: ExecuteOptions = {}): QueryExecution {
-    const batches = splitBatches(sqlText);
+    const batches = splitBatchesWithLines(sqlText);
     let cancelled = false;
     let errored = false;
     let currentRequest: sql.Request | null = null;
@@ -815,9 +815,10 @@ export class MssqlAdapter implements DatabaseAdapter {
           if (Date.now() - this.lastActivity > IDLE_PING_AGE_MS) await p.request().query("SELECT 1");
           return p;
         });
-        for (const batch of batches) {
+        for (const [i, batch] of batches.entries()) {
           if (cancelled) break;
-          const res = await this.runBatchStream(pool, batch, onChunk, (req) => (currentRequest = req), opts);
+          const batchNo = batches.length > 1 ? i + 1 : undefined;
+          const res = await this.runBatchStream(pool, batch.text, batch.startLine, batchNo, onChunk, (req) => (currentRequest = req), opts);
           if (res.errored) errored = true;
           if (res.cancelled) cancelled = true;
         }
@@ -829,7 +830,7 @@ export class MssqlAdapter implements DatabaseAdapter {
       const durationMs = Math.round(performance.now() - start);
       const status = cancelled ? "cancelled" : errored ? "error" : "ok";
       if (cancelled) onChunk({ type: "cancelled" });
-      onChunk({ type: "done", durationMs, status });
+      onChunk({ type: "done", durationMs, status, statementCount: batches.length });
       return { status, durationMs } as const;
     })();
 
@@ -849,6 +850,8 @@ export class MssqlAdapter implements DatabaseAdapter {
   private runBatchStream(
     pool: sql.ConnectionPool,
     batchSql: string,
+    batchStartLine: number,
+    batchNo: number | undefined,
     onChunk: (chunk: QueryChunk) => void,
     setRequest: (req: sql.Request) => void,
     opts: ExecuteOptions,
@@ -907,7 +910,8 @@ export class MssqlAdapter implements DatabaseAdapter {
           return;
         }
         errored = true;
-        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, code: e?.number });
+        const textLine = e?.lineNumber != null ? batchStartLine + e.lineNumber - 1 : undefined;
+        onChunk({ type: "error", message: errMessage(err), line: e?.lineNumber, textLine, code: e?.number, batch: batchNo });
       });
       request.on("done", () => {
         endResultSet();

@@ -236,6 +236,17 @@ export function setActiveAiProfile(id: string): Promise<AppSettings> {
   return api<AppSettings>("/api/ai-profiles/active", { method: "POST", body: JSON.stringify({ id }) });
 }
 
+// Traces: BASED-AGENT-READY
+export interface AgentReadiness {
+  state: "none" | "no-key" | "unreachable" | "ok";
+  profileName?: string;
+  detail?: string;
+}
+
+export function getAgentReadiness(): Promise<AgentReadiness> {
+  return api<AgentReadiness>("/api/ai-profiles/active/status");
+}
+
 /** Named, per-engine agent instruction sets (BASED-AGENT-INSTRUCTIONS). The "default" set is
  *  always present and read-only. */
 export function getAgentInstructions(): Promise<AgentInstructionsConfig> {

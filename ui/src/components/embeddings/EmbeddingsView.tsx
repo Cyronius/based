@@ -7,8 +7,10 @@ import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from
 import type { EmbedDeck } from "./EmbeddingsCanvas";
 import type { TableTabState } from "../../store";
 import { useStore } from "../../store";
+import { IconButton } from "../IconButton";
 import { cellText } from "../../api/types";
 import { labelClusters } from "../../api/client";
+import { clusterDisplayName, separateBadges } from "../../embeddings/clusterNames";
 import { useEmbeddingsEngine } from "../../embeddings/engine";
 import { embeddingColors } from "../../embeddings/colors";
 import { EmbeddingsCanvas, type PlotMode } from "./EmbeddingsCanvas";
@@ -17,8 +19,15 @@ import { PointDetailsPanel } from "./PointDetailsPanel";
 import { SelectionGrid } from "./SelectionGrid";
 import { BottomTabPanel, type BottomTab } from "../BottomTabPanel";
 import { CellView } from "../CellView";
+import { plural } from "../../lib/plural";
 
 const POINT_CHOICES = [1000, 2500, 5000, 10000, 20000];
+
+/** Sample sizes up to the table's row count, ending with "all rows" when the table is smaller than the top choice. */
+function sampleChoices(rowCount: number | null | undefined): number[] {
+  if (rowCount == null || rowCount >= POINT_CHOICES.at(-1)!) return POINT_CHOICES;
+  return [...POINT_CHOICES.filter((p) => p < rowCount), rowCount];
+}
 const SNIPPET_LEN = 180;
 
 function isTextType(t: string): boolean {
@@ -40,6 +49,7 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
   );
   const [textCol, setTextCol] = useState<string | null>(() => textCols[0]?.name ?? null);
   const [limit, setLimit] = useState(5000);
+  const pointChoices = sampleChoices(tab.rowCount);
   const [seed, setSeed] = useState(42);
   const [labelsOn, setLabelsOn] = useState(true);
   const [lassoMode, setLassoMode] = useState(false);
@@ -140,15 +150,19 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
     return out.length ? out : null;
   }, [selectedIndex, similar]);
 
-  // Numeric by default — TF-IDF term strings are too long to float on the canvas; they survive as
-  // legend-chip tooltips and as the AI-labeling hint. AI names (2-4 words) replace the number.
-  const clusterName = (c: number): string => snap.aiLabels?.[c] ?? String(c + 1);
+  const clusterName = (c: number): string => clusterDisplayName(snap.aiLabels?.[c], snap.terms?.[c], c);
+  const clusterSizes = useMemo(() => {
+    const counts = new Array<number>(clusters?.k ?? 0).fill(0);
+    if (clusters) for (let i = 0; i < snap.n; i++) counts[clusters.labels[i]!]!++;
+    return counts;
+  }, [clusters, snap.n]);
   const clusterHint = (c: number): string | undefined =>
     snap.terms?.[c]?.length ? snap.terms[c]!.join(" · ") : undefined;
 
   // Projected label positions — recomputed on camera moves (viewTick) and layout updates.
   const labelSpots = useMemo(() => {
-    if (!labelsOn || !clusters || !deck || snap.status !== "ready") return [];
+    // getViewports asserts until the GPU device is up, which can lag the first layout.
+    if (!labelsOn || !clusters || !deck?.isInitialized || snap.status !== "ready") return [];
     const viewport = deck.getViewports()[0];
     if (!viewport) return [];
     const spots: Array<{ c: number; x: number; y: number; bx: number; by: number }> = [];
@@ -175,6 +189,16 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
       const by = Math.min(h - 26, Math.max(26, y + dy * 64));
       spots.push({ c, x, y, bx, by });
     }
+    // Badge sizes follow the render below (16px bold words, 22px numbers); estimates are enough to stop overlaps.
+    const sized = spots.map((s) => {
+      const name = clusterName(s.c);
+      const short = name.length <= 3;
+      return { x: s.bx, y: s.by, w: name.length * (short ? 14 : 9.5) + (short ? 30 : 28), h: short ? 34 : 28 };
+    });
+    separateBadges(sized, w, h).forEach((b, i) => {
+      spots[i]!.bx = b.x;
+      spots[i]!.by = b.y;
+    });
     return spots;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelsOn, clusters, deck, viewTick, snap.positionsVersion, snap.status, hiddenClusters, mode, snap.aiLabels, snap.terms]);
@@ -268,8 +292,8 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
     }
     if (snap.status === "ready" && snap.header) {
       const note = snap.header.sampled
-        ? `${snap.n.toLocaleString()} of ${snap.header.totalRows.toLocaleString()} rows`
-        : `${snap.n.toLocaleString()} rows`;
+        ? `${snap.n.toLocaleString()} of ${plural(snap.header.totalRows, "row")}`
+        : plural(snap.n, "row");
       return snap.pcaOnly ? `${note} · PCA (too few rows for UMAP)` : note;
     }
     return null;
@@ -330,7 +354,7 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
         </div>
         {vectorCols.length > 1 && (
           <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-muted">
-            vector
+            Vector column
             <select className={selectCls} value={vectorCol} onChange={(e) => setVectorCol(e.target.value)}>
               {vectorCols.map((c) => (
                 <option key={c.name} value={c.name}>
@@ -341,8 +365,8 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
           </label>
         )}
         {textCols.length > 0 && (
-          <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-muted">
-            text
+          <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-muted" title="Text used to name clusters and shown on hover">
+            Text column
             <select
               className={selectCls}
               value={textCol ?? ""}
@@ -358,18 +382,18 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
           </label>
         )}
         <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-muted">
-          points
-          <select className={selectCls} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-            {POINT_CHOICES.map((p) => (
+          Sample size
+          <select className={selectCls} value={Math.min(limit, pointChoices.at(-1)!)} onChange={(e) => setLimit(Number(e.target.value))}>
+            {pointChoices.map((p) => (
               <option key={p} value={p}>
-                {p.toLocaleString()}
+                {p === tab.rowCount ? `All ${p.toLocaleString()} rows` : `${p.toLocaleString()} rows`}
               </option>
             ))}
           </select>
         </label>
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
-          title="Re-run layout (shift-click: new random arrangement)"
+          title="Lay the map out again (Shift+click: a new random arrangement)"
           onClick={(e) => {
             const params = engine.getSnapshot().params;
             if (e.shiftKey) setSeed((s) => s + 1);
@@ -377,7 +401,7 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
           }}
           disabled={snap.status === "fetching" || snap.status === "reducing"}
         >
-          Run
+          Rebuild map
         </button>
         <button
           className={`px-2.5 py-1 text-[length:var(--fs-base)] rounded border ${
@@ -385,22 +409,30 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
           } disabled:opacity-40`}
           onClick={() => setLassoMode((v) => !v)}
           disabled={mode === "3d" || snap.status !== "ready"}
-          title="Lasso select points"
+          title="Draw around points to select them"
         >
-          Lasso
+          Select area
         </button>
         <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-muted cursor-pointer">
           <input type="checkbox" checked={labelsOn} onChange={(e) => setLabelsOn(e.target.checked)} />
-          labels
+          Labels
         </label>
         <button
           className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60 disabled:opacity-40"
           onClick={() => void runAiLabels()}
           disabled={!clusters || textColumnIndex == null || aiBusy || snap.status !== "ready"}
-          title="Name clusters with the configured AI model"
+          title="Ask the agent's AI model for better cluster names (uses the model, which may cost money)"
         >
-          {aiBusy ? "Labeling…" : "AI label"}
+          {aiBusy ? "Naming…" : "Improve names with AI"}
         </button>
+        <IconButton
+          className="text-muted hover:text-paper"
+          title="Help: the embeddings map"
+          aria-label="Help: the embeddings map"
+          onClick={() => useStore.getState().openDocsTab("embeddings")}
+        >
+          ?
+        </IconButton>
         <span className="text-[length:var(--fs-sm)] text-faint font-mono">{progressNote}</span>
         {aiError && <span className="text-[length:var(--fs-sm)] text-err truncate max-w-64">{aiError}</span>}
       </div>
@@ -539,6 +571,7 @@ export function EmbeddingsView({ tab }: { tab: TableTabState }) {
                           style={{ background: colorSys.paletteHex[c % colorSys.paletteHex.length] }}
                         />
                         <span className="max-w-40 truncate">{clusterName(c)}</span>
+                        <span className="font-mono text-faint">{clusterSizes[c] ?? 0}</span>
                       </button>
                     ))}
                   </div>

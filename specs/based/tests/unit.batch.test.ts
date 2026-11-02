@@ -1,6 +1,6 @@
 // Traces: BASED-BATCH-GO
 import { describe, expect, test } from "bun:test";
-import { splitBatches } from "@based/core";
+import { splitBatches, splitBatchesWithLines } from "@based/core";
 
 describe("BASED-BATCH-GO: GO batch splitting", () => {
   test("splits on GO lines", () => {
@@ -20,5 +20,18 @@ describe("BASED-BATCH-GO: GO batch splitting", () => {
   test("empty batches dropped", () => {
     expect(splitBatches("SELECT 1\nGO\n\nGO")).toEqual(["SELECT 1"]);
     expect(splitBatches("")).toEqual([]);
+  });
+});
+
+// Traces: BASED-UI-QUERY-ERROR — batch start lines map SQL Server's batch-relative error lines back
+// onto the editor.
+describe("splitBatchesWithLines", () => {
+  test("each batch carries the submitted-text line of its first non-blank line", () => {
+    const sql = ["", "SELECT 1", "GO", "", "", "SELECT 2", "SELECT 3", "go -- end", "SELECT 4"].join("\n");
+    expect(splitBatchesWithLines(sql)).toEqual([
+      { text: "SELECT 1", startLine: 2 },
+      { text: "SELECT 2\nSELECT 3", startLine: 6 },
+      { text: "SELECT 4", startLine: 9 },
+    ]);
   });
 });

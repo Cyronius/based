@@ -8,6 +8,7 @@
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { duckErrorPosition, statementStarts } from "./errorLine";
 import { RowCollector } from "./rowcap";
 import { serializeLanceValue } from "./lanceSerialize";
 import { serializeValue } from "./serialize";
@@ -169,6 +170,7 @@ export class LanceSqlBridge {
   execute(sqlText: string, onChunk: (chunk: QueryChunk) => void, opts: ExecuteOptions = {}): QueryExecution {
     let cancelled = false;
     let errored = false;
+    let statementCount: number | undefined;
     let conn: DuckDBConnection | null = null;
     const start = performance.now();
     // Capture path (Execution Plan / Client Statistics): DuckDB profiles the *real* run to a JSON
@@ -184,9 +186,12 @@ export class LanceSqlBridge {
         conn = await this.newConnection();
         if (profilePath) await this.enableProfiling(conn, profilePath);
         const extracted = await conn.extractStatements(sqlText);
+        statementCount = extracted.count;
+        const starts = statementStarts(sqlText);
+        const startOf = (i: number) => (starts.length === extracted.count ? starts[i] : undefined);
         for (let i = 0; i < extracted.count; i++) {
           if (cancelled) break;
-          const ok = await this.runStatement(duckdb, extracted, i, onChunk, opts, () => cancelled, profilePath);
+          const ok = await this.runStatement(duckdb, extracted, i, onChunk, opts, () => cancelled, profilePath, startOf(i));
           if (!ok) {
             errored = true;
             break; // DuckDB has no per-statement error recovery within one script; stop like a failed batch.
@@ -195,7 +200,9 @@ export class LanceSqlBridge {
       } catch (err) {
         if (!cancelled) {
           errored = true;
-          onChunk({ type: "error", message: errMessage(err) });
+          const message = errMessage(err);
+          const pos = duckErrorPosition(message);
+          onChunk({ type: "error", message, textLine: pos?.line, textColumn: pos?.column ?? undefined });
         }
       } finally {
         try {
@@ -214,7 +221,7 @@ export class LanceSqlBridge {
       const durationMs = Math.round(performance.now() - start);
       const status = cancelled ? "cancelled" : errored ? "error" : "ok";
       if (cancelled) onChunk({ type: "cancelled" });
-      onChunk({ type: "done", durationMs, status });
+      onChunk({ type: "done", durationMs, status, statementCount });
       return { status, durationMs } as const;
     })();
 
@@ -249,6 +256,7 @@ export class LanceSqlBridge {
     opts: ExecuteOptions,
     isCancelled: () => boolean,
     profilePath: string | null,
+    start?: { line: number; offset: number },
   ): Promise<boolean> {
     try {
       const prepared = await extracted.prepare(index);
@@ -279,7 +287,22 @@ export class LanceSqlBridge {
       if (changed > 0) onChunk({ type: "message", text: `(${changed} row${changed === 1 ? "" : "s"} affected)` });
       return true;
     } catch (err) {
-      if (!isCancelled()) onChunk({ type: "error", message: errMessage(err) });
+      if (!isCancelled()) {
+        const message = errMessage(err);
+        const pos = duckErrorPosition(message);
+        // Binder carets come out shifted right by the statement's offset in the script.
+        const shifted = pos?.column != null && start ? pos.column - start.offset : null;
+        const column = shifted != null && shifted >= 1 ? shifted : null;
+        // Traces: BASED-QUERY-ERROR-LINE — DuckDB's LINE n counts script lines; without one, mark the statement's first line.
+        onChunk({
+          type: "error",
+          message,
+          textLine: pos?.line ?? start?.line,
+          textColumn: column ?? undefined,
+          statement: index + 1,
+          statementCount: extracted.count,
+        });
+      }
       return false;
     }
   }

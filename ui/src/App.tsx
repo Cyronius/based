@@ -11,10 +11,15 @@ import { TableDetailsView } from "./components/TableDetailsView";
 import { RoutineDetailsView } from "./components/RoutineDetailsView";
 import { DiagramView } from "./components/DiagramView";
 import { DocsView } from "./components/DocsView";
+import { ErrorBoundary, ErrorPanel, panelBtn } from "./components/ErrorBoundary";
 import { RightRail } from "./components/RightRail";
+import { toggleCapi } from "./railLayout";
 import { StatusBar } from "./components/StatusBar";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { NewTableDialog } from "./components/NewTableDialog";
+import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
+import { ConnectFailureBanner } from "./components/ConnectFailureBanner";
+import { runFromEditor } from "./editorRun";
 import { IconButton } from "./components/IconButton";
 
 // BASED-OPEN-SQL-ARGV: a window created for an OS file-open carries one `open=<path>` hash param
@@ -83,7 +88,15 @@ function EmptyState() {
               to begin.
             </>
           ) : (
-            "Pick a connection to begin."
+            <>
+              <button
+                className="text-brass hover:underline"
+                onClick={() => document.querySelector<HTMLElement>('[aria-haspopup="listbox"]')?.click()}
+              >
+                Choose a connection
+              </button>{" "}
+              to begin.
+            </>
           )}
         </div>
       </div>
@@ -152,6 +165,13 @@ export function App() {
     });
   }, []);
 
+  // Traces: BASED-WINDOW-IDENTITY — name first, so taskbar truncation keeps the part that matters.
+  const connectionName = useStore((s) => s.connections.find((c) => c.id === s.activeConnectionId)?.name ?? null);
+  const database = useStore((s) => s.database);
+  useEffect(() => {
+    document.title = connectionName ? `${connectionName}${database ? ` · ${database}` : ""} — based` : "based";
+  }, [connectionName, database]);
+
   // Keep Monaco's global "based" theme in sync even when no editor is mounted.
   useEffect(() => {
     syncMonacoTheme(monaco);
@@ -164,7 +184,7 @@ export function App() {
       const tab = activeQueryTab(state);
       if (e.key === "F5" || (e.key === "Enter" && isAccel(e))) {
         e.preventDefault();
-        if (tab) void state.runQuery(tab.id);
+        if (tab) runFromEditor(tab.id, e.key === "F5" ? "all" : "statement");
       } else if (e.key.toLowerCase() === "s" && isAccel(e)) {
         e.preventDefault();
         if (tab) void state.saveTab(tab.id, { as: e.shiftKey });
@@ -176,7 +196,10 @@ export function App() {
         if (tab?.running) void state.cancelQuery(tab.id);
       } else if (e.key.toLowerCase() === "j" && isAccel(e)) {
         e.preventDefault();
-        state.toggleRightRail();
+        toggleCapi();
+      } else if (e.key.toLowerCase() === "t" && isAccel(e) && e.shiftKey) {
+        e.preventDefault();
+        void state.reopenClosedTabs();
       } else if (e.key.toLowerCase() === "t" && isAccel(e)) {
         e.preventDefault();
         if (state.activeConnectionId) state.newQueryTab();
@@ -247,8 +270,9 @@ export function App() {
       <div className="flex flex-1 min-h-0">
         <LeftRail />
         <main className="flex-1 min-w-0 flex flex-col border-l border-line-soft">
+          <ConnectFailureBanner />
           {banner && (
-            <div className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
+            <div role="alert" className="flex items-center gap-3 px-4 py-2 text-[length:var(--fs-base)] bg-err/10 text-err border-b border-err/30">
               <span className="flex-1 font-mono">{banner}</span>
               <IconButton size="sm" title="Dismiss" aria-label="Dismiss" className="text-muted hover:text-paper" onClick={() => setBanner(null)}>
                 ✕
@@ -261,12 +285,25 @@ export function App() {
           {activeConnectionId || activeTab?.kind === "docs" ? (
             <>
               <TabStrip />
-              {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
-              {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
-              {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
-              {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
-              {activeTab?.kind === "docs" && <DocsView />}
-              {!activeTab && <div className="flex-1" />}
+              <ErrorBoundary
+                resetKey={activeTab?.id}
+                fallback={(error) => (
+                  <ErrorPanel title="This tab failed to draw." error={error}>
+                    {activeTab && (
+                      <button className={panelBtn} onClick={() => useStore.getState().closeTab(activeTab.id)}>
+                        Close tab
+                      </button>
+                    )}
+                  </ErrorPanel>
+                )}
+              >
+                {activeTab?.kind === "query" && <QueryTabView key={activeTab.id} tab={activeTab} />}
+                {activeTab?.kind === "table" && <TableDetailsView tab={activeTab} />}
+                {activeTab?.kind === "routine" && <RoutineDetailsView tab={activeTab} />}
+                {activeTab?.kind === "diagram" && <DiagramView tab={activeTab} />}
+                {activeTab?.kind === "docs" && <DocsView />}
+                {!activeTab && <div className="flex-1" />}
+              </ErrorBoundary>
             </>
           ) : (
             <EmptyState />
@@ -277,6 +314,7 @@ export function App() {
       <StatusBar />
       {dialog.mode !== "closed" && <ConnectionDialog />}
       <NewTableDialog />
+      <CloseConfirmDialog />
     </div>
   );
 }

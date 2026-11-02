@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { QueryTabState } from "../store";
 import { useStore } from "../store";
+import { editorTextHeight } from "../editorModels";
 import { EditorPane } from "./EditorPane";
 import { ResultsPane } from "./ResultsPane";
 import { OutputPane } from "./OutputPane";
@@ -9,11 +10,41 @@ import { BottomTabPanel, type BottomTab } from "./BottomTabPanel";
 import { CellView } from "./CellView";
 import { ChevronUpIcon } from "./icons";
 import { accel, cancelLabel } from "../platform";
+import { runFromEditor } from "../editorRun";
+import { FetchSizeInput } from "./FetchSizeInput";
+import { RunButton } from "./RunButton";
+import { MenuButton } from "./MenuButton";
+
+const fileBtn =
+  "shrink-0 whitespace-nowrap px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60";
 
 type BottomTabId = "output" | "cell";
 
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string): void {
+  try {
+    localStorage.setItem(key, "1");
+  } catch {
+    // a lost flag only means the editor may auto-fit once more
+  }
+}
+
+const ROWS_AFFECTED = /^\(\d+ rows? affected\)$/;
+
+function outputWorthShowing(tab: QueryTabState): boolean {
+  return tab.output.some(
+    (l) => l.kind === "error" || (l.kind === "message" && (!ROWS_AFFECTED.test(l.text) || tab.resultSets.length === 0)),
+  );
+}
+
 export function QueryTabView({ tab }: { tab: QueryTabState }) {
-  const runQuery = useStore((s) => s.runQuery);
   const cancelQuery = useStore((s) => s.cancelQuery);
   const saveTab = useStore((s) => s.saveTab);
   const openSqlFile = useStore((s) => s.openSqlFile);
@@ -24,7 +55,8 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   const [resultsMin, setResultsMin] = useState(false);
   const [bottomMin, setBottomMin] = useState(false);
 
-  const [openTabs, setOpenTabs] = useState<Set<BottomTabId>>(() => new Set(["output"]));
+  // Traces: BASED-UI-OUTPUT — closed by default; it opens itself only when the run said something Results cannot.
+  const [openTabs, setOpenTabs] = useState<Set<BottomTabId>>(() => new Set(outputWorthShowing(tab) ? ["output"] : []));
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTabId>("output");
   const [cellText, setCellText] = useState<string | null>(null);
 
@@ -33,6 +65,8 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
   useLayoutEffect(() => {
     setResultsMin(resultsRef.current?.isCollapsed() ?? false);
     setBottomMin(outputRef.current?.isCollapsed() ?? false);
+    if (openTabs.size === 0) setSizes(null, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Panel.collapse()/expand() redistribute the freed space among siblings, which can silently
@@ -54,6 +88,29 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
     if (tab.running) expandResults();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.running]);
+
+  // Traces: BASED-UI-TABS — after a run with results, the editor fits its text until the user drags the split.
+  const manualKey = `based:splitManual:${tab.id}`;
+  const groupBoxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tab.running || tab.resultSets.length === 0 || readFlag(manualKey)) return;
+    const text = editorTextHeight(tab.id);
+    const box = groupBoxRef.current?.clientHeight;
+    const layout = groupRef.current?.getLayout();
+    if (!text || !box || layout?.length !== 3) return;
+    const editor = Math.min(45, ((Math.max(text.content, 6 * text.line) + 8) / box) * 100);
+    groupRef.current!.setLayout([editor, 100 - editor - layout[2]!, layout[2]!]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.running]);
+
+  useEffect(() => {
+    if (!openTabs.has("output") && outputWorthShowing(tab)) {
+      setOpenTabs(new Set(openTabs).add("output"));
+      setActiveBottomTab("output");
+      expandBottom();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.output.length]);
 
   const toggleOutput = () => {
     if (openTabs.has("output")) {
@@ -91,59 +148,85 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex items-center gap-1.5 px-2 py-1 border-b border-line-soft shrink-0">
+      <div className="@container border-b border-line-soft shrink-0">
+      <div className="flex items-center gap-1.5 px-2 py-1 min-w-0">
         {tab.running ? (
           <button
-            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
+            className="shrink-0 whitespace-nowrap px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-err/50 text-err hover:bg-err/10"
             title={`Cancel (${cancelLabel})`}
             onClick={() => void cancelQuery(tab.id)}
           >
             ■ Cancel
           </button>
         ) : (
-          <button
-            className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-ok/40 text-ok hover:bg-ok/10 disabled:opacity-35 disabled:hover:bg-transparent"
-            title={`Run (F5 / ${accel("Enter")})`}
+          <RunButton
+            title={`Run selection or all (F5) · statement at cursor (${accel("Enter")})`}
             disabled={!canRun}
-            onClick={() => void runQuery(tab.id)}
-          >
-            ▶ Run
-          </button>
+            onClick={() => runFromEditor(tab.id, "all")}
+          />
         )}
+        <FetchSizeInput />
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Open a .sql file (${accel("O")})`}
           onClick={() => void openSqlFile()}
         >
           Open…
         </button>
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Save to .sql (${accel("S")})`}
           onClick={() => void saveTab(tab.id)}
         >
           Save{tab.dirty ? " •" : ""}
         </button>
         <button
-          className="px-2.5 py-1 text-[length:var(--fs-base)] rounded border border-line text-muted hover:text-paper hover:border-brass-soft/60"
+          className={`${fileBtn} @max-xl:hidden`}
           title={`Save to a new .sql file (${accel("Shift+S")})`}
           onClick={() => void saveTab(tab.id, { as: true })}
         >
           Save As…
         </button>
-        {tab.filePath && <span className="text-[length:var(--fs-sm)] text-faint font-mono truncate">{tab.filePath}</span>}
+        <span className="hidden @max-xl:contents">
+          <MenuButton
+            className="grid place-items-center shrink-0 h-7 w-7 rounded text-muted hover:text-paper hover:bg-ink-800/70"
+            title="More file actions"
+            label="More file actions"
+            items={[
+              { label: `Open… (${accel("O")})`, run: () => void openSqlFile() },
+              { label: `Save${tab.dirty ? " •" : ""} (${accel("S")})`, run: () => void saveTab(tab.id) },
+              { label: `Save As… (${accel("Shift+S")})`, run: () => void saveTab(tab.id, { as: true }) },
+            ]}
+          >
+            ⋯
+          </MenuButton>
+        </span>
+        {tab.filePath && <span className="min-w-0 text-[length:var(--fs-sm)] text-faint font-mono truncate @max-xl:hidden">{tab.filePath}</span>}
         <div className="flex-1" />
-        <label className="flex items-center gap-1.5 text-[length:var(--fs-sm)] text-faint hover:text-paper cursor-pointer">
-          <input type="checkbox" checked={openTabs.has("output")} onChange={toggleOutput} />
+        <button
+          className={`shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[length:var(--fs-sm)] ${
+            openTabs.has("output") ? "bg-ink-800 text-paper" : "text-muted hover:text-paper"
+          }`}
+          aria-pressed={openTabs.has("output")}
+          title="Show the Output panel"
+          onClick={toggleOutput}
+        >
           Output
-        </label>
+          {!openTabs.has("output") && tab.output.length > 0 && (
+            <span className="font-mono text-faint" aria-label={`${tab.output.length} messages`}>
+              {tab.output.length}
+            </span>
+          )}
+        </button>
+      </div>
       </div>
 
+      <div ref={groupBoxRef} className="flex-1 min-h-0 flex flex-col">
       <PanelGroup ref={groupRef} direction="vertical" className="flex-1 min-h-0" autoSaveId={`panes:${tab.id}`}>
         <Panel defaultSize={45} minSize={12}>
           <EditorPane tabId={tab.id} initialContent={tab.content} />
         </Panel>
-        <PanelResizeHandle className="pane-handle" />
+        <PanelResizeHandle className="pane-handle" onDragging={(d) => d && writeFlag(manualKey)} />
         <Panel
           ref={resultsRef}
           defaultSize={40}
@@ -174,6 +257,7 @@ export function QueryTabView({ tab }: { tab: QueryTabState }) {
           />
         </Panel>
       </PanelGroup>
+      </div>
 
       {(resultsMin || (bottomMin && bottomTabs.length > 0)) && (
         <div className="h-6 shrink-0 flex items-stretch border-t border-line-soft bg-ink-950">

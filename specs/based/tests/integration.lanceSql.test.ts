@@ -143,6 +143,22 @@ describe("Lance SQL (embedded DuckDB)", () => {
     }
   }, 120_000);
 
+  // Traces: BASED-QUERY-BATCH-FAILURE, BASED-QUERY-ERROR-LINE
+  test("a script that fails at statement 2 says where it stopped and points at the bad word", async () => {
+    const adapter = new LanceDbAdapter(cfgFor(soloDir), noSecret);
+    await adapter.connect();
+    try {
+      const sql = "SELECT 1 AS a;\n-- note \nSELECT id,\n  bogus FROM docs;\nSELECT 3";
+      const { chunks, status } = await runSql(adapter, sql);
+      expect(status).toBe("error");
+      const err = chunks.find((c) => c.type === "error") as Extract<QueryChunk, { type: "error" }>;
+      expect([err.statement, err.statementCount, err.textLine, err.textColumn]).toEqual([2, 3, 4, 3]);
+      expect(chunks.filter((c) => c.type === "resultset").length).toBe(1);
+    } finally {
+      await adapter.disconnect();
+    }
+  }, 120_000);
+
   test("BASED-LANCE-SQL: base-folder mode attaches each subfolder as a namespace; cross-namespace JOIN", async () => {
     const adapter = new LanceDbAdapter(cfgFor(baseDir), noSecret);
     await adapter.connect();

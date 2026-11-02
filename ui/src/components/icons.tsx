@@ -49,12 +49,51 @@ export function ChevronUpIcon() {
   );
 }
 
+/** BASED-AGENT-TAB-MARK: small static capybara head; the animated CapiAvatar is too heavy per tab. */
+export function CapiMark({ className }: { className?: string }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <circle cx="5" cy="4" r="1.6" fill="currentColor" />
+      <path d="M2.5 7.2C2.5 5.2 4.1 4 6.2 4h4.6c2.6 0 4.2 1.7 4.2 3.8v2c0 1.8-1.3 3.2-3.2 3.2H5.6c-1.8 0-3.1-1.3-3.1-3Z" fill="currentColor" />
+      <circle cx="7.2" cy="7" r="0.9" fill="var(--color-ink-950)" />
+    </svg>
+  );
+}
+
 export function TrashIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 6h18" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
       <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+export function ErrorIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5.5" />
+      <path d="M12 16.5h.01" />
+    </svg>
+  );
+}
+
+export function ChevronLeftIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m15 6-6 6 6 6" />
+    </svg>
+  );
+}
+
+export function ExplorerIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+      <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
     </svg>
   );
 }

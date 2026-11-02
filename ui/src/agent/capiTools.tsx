@@ -10,13 +10,14 @@
 // user in a real grid rather than in chat — a query tab where SQL exists, the table's data grid
 // where it doesn't. Agent-opened tabs need no thread bookkeeping — the chat is per-window
 // (BASED-AGENT-THREADS).
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ToolDefinition } from "@itkennel/lm-ag-ui";
 import { api, inspectCsv, runAgentCreateTable, runAgentMutation, streamCsvImport, type CreateTableRequest, type CsvImportChunk } from "../api/client";
 import type { EngineCapabilities, MutationResult, TableColumn } from "../api/types";
 import { capiToolDefs, filterToolsByCapabilities } from "./capiToolDefs";
 import { useStore, type QueryTabState } from "../store";
 import { buildTabContext, serializeResultRows } from "./tabContext";
+import { describeStatements, isDestructive, type StatementInfo } from "../lib/sqlText";
 
 let pendingResolve: ((v: string) => void) | null = null;
 
@@ -27,22 +28,149 @@ function summarize(res: MutationResult): string {
   return `Executed in ${res.durationMs} ms. ${parts.join(" ")}`.trim();
 }
 
+// Traces: BASED-UI-APPROVAL-CARD — one frame for every gated write, so each card names the target
+// connection, never hides SQL sideways, and colors the outcome by what actually happened.
+type ApprovalPhase = "idle" | "running" | "done" | "rejected";
+
+const APPROVAL_PRE =
+  "mb-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft";
+
+function ApprovalTarget() {
+  const name = useStore((s) => s.connections.find((c) => c.id === s.activeConnectionId)?.name);
+  const database = useStore((s) => s.database);
+  if (!name) return null;
+  const label = database ? `${name} · ${database}` : name;
+  return (
+    <div className="mb-1 truncate text-[length:var(--fs-base)] font-bold text-paper" title={label}>
+      {label}
+    </div>
+  );
+}
+
+// Traces: BASED-APPROVAL-RISK — one badge per statement kind; data-removing kinds use the error color.
+function StatementBadges({ statements }: { statements: StatementInfo[] }) {
+  const counts = new Map<string, { n: number; danger: boolean }>();
+  for (const s of statements) {
+    const c = counts.get(s.kind) ?? { n: 0, danger: false };
+    counts.set(s.kind, { n: c.n + 1, danger: c.danger || isDestructive(s) });
+  }
+  return (
+    <>
+      {[...counts].map(([kind, { n, danger }]) => (
+        <span
+          key={kind}
+          className={`rounded border px-1.5 font-mono text-[length:var(--fs-xs)] leading-[1.4] ${danger ? "border-err/50 text-err" : "border-line text-muted"}`}
+        >
+          {kind === "OTHER" ? "other" : kind}
+          {n > 1 ? ` · ${n}` : ""}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function everyRowWarnings(statements: StatementInfo[]): string[] {
+  return statements.flatMap((s) => {
+    const where = s.table ? `in ${s.table}` : "in the table";
+    if (s.kind === "TRUNCATE") return [`TRUNCATE removes every row ${where}`];
+    if (s.noWhere) return [`No WHERE — ${s.kind === "DELETE" ? "deletes" : "changes"} every row ${where}`];
+    return [];
+  });
+}
+
+function ApprovalFrame({
+  title,
+  badges,
+  danger,
+  reason,
+  phase,
+  approveLabel,
+  runningText,
+  rejectedText,
+  outcome,
+  failed,
+  onApprove,
+  onReject,
+  children,
+}: {
+  title: string;
+  badges?: ReactNode;
+  /** Approve in the error color: the change removes data or objects. */
+  danger?: boolean;
+  reason?: string;
+  phase: ApprovalPhase;
+  approveLabel: string;
+  runningText: ReactNode;
+  rejectedText: string;
+  outcome: string;
+  failed: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div role="group" aria-label={title} className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="ledger-label text-brass">{title}</span>
+        {badges}
+      </div>
+      {phase === "idle" && (
+        <span role="status" className="sr-only">
+          Capi asks for approval: {title}
+        </span>
+      )}
+      <ApprovalTarget />
+      {reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{reason}</div>}
+      {children}
+      {phase === "idle" ? (
+        <div className="flex gap-2">
+          <button
+            className={`rounded px-3 py-1 text-[length:var(--fs-base)] border ${
+              danger ? "bg-err/15 text-err border-err/50 hover:bg-err/25" : "bg-ok/20 text-ok border-ok/40 hover:bg-ok/30"
+            }`}
+            onClick={onApprove}
+          >
+            {approveLabel}
+          </button>
+          <button
+            className="rounded px-3 py-1 text-[length:var(--fs-base)] text-paper-dim border border-line hover:bg-ink-800"
+            onClick={onReject}
+          >
+            Reject
+          </button>
+        </div>
+      ) : phase === "running" ? (
+        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">{runningText}</div>
+      ) : phase === "rejected" ? (
+        <div className="text-[length:var(--fs-base)] text-muted">{rejectedText}</div>
+      ) : (
+        <div className={`whitespace-pre-wrap text-[length:var(--fs-base)] ${failed ? "text-err" : "text-ok"}`}>{outcome}</div>
+      )}
+    </div>
+  );
+}
+
 function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
-  const [phase, setPhase] = useState<"idle" | "running" | "done" | "rejected">("idle");
+  const [phase, setPhase] = useState<ApprovalPhase>("idle");
   const [outcome, setOutcome] = useState<string>("");
+  const [failed, setFailed] = useState(false);
   const sql = args?.sql ?? "";
+  const statements = useMemo(() => describeStatements(sql), [sql]);
+  const warnings = everyRowWarnings(statements);
 
   const approve = async () => {
     setPhase("running");
     try {
       const res = await runAgentMutation(sql);
       const text = summarize(res);
+      setFailed(res.status === "error");
       setOutcome(text);
       setPhase("done");
       pendingResolve?.(JSON.stringify({ approved: true, status: res.status, summary: text }));
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
-      setOutcome(text);
+      setFailed(true);
+      setOutcome(`Failed: ${text}`);
       setPhase("done");
       pendingResolve?.(JSON.stringify({ approved: true, status: "error", summary: text }));
     }
@@ -56,35 +184,27 @@ function ApprovalCard({ args }: { args: { sql?: string; reason?: string } }) {
   };
 
   return (
-    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
-      <div className="ledger-label mb-1 text-brass">Mutation approval</div>
-      {args?.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
-      <pre className="mb-2 overflow-x-auto rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft">
-        {sql}
-      </pre>
-      {phase === "idle" ? (
-        <div className="flex gap-2">
-          <button
-            className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30"
-            onClick={approve}
-          >
-            Approve &amp; run
-          </button>
-          <button
-            className="rounded bg-err/15 px-3 py-1 text-[length:var(--fs-base)] text-err border border-err/40 hover:bg-err/25"
-            onClick={reject}
-          >
-            Reject
-          </button>
+    <ApprovalFrame
+      title="Mutation approval"
+      badges={<StatementBadges statements={statements} />}
+      danger={statements.some(isDestructive)}
+      reason={args?.reason}
+      phase={phase}
+      approveLabel="Approve & run"
+      runningText="Running…"
+      rejectedText="Rejected — nothing ran."
+      outcome={outcome}
+      failed={failed}
+      onApprove={approve}
+      onReject={reject}
+    >
+      {warnings.map((w, i) => (
+        <div key={i} className="mb-1 text-[length:var(--fs-base)] font-semibold text-err">
+          {w}
         </div>
-      ) : phase === "running" ? (
-        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Running…</div>
-      ) : phase === "rejected" ? (
-        <div className="text-[length:var(--fs-base)] text-err">Rejected — nothing ran.</div>
-      ) : (
-        <div className="text-[length:var(--fs-base)] text-ok">{outcome}</div>
-      )}
-    </div>
+      ))}
+      <pre className={APPROVAL_PRE}>{sql}</pre>
+    </ApprovalFrame>
   );
 }
 
@@ -129,7 +249,14 @@ function summarizeQueryTab(tab: QueryTabState, previewRows: number) {
     durationMs: tab.stats?.durationMs,
     resultSets: tab.resultSets.map((rs) => ({ columns: rs.columns.map((c) => c.name), rowCount: rs.rowCount, truncated: rs.truncated })),
     preview: tab.resultSets[0] ? serializeResultRows(tab.resultSets[0], previewRows) : null,
-    errors: tab.output.filter((l) => l.kind === "error").map((l) => l.text),
+    errors: [
+      ...(tab.queryErrors ?? []).map((e) => {
+        const where = e.statement != null ? `statement ${e.statement}` : e.batch != null ? `batch ${e.batch}` : null;
+        const at = [where, e.line != null ? `line ${e.line}` : null].filter(Boolean).join(", ");
+        return at ? `(${at}) ${e.message}` : e.message;
+      }),
+      ...tab.output.filter((l) => l.kind === "error").map((l) => l.text),
+    ],
   };
 }
 
@@ -174,13 +301,14 @@ function autoMapCsv(
 }
 
 function ImportApprovalCard({ args }: { args: ImportArgs }) {
-  const [phase, setPhase] = useState<"loading" | "idle" | "running" | "done" | "rejected" | "invalid">("loading");
+  const [phase, setPhase] = useState<"loading" | "invalid" | ApprovalPhase>("loading");
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ header: string[]; sampleRows: number } | null>(null);
   const [mapping, setMapping] = useState<Array<{ csvIndex: number; column: string }>>([]);
   const [unmatched, setUnmatched] = useState<string[]>([]);
   const [progress, setProgress] = useState<{ inserted: number; totalRows: number } | null>(null);
   const [outcome, setOutcome] = useState<string>("");
+  const [failed, setFailed] = useState(false);
 
   const schema = args.schema ?? "dbo";
   const table = args.table ?? "";
@@ -255,6 +383,7 @@ function ImportApprovalCard({ args }: { args: ImportArgs }) {
       } else {
         summary = `Import failed: ${doneChunk?.error ?? "unknown error"}${doneChunk?.inserted ? ` (${doneChunk.inserted} rows committed before the failure)` : ""}`;
       }
+      setFailed(doneChunk?.status !== "ok");
       setOutcome(summary);
       setPhase("done");
       pendingImportResolve?.(
@@ -269,7 +398,8 @@ function ImportApprovalCard({ args }: { args: ImportArgs }) {
       );
     } catch (err) {
       summary = err instanceof Error ? err.message : String(err);
-      setOutcome(summary);
+      setFailed(true);
+      setOutcome(`Import failed: ${summary}`);
       setPhase("done");
       pendingImportResolve?.(JSON.stringify({ approved: true, status: "error", summary }));
     }
@@ -282,56 +412,57 @@ function ImportApprovalCard({ args }: { args: ImportArgs }) {
     pendingImportResolve = null;
   };
 
-  return (
-    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
-      <div className="ledger-label mb-1 text-brass">Import approval</div>
-      {args.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
-      <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">
-        <span className="font-mono break-all">{args.path}</span>
-        <span className="text-muted"> → </span>
-        <span className="font-semibold">
-          {schema}.{table}
-        </span>
-      </div>
-      {phase === "loading" ? (
-        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Reading the file…</div>
-      ) : phase === "invalid" ? (
-        <div className="text-[length:var(--fs-base)] text-err">{error}</div>
-      ) : (
-        <>
-          {preview && (
-            <div className="mb-2 text-[length:var(--fs-sm)] text-muted">
-              {mapping.length} column(s) mapped
-              {hasHeader ? ` from header (${preview.header.length} CSV columns)` : " by position"}
-              {unmatched.length > 0 && <span className="text-warn"> — unmapped: {unmatched.join(", ")}</span>}
-            </div>
-          )}
-          {mapping.length > 0 && phase === "idle" && (
-            <pre className="mb-2 overflow-x-auto rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft">
-              {mapping.map((m) => `csv[${m.csvIndex}] → ${m.column}`).join("\n")}
-            </pre>
-          )}
-          {phase === "idle" ? (
-            <div className="flex gap-2">
-              <button className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30" onClick={approve}>
-                Approve &amp; import
-              </button>
-              <button className="rounded bg-err/15 px-3 py-1 text-[length:var(--fs-base)] text-err border border-err/40 hover:bg-err/25" onClick={reject}>
-                Reject
-              </button>
-            </div>
-          ) : phase === "running" ? (
-            <div className="text-[length:var(--fs-base)] text-muted pulse-soft">
-              Importing…{progress ? ` ${progress.inserted}/${progress.totalRows} rows` : ""}
-            </div>
-          ) : phase === "rejected" ? (
-            <div className="text-[length:var(--fs-base)] text-err">Rejected — nothing was imported.</div>
-          ) : (
-            <div className="text-[length:var(--fs-base)] text-ok">{outcome}</div>
-          )}
-        </>
-      )}
+  const target = (
+    <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">
+      <span className="font-mono break-all">{args.path}</span>
+      <span className="text-muted"> → </span>
+      <span className="font-semibold">
+        {schema}.{table}
+      </span>
     </div>
+  );
+
+  if (phase === "loading" || phase === "invalid") {
+    return (
+      <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
+        <div className="ledger-label mb-1 text-brass">Import approval</div>
+        <ApprovalTarget />
+        {args.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
+        {target}
+        {phase === "loading" ? (
+          <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Reading the file…</div>
+        ) : (
+          <div className="text-[length:var(--fs-base)] text-err">{error}</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <ApprovalFrame
+      title="Import approval"
+      reason={args.reason}
+      phase={phase}
+      approveLabel="Approve & import"
+      runningText={`Importing…${progress ? ` ${progress.inserted}/${progress.totalRows} rows` : ""}`}
+      rejectedText="Rejected — nothing was imported."
+      outcome={outcome}
+      failed={failed}
+      onApprove={approve}
+      onReject={reject}
+    >
+      {target}
+      {preview && (
+        <div className="mb-2 text-[length:var(--fs-sm)] text-muted">
+          {mapping.length} column(s) mapped
+          {hasHeader ? ` from header (${preview.header.length} CSV columns)` : " by position"}
+          {unmatched.length > 0 && <span className="text-warn"> — unmapped: {unmatched.join(", ")}</span>}
+        </div>
+      )}
+      {mapping.length > 0 && phase === "idle" && (
+        <pre className={APPROVAL_PRE}>{mapping.map((m) => `csv[${m.csvIndex}] → ${m.column}`).join("\n")}</pre>
+      )}
+    </ApprovalFrame>
   );
 }
 
@@ -349,7 +480,7 @@ interface CreateTableArgs {
 }
 
 function CreateTableApprovalCard({ args }: { args: CreateTableArgs }) {
-  const [phase, setPhase] = useState<"idle" | "running" | "done" | "rejected">("idle");
+  const [phase, setPhase] = useState<ApprovalPhase>("idle");
   const [outcome, setOutcome] = useState("");
   const [failed, setFailed] = useState(false);
   const cols = args.columns ?? [];
@@ -381,39 +512,26 @@ function CreateTableApprovalCard({ args }: { args: CreateTableArgs }) {
   };
 
   return (
-    <div className="my-2 rounded-md border border-brass/40 bg-brass/5 p-3">
-      <div className="ledger-label mb-1 text-brass">New table approval</div>
-      {args.reason && <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">{args.reason}</div>}
+    <ApprovalFrame
+      title="New table approval"
+      reason={args.reason}
+      phase={phase}
+      approveLabel="Approve & create"
+      runningText="Creating…"
+      rejectedText="Rejected — nothing was created."
+      outcome={outcome}
+      failed={failed}
+      onApprove={approve}
+      onReject={reject}
+    >
       <div className="mb-2 text-[length:var(--fs-base)] text-paper-dim">
         <span className="font-semibold">{target}</span>
         <span className="text-muted"> — new empty table</span>
       </div>
-      <pre className="mb-2 overflow-x-auto rounded bg-ink-950 p-2 text-[length:var(--fs-sm)] font-mono text-paper-dim border border-line-soft">
+      <pre className={APPROVAL_PRE}>
         {cols.map((c) => `${c.name} ${c.type}${c.type === "vector" && c.dim ? `(${c.dim})` : ""}`).join("\n") || "(no columns)"}
       </pre>
-      {phase === "idle" ? (
-        <div className="flex gap-2">
-          <button
-            className="rounded bg-ok/20 px-3 py-1 text-[length:var(--fs-base)] text-ok border border-ok/40 hover:bg-ok/30"
-            onClick={approve}
-          >
-            Approve &amp; create
-          </button>
-          <button
-            className="rounded bg-err/15 px-3 py-1 text-[length:var(--fs-base)] text-err border border-err/40 hover:bg-err/25"
-            onClick={reject}
-          >
-            Reject
-          </button>
-        </div>
-      ) : phase === "running" ? (
-        <div className="text-[length:var(--fs-base)] text-muted pulse-soft">Creating…</div>
-      ) : phase === "rejected" ? (
-        <div className="text-[length:var(--fs-base)] text-err">Rejected — nothing was created.</div>
-      ) : (
-        <div className={`text-[length:var(--fs-base)] ${failed ? "text-err" : "text-ok"}`}>{outcome}</div>
-      )}
-    </div>
+    </ApprovalFrame>
   );
 }
 
@@ -500,9 +618,15 @@ export const capiTools: Record<string, ToolDefinition> = {
     handler: async (args: { sql?: string; table?: string; where?: string; schema?: string; run?: boolean; title?: string }) => {
       const sql = args.sql ?? "";
       const store = useStore.getState();
+      // A reused tab the user opened stays unmarked; only tabs this call creates get the Capi mark.
+      const before = new Set(store.tabs.map((t) => t.id));
+      const markIfNew = (id: string) => {
+        if (!before.has(id)) useStore.getState().markOpenedByCapi(id);
+      };
       if (!sql.trim()) {
         if (!args.table?.trim()) return JSON.stringify({ error: "Provide `sql` (SQL connections) or `table` (connections without SQL)." });
         const tabId = await store.openTableTabWithQuery(args.schema ?? "", args.table, args.where?.trim() || undefined);
+        markIfNew(tabId);
         return JSON.stringify({
           tabId,
           status: "opened",
@@ -517,6 +641,7 @@ export const capiTools: Record<string, ToolDefinition> = {
           error: "This connection has no SQL editor — pass `table` (and optionally `where`) instead of `sql`.",
         });
       }
+      markIfNew(tabId);
       if (args.run === false) {
         return JSON.stringify({ tabId, title: args.title ?? useStore.getState().tabs.find((t) => t.id === tabId)?.title, status: "not_run" });
       }

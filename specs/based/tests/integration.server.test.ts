@@ -1,5 +1,5 @@
 // Traces: BASED-API-AUTH, BASED-HISTORY, BASED-CONN-TEST (endpoint), BASED-SECRET-STORE (delete via API),
-//         BASED-TABLE-COMMIT (endpoint + history row), BASED-UI-SESSION-RESUME (session-lost signal)
+//         BASED-TABLE-COMMIT (endpoint + history row), BASED-UI-SESSION-RESUME (session-lost signal), BASED-CONN-SWITCH-FAILURE
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -862,4 +862,88 @@ describe("BASED-ENGINE-PROFILE-WIRE: GET /api/engines", () => {
     // External-browser SSO must not render a secret input — there is nothing to store.
     expect(modes.get("snowflake-oauth")).toBeNull();
   });
+});
+
+// Traces: BASED-CONN-SWITCH-FAILURE — a failed switch must leave the window on its working connection.
+describe("BASED-CONN-SWITCH-FAILURE: connect-then-swap", () => {
+  test("a failed connect keeps the session on the previous connection, still queryable", async () => {
+    const SID = "spec-switch-failure";
+    const lancedb = await import("@lancedb/lancedb");
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-switch-"));
+    const db = await lancedb.connect(dir);
+    await db.createTable("kept", [{ id: 1 }], { mode: "overwrite" });
+    const lanceInput = (name: string, uri: string): ConnectionInput => ({
+      name,
+      server: "",
+      database: "lancedb",
+      engine: "lancedb",
+      authType: "lancedb-local",
+      uri,
+      encrypt: false,
+      trustServerCertificate: false,
+    });
+    const good = (await (await api("/api/connections", { method: "POST", body: JSON.stringify(lanceInput("switch-good", dir)) })).json()) as ConnectionConfig;
+    const bad = (await (
+      await api("/api/connections", { method: "POST", body: JSON.stringify(lanceInput("switch-bad", join(dir, "missing-folder"))) })
+    ).json()) as ConnectionConfig;
+    try {
+      expect((await api(`/api/session/connect?sid=${SID}`, { method: "POST", body: JSON.stringify({ connectionId: good.id }) })).status).toBe(200);
+
+      const failed = await api(`/api/session/connect?sid=${SID}`, { method: "POST", body: JSON.stringify({ connectionId: bad.id }) });
+      expect(failed.ok).toBe(false);
+      expect(((await failed.json()) as { error: string }).error).toMatch(/Folder not found/);
+
+      const objects = (await (await api(`/api/session/objects?sid=${SID}`)).json()) as { objects: Array<{ name: string }> };
+      expect(objects.objects.map((o) => o.name)).toContain("kept");
+      const ws = (await (await api(`/api/window-state?sid=${SID}`)).json()) as { connectionId: string | null };
+      expect(ws.connectionId).toBe(good.id);
+    } finally {
+      await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+      await api(`/api/connections/${good.id}`, { method: "DELETE" });
+      await api(`/api/connections/${bad.id}`, { method: "DELETE" });
+    }
+  }, 60_000);
+});
+
+// LanceDB connections carry no database name; their runs must still reach history.
+describe("BASED-HISTORY: a LanceDB run is recorded", () => {
+  const SID = "lance-history";
+
+  test("a query on a connection with no database still adds a history row", async () => {
+    const lancedb = await import("@lancedb/lancedb");
+    const dir = mkdtempSync(join(tmpdir(), "based-srv-lance-hist-"));
+    const ldb = await lancedb.connect(dir);
+    await ldb.createTable("plain", [{ id: 1 }, { id: 2 }], { mode: "overwrite" });
+
+    const conn = (await (
+      await api("/api/connections", {
+        method: "POST",
+        body: JSON.stringify({ name: "srv-lance-hist", engine: "lancedb", authType: "lancedb-local", uri: dir }),
+      })
+    ).json()) as ConnectionConfig;
+    try {
+      expect((await api(`/api/session/connect?sid=${SID}`, { method: "POST", body: JSON.stringify({ connectionId: conn.id }) })).status).toBe(200);
+      const run = async (sql: string) => {
+        await (await api(`/api/session/query?sid=${SID}`, { method: "POST", body: JSON.stringify({ sql }) })).text();
+        // History is written when the run completes, just after the stream closes.
+        await Bun.sleep(200);
+      };
+      await run("select count(*) from plain");
+      await run("select 1;\nselect bogus from plain;\nselect 3;");
+      const hist = (await (await api(`/api/history?connectionId=${conn.id}`)).json()) as Array<{
+        sql: string;
+        status: string;
+        statementCount: number | null;
+        failedStatement: number | null;
+      }>;
+      // Traces: BASED-HISTORY — a batch records how many statements it held and which one failed.
+      expect(hist.map((h) => [h.status, h.statementCount, h.failedStatement])).toEqual([
+        ["error", 3, 2],
+        ["ok", 1, null],
+      ]);
+      expect(hist[1]!.sql).toBe("select count(*) from plain");
+    } finally {
+      await api(`/api/session/disconnect?sid=${SID}`, { method: "POST" });
+    }
+  }, 120_000);
 });

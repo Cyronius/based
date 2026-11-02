@@ -3,12 +3,15 @@
 // @deck.gl/react: UMAP epochs stream ~12×/s and imperative setProps({layers}) re-uploads binary
 // attributes without a React render per frame. React only re-runs the small effects below when a
 // version counter ticks.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Deck, OrbitView, OrthographicView, type PickingInfo } from "@deck.gl/core";
 import { PointCloudLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Rgb } from "../../embeddings/colors";
+import { ErrorDetail } from "../ErrorDetail";
 
 export type PlotMode = "2d" | "3d";
+
+const NO_WEBGL = "The embeddings map needs WebGL 2, and this window could not start it.";
 
 /** The Deck instance parameterized over the two camera models the view toggles between. */
 export type EmbedDeck = Deck<OrthographicView | OrbitView>;
@@ -62,6 +65,15 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
   const propsRef = useRef(props);
   propsRef.current = props;
   const rafPending = useRef(false);
+  const [glError, setGlError] = useState<string | null>(null);
+  const glFail = (err: unknown) => setGlError(`${NO_WEBGL}\n${err instanceof Error ? err.message : String(err)}`);
+  const guard = (fn: () => void) => {
+    try {
+      fn();
+    } catch (err) {
+      glFail(err);
+    }
+  };
 
   const buildLayers = () => {
     const p = propsRef.current;
@@ -111,7 +123,16 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
 
   // Mount once.
   useEffect(() => {
-    const deck: EmbedDeck = new Deck<OrthographicView | OrbitView>({
+    // Traces: BASED-EMBED-UI — no WebGL 2 means a message, not a thrown render error.
+    const probe = document.createElement("canvas").getContext("webgl2");
+    if (!probe) {
+      setGlError(NO_WEBGL);
+      return;
+    }
+    probe.getExtension("WEBGL_lose_context")?.loseContext();
+    let deck: EmbedDeck;
+    try {
+      deck = new Deck<OrthographicView | OrbitView>({
       canvas: canvasRef.current!,
       views: makeView(propsRef.current.mode),
       initialViewState: propsRef.current.mode === "2d" ? VIEW_2D : VIEW_3D,
@@ -135,7 +156,15 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
         return viewState;
       },
       getCursor: ({ isDragging }) => (isDragging ? "grabbing" : "crosshair"),
+      // Device setup fails asynchronously, out of reach of a React error boundary.
+      onError: glFail,
+      // Labels project through the viewport, which exists only once the device is up.
+      onLoad: () => propsRef.current.onViewChange((propsRef.current.mode === "2d" ? VIEW_2D : VIEW_3D).zoom),
     });
+    } catch (err) {
+      glFail(err);
+      return;
+    }
     deckRef.current = deck;
     props.onDeck(deck);
     return () => {
@@ -148,23 +177,31 @@ export function EmbeddingsCanvas(props: EmbeddingsCanvasProps) {
 
   // Camera model swap on 2D/3D toggle (fresh initialViewState identity re-seats the camera).
   useEffect(() => {
-    deckRef.current?.setProps({
+    guard(() => deckRef.current?.setProps({
       views: makeView(props.mode),
       initialViewState: props.mode === "2d" ? { ...VIEW_2D } : { ...VIEW_3D },
-    });
+    }));
   }, [props.mode]);
 
   useEffect(() => {
-    deckRef.current?.setProps({ controller: props.controllerEnabled ? CONTROLLER : false });
+    guard(() => deckRef.current?.setProps({ controller: props.controllerEnabled ? CONTROLLER : false }));
   }, [props.controllerEnabled]);
 
   // Re-upload attributes when data, colors, mode, or highlights change.
   useEffect(() => {
-    deckRef.current?.setProps({ layers: buildLayers() });
+    guard(() => deckRef.current?.setProps({ layers: buildLayers() }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.positionsVersion, props.colorsVersion, props.mode, props.n, props.highlight]);
 
   // Traces: BASED-UI-FONT-ZOOM — deck.gl's controller owns the wheel here (and a trackpad pinch
   // reaches the page as Ctrl+wheel), so this canvas opts out of the app-wide Ctrl+wheel text zoom.
+  if (glError)
+    return (
+      <div className="absolute inset-0 grid place-items-center p-6">
+        <div className="max-w-md">
+          <ErrorDetail message={glError} />
+        </div>
+      </div>
+    );
   return <canvas ref={canvasRef} data-wheel-zoom="own" className="absolute inset-0 h-full w-full" />;
 }

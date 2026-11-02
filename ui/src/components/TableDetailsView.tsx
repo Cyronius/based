@@ -3,8 +3,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import type { TableTabState, TableViewId } from "../store";
-import { useStore } from "../store";
+import { markTableViewFailed, useStore } from "../store";
 import { EmbeddingsView } from "./embeddings/EmbeddingsView";
+import { ErrorBoundary, ErrorPanel, panelBtn } from "./ErrorBoundary";
 import type { TableColumn, TableDetails, TableIndex } from "../api/types";
 import { TableDataGrid } from "./TableDataGrid";
 import { QueryTabView } from "./QueryTabView";
@@ -14,6 +15,10 @@ import { CellView } from "./CellView";
 import { ScriptDropdown } from "./ScriptDropdown";
 import { IconButton } from "./IconButton";
 import { CopyIcon } from "./icons";
+import { ErrorDetail } from "./ErrorDetail";
+import { Tabs } from "./Tabs";
+import { plural } from "../lib/plural";
+import { plainIndexType, plainTypeName } from "../lib/typeNames";
 
 function typeDisplay(c: TableColumn): string {
   const t = c.type;
@@ -96,8 +101,9 @@ function IndexSection({ indexes, isVectorEngine }: { indexes: TableIndex[]; isVe
       </div>
     );
   }
+  const hasMetric = indexes.some((i) => i.distanceType);
   const headers = isVectorEngine
-    ? ["Name", "Type", "Columns", "Metric", "Indexed", "Unindexed"]
+    ? ["Name", "Type", "Columns", ...(hasMetric ? ["Metric"] : []), "Rows indexed", "Rows not indexed"]
     : ["Name", "Type", "Key columns", "Included", "Filter"];
   return (
     <div className="mx-5 mb-4">
@@ -124,7 +130,7 @@ function IndexSection({ indexes, isVectorEngine }: { indexes: TableIndex[]; isVe
                 )}
               </td>
               <td className={`${td} text-muted`}>
-                {i.typeDesc.toLowerCase()}
+                {isVectorEngine ? plainIndexType(i.typeDesc) : i.typeDesc.toLowerCase()}
                 {i.isUnique && !i.isPrimaryKey ? ", unique" : ""}
                 {i.isUniqueConstraint ? " (constraint)" : ""}
               </td>
@@ -133,7 +139,7 @@ function IndexSection({ indexes, isVectorEngine }: { indexes: TableIndex[]; isVe
               </td>
               {isVectorEngine ? (
                 <>
-                  <td className={`${td} text-muted`}>{i.distanceType ?? ""}</td>
+                  {hasMetric && <td className={`${td} text-muted`}>{i.distanceType ?? ""}</td>}
                   <td className={`${td} font-mono text-paper-dim`}>{i.numIndexedRows?.toLocaleString() ?? ""}</td>
                   <td className={`${td} font-mono ${i.numUnindexedRows ? "text-warn" : "text-faint"}`}>
                     {i.numUnindexedRows?.toLocaleString() ?? ""}
@@ -226,6 +232,16 @@ function DetailSections({ details }: { details: TableDetails }) {
 }
 
 function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEngine: boolean }) {
+  const cols = tab.columns ?? [];
+  // Engines with no keys or sizes (LanceDB) would show columns that are empty on every row.
+  const show = {
+    key: cols.some((c) => c.isPrimaryKey || c.isForeignKey),
+    size: cols.some((c) => c.maxLength != null && !c.isVector),
+    refs: cols.some((c) => c.fkTarget),
+  };
+  const headers = [show.key && "Key", "Name", "Data Type", show.size && "Size", "Nullable", show.refs && "References"].filter(
+    (h): h is string => !!h,
+  );
   return (
     <div className="flex-1 min-h-0 overflow-auto">
       {tab.error && (
@@ -237,7 +253,7 @@ function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEng
         <table className="mx-5 my-4 text-[length:var(--fs-base)] border-collapse">
           <thead>
             <tr className="text-left">
-              {["Key", "Name", "Data Type", "Size", "Nullable", "References"].map((h) => (
+              {headers.map((h) => (
                 <th key={h} className="ledger-label font-semibold px-3 py-2 border-b border-line whitespace-nowrap">
                   {h}
                 </th>
@@ -247,6 +263,7 @@ function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEng
           <tbody>
             {tab.columns.map((c) => (
               <tr key={c.name} className="hover:bg-ink-850">
+                {show.key && (
                 <td className="px-3 py-1.5 border-b border-line-soft text-center">
                   {c.isPrimaryKey && (
                     <span className="text-brass" title="Primary key">
@@ -259,13 +276,19 @@ function ColumnsTable({ tab, isVectorEngine }: { tab: TableTabState; isVectorEng
                     </span>
                   )}
                 </td>
+                )}
                 <td className="px-3 py-1.5 border-b border-line-soft font-mono text-paper">{c.name}</td>
-                <td className="px-3 py-1.5 border-b border-line-soft font-mono text-paper-dim">{typeDisplay(c)}</td>
-                <td className="px-3 py-1.5 border-b border-line-soft font-mono text-muted text-right">
-                  {c.maxLength === -1 ? "MAX" : (c.maxLength ?? "")}
+                <td className="px-3 py-1.5 border-b border-line-soft font-mono text-paper-dim">
+                  {typeDisplay(c)}
+                  {!c.isVector && plainTypeName(c.type) && <span className="font-sans text-faint"> · {plainTypeName(c.type)}</span>}
                 </td>
+                {show.size && (
+                  <td className="px-3 py-1.5 border-b border-line-soft font-mono text-muted text-right">
+                    {c.isVector ? "" : c.maxLength === -1 ? "MAX" : (c.maxLength ?? "")}
+                  </td>
+                )}
                 <td className="px-3 py-1.5 border-b border-line-soft text-muted">{c.nullable ? "yes" : "no"}</td>
-                <td className="px-3 py-1.5 border-b border-line-soft font-mono text-faint">{c.fkTarget ?? ""}</td>
+                {show.refs && <td className="px-3 py-1.5 border-b border-line-soft font-mono text-faint">{c.fkTarget ?? ""}</td>}
               </tr>
             ))}
           </tbody>
@@ -334,6 +357,39 @@ function DataView({ tab, searchCapable }: { tab: TableTabState; searchCapable: b
   );
 }
 
+// Traces: BASED-UI-TABLE-TAB-ERROR — an object that can't be read (dropped, renamed, no access)
+// says so and offers a way out, instead of rendering an empty pane.
+function TableTabError({ tab }: { tab: TableTabState }) {
+  const closeTab = useStore((s) => s.closeTab);
+  const refreshObjects = useStore((s) => s.refreshObjects);
+  const name = tab.schema ? `${tab.schema}.${tab.table}` : tab.table;
+  return (
+    <div role="alert" className="mx-5 mt-2 max-w-2xl rounded border border-err/30 bg-err/10 px-4 py-3">
+      <div className="text-paper">
+        Couldn't open <span className="font-bold">{name}</span>
+      </div>
+      <div className="mt-1 text-[length:var(--fs-sm)]">
+        <ErrorDetail message={tab.error ?? ""} />
+      </div>
+      <div className="mt-2 text-[length:var(--fs-sm)] text-muted">It may have been dropped or renamed, or this login may not be able to read it.</div>
+      <div className="mt-3 flex gap-2">
+        <button
+          className="px-3 py-1 rounded border border-line text-paper-dim hover:bg-ink-800 text-[length:var(--fs-base)]"
+          onClick={() => closeTab(tab.id)}
+        >
+          Close tab
+        </button>
+        <button
+          className="px-3 py-1 rounded border border-line text-paper-dim hover:bg-ink-800 text-[length:var(--fs-base)]"
+          onClick={() => void refreshObjects()}
+        >
+          Refresh objects
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function TableDetailsView({ tab }: { tab: TableTabState }) {
   const setTableView = useStore((s) => s.setTableView);
   const linkedSqlTab = useStore((s) => s.tabs.find((t) => t.kind === "query" && t.parentTabId === tab.id));
@@ -345,45 +401,59 @@ export function TableDetailsView({ tab }: { tab: TableTabState }) {
   // capable engine (LanceDB) and a table that actually has a vector column.
   const embedCapable = searchCapable && (tab.columns?.some((c) => c.isVector) ?? false);
 
-  const tabBtn = (view: TableViewId, label: string) => (
-    <button
-      className={`px-2.5 py-1 text-[length:var(--fs-base)] rounded border ${
-        tab.view === view ? "border-brass-soft/60 text-brass bg-brass/5" : "border-line text-muted hover:text-paper"
-      }`}
-      onClick={() => setTableView(tab.id, view)}
-    >
-      {label}
-    </button>
-  );
+  const views: Array<{ id: TableViewId; label: string }> = [
+    { id: "details", label: "Details" },
+    { id: "data", label: "Data" },
+    ...(sqlCapable ? [{ id: "sql" as TableViewId, label: "SQL" }] : []),
+    ...(embedCapable ? [{ id: "embeddings" as TableViewId, label: "Embeddings" }] : []),
+  ];
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-ink-900">
-      <div className="px-5 pt-4 pb-3 flex items-center gap-3 shrink-0">
+    <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col bg-ink-900">
+      {/* Traces: BASED-UI-NARROW-LAYOUT — the table name heads the tab; the view switcher sits under it. */}
+      <div className="px-5 pt-3 pb-2 shrink-0 space-y-1.5">
+        <div className="flex items-baseline gap-x-3 min-w-0">
+          <h1 className="min-w-0 truncate font-display text-xl text-paper" title={`${tab.schema ? `${tab.schema}${sqlCapable ? "." : "/"}` : ""}${tab.table}`}>
+            {tab.schema && (
+              <span className="text-muted">{tab.schema}{sqlCapable ? "." : "/"}</span>
+            )}
+            {tab.table}
+          </h1>
+          <span className="shrink-0 ledger-label">{tab.objectType}</span>
+          {tab.columns && <span className="shrink-0 text-[length:var(--fs-sm)] text-faint font-mono">{plural(tab.columns.length, "column")}</span>}
+          {/* Traces: BASED-LANCE-SCAN — the exact total, so "how big is this table" never needs a query. */}
+          {tab.rowCount != null && (
+            <span className="shrink-0 text-[length:var(--fs-sm)] text-faint font-mono">{plural(tab.rowCount, "row")}</span>
+          )}
+        </div>
         <div className="flex items-center gap-1.5">
-          {tabBtn("details", "Details")}
-          {tabBtn("data", "Data")}
-          {sqlCapable && tabBtn("sql", "SQL")}
-          {embedCapable && tabBtn("embeddings", "Embeddings")}
+          <Tabs label="Table view" tabs={views} value={tab.view} onChange={(v) => setTableView(tab.id, v)} />
           {capabilities?.script && <ScriptDropdown schema={tab.schema} name={tab.table} type={tab.objectType} />}
         </div>
-        <h1 className="font-display text-xl text-paper">
-          {tab.schema && (
-            <span className="text-muted">{tab.schema}{sqlCapable ? "." : "/"}</span>
-          )}
-          {tab.table}
-        </h1>
-        <span className="ledger-label">{tab.objectType}</span>
-        {tab.columns && <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.columns.length} columns</span>}
-        {/* Traces: BASED-LANCE-SCAN — the exact total, so "how big is this table" never needs a query. */}
-        {tab.rowCount != null && (
-          <span className="text-[length:var(--fs-sm)] text-faint font-mono">{tab.rowCount.toLocaleString()} rows</span>
-        )}
       </div>
 
-      {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
-      {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
-      {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
-      {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
+      {tab.error && !tab.columns ? (
+        <TableTabError tab={tab} />
+      ) : (
+        <ErrorBoundary
+          resetKey={`${tab.id}:${tab.view}`}
+          onError={() => markTableViewFailed(tab.id, tab.view)}
+          fallback={(error) => (
+            <ErrorPanel title={`The ${views.find((v) => v.id === tab.view)?.label ?? tab.view} view failed to draw.`} error={error}>
+              {tab.view !== "data" && (
+                <button className={panelBtn} onClick={() => setTableView(tab.id, "data")}>
+                  Switch to Data
+                </button>
+              )}
+            </ErrorPanel>
+          )}
+        >
+          {tab.view === "sql" && linkedSqlTab?.kind === "query" && <QueryTabView key={linkedSqlTab.id} tab={linkedSqlTab} />}
+          {tab.view === "data" && <DataView key={tab.id} tab={tab} searchCapable={searchCapable} />}
+          {tab.view === "details" && <ColumnsTable tab={tab} isVectorEngine={searchCapable} />}
+          {tab.view === "embeddings" && embedCapable && <EmbeddingsView key={tab.id} tab={tab} />}
+        </ErrorBoundary>
+      )}
     </div>
   );
 }

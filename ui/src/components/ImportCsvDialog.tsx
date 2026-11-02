@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { inspectCsv, openFileDialogApi, streamCsvImport, type CsvImportChunk } from "../api/client";
 import type { TableColumn } from "../api/types";
+import { Dialog } from "./Dialog";
 
 const NUMERIC_TYPES = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney)$/;
 
@@ -120,16 +121,18 @@ export function ImportCsvDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/50" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="w-[min(90vw,780px)] max-h-[85vh] overflow-y-auto rounded border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-line">
-          <span className="font-display text-lg text-paper">
-            Import CSV → <span className="font-mono text-[length:var(--fs-base)]">{schema}.{table}</span>
-          </span>
-          <button className="text-muted hover:text-paper" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </div>
+    <Dialog
+      title={
+        <>
+          Import CSV → <span className="font-mono text-[length:var(--fs-base)]">{schema}.{table}</span>
+        </>
+      }
+      onClose={onClose}
+      closeOnBackdrop={false}
+      initialFocus="panel"
+      z="z-40"
+      className="w-[min(90vw,780px)] max-h-[85vh] overflow-y-auto"
+    >
 
         <div className="p-4 space-y-3 text-[length:var(--fs-base)]">
           <div className="flex items-center gap-2">
@@ -248,7 +251,6 @@ export function ImportCsvDialog({
             {running ? "Importing…" : "Import"}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

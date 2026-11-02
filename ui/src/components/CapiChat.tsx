@@ -16,8 +16,12 @@ import {
   resolveAiTimeouts,
 } from "../agent/aiTimeouts";
 import { parseSqlBlocks } from "../lib/sqlBlocks";
+import { isReadOnly } from "../lib/sqlText";
 import { classifySettledTurn, describeRunError, isAbortError } from "../agent/runError";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { IconButton } from "./IconButton";
+import { RunButton } from "./RunButton";
+import { AgentReadyLine } from "./AgentReadyLine";
 import { deriveMood, HAPPY_WINDOW_MS } from "../agent/capiMood";
 
 function SendIcon() {
@@ -150,6 +154,7 @@ function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
 function SqlActions({ text }: { text: string }) {
   const insert = useStore((s) => s.insertSqlIntoEditor);
   const run = useStore((s) => s.runSqlInNewTab);
+  const open = useStore((s) => s.newQueryTabWithContent);
   const blocks = parseSqlBlocks(text);
   if (blocks.length === 0) return null;
   return (
@@ -163,9 +168,21 @@ function SqlActions({ text }: { text: string }) {
             <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => insert(b.sql)}>
               Insert
             </button>
-            <button className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0" onClick={() => void run(b.sql)}>
-              Run
-            </button>
+            {/* BASED-CHAT-SQL-RUN-GATE: agent-written SQL that may change data never runs on one click. */}
+            {isReadOnly(b.sql) ? (
+              <RunButton size="sm" onClick={() => void run(b.sql)} />
+            ) : (
+              <button
+                className="text-[length:var(--fs-sm)] text-brass hover:underline shrink-0"
+                title="Opens in a new tab without running — review, then F5"
+                onClick={() => {
+                  const id = open(null, b.sql);
+                  if (id) useStore.getState().requestEditorFocus(id);
+                }}
+              >
+                Open
+              </button>
+            )}
           </div>
           <div className="font-mono text-[length:var(--fs-sm)] text-faint truncate">{b.firstLine}</div>
         </div>
@@ -188,6 +205,12 @@ export function CapiChat() {
     terminateRun,
   } = useAgentContext();
   const [input, setInput] = useState("");
+  const activeTab = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId));
+  const starterPrompts = [
+    "Which tables have the most rows?",
+    activeTab?.kind === "table" ? `What is in ${activeTab.table}, and what is it for?` : "What is in this database?",
+    activeTab?.kind === "query" && activeTab.queryErrors?.length ? "Explain the last error and fix my query" : "Write a query that finds duplicate rows",
+  ];
   // Wall-clock of the most recently completed turn; cleared at the start of each new send so the
   // readout only ever belongs to the last answer.
   const [lastTurnMs, setLastTurnMs] = useState<number | null>(null);
@@ -267,6 +290,7 @@ export function CapiChat() {
       // treatment in the render below; a user-initiated Stop is not a failure.
       if (!isAbortError(err)) {
         addMessage({ id: `error_${Date.now()}`, role: "assistant", content: `Error: ${describeRunError(err)}` });
+        void useStore.getState().refreshAgentReady();
       }
     } finally {
       sendingRef.current = false;
@@ -354,15 +378,37 @@ export function CapiChat() {
     idleMs,
   });
 
+  // Traces: BASED-UI-A11Y-KEYBOARD — screen readers hear the settled answer once, not every token.
+  const settledAnswer =
+    !isStreaming && lastNonTool?.role === "assistant" && typeof lastNonTool.content === "string" ? lastNonTool.content : "";
+
   return (
     <div className="flex flex-1 min-h-0 min-w-0 flex-col" onPointerMove={touch} onKeyDown={touch}>
+      <div className="sr-only" aria-live="polite">
+        {settledAnswer}
+      </div>
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         <div ref={contentRef} className="pl-3 pr-4 py-2 space-y-3">
+        {/* Traces: BASED-CHAT-UI — example prompts fill the composer; nothing is sent until the user sends it. */}
         {messages.length === 0 && !isStreaming && (
-          <p className="text-[length:var(--fs-base)] text-muted leading-relaxed break-words">
-            Ask about your schema, generate SQL, or request a change. Answers stream here; SQL blocks
-            get <span className="text-brass">Insert</span> / <span className="text-brass">Run</span> actions.
-          </p>
+          <div className="space-y-2">
+            <p className="text-[length:var(--fs-base)] text-muted leading-relaxed [text-wrap:pretty]">
+              Ask about your data, get SQL you can insert or run, or ask for a change. Try:
+            </p>
+            {starterPrompts.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className="block w-full text-left px-2.5 py-1.5 rounded border border-line text-[length:var(--fs-base)] text-paper-dim hover:text-paper hover:border-brass-soft/60"
+                onClick={() => {
+                  setInput(p);
+                  inputRef.current?.focus();
+                }}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
         )}
         {rendered.map(({ m, key }) => {
           const toolCalls = (m as unknown as { toolCalls?: Array<{ id: string; function?: { name?: string; arguments?: string } }> }).toolCalls;
@@ -481,6 +527,7 @@ export function CapiChat() {
         </div>
       </div>
       <div className="border-t border-line-soft pl-2 pr-3 py-2">
+        <AgentReadyLine />
         <div className="flex items-stretch gap-2">
           <div className="flex w-20 shrink-0 items-center justify-center">
             <CapiAvatar className="h-20 w-auto" mood={mood} speaking={speaking} variant="full" />
@@ -488,9 +535,10 @@ export function CapiChat() {
           <div className="relative flex-1 min-w-0">
             <textarea
               ref={inputRef}
-              className="h-full w-full resize-none rounded-md border border-line bg-ink-800 px-2 py-1.5 pr-9 text-[length:var(--fs-md)] text-paper placeholder:text-faint focus:border-brass-soft focus:outline-none"
+              className="h-full w-full resize-none rounded-md border border-line bg-ink-800 px-2 py-1.5 pr-9 text-[length:var(--fs-md)] text-paper placeholder:text-muted focus:border-brass-soft focus:outline-none"
               rows={2}
               placeholder="Ask about the database…"
+              aria-label="Message Capi"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -503,14 +551,15 @@ export function CapiChat() {
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
             />
-            <button
-              className="absolute right-1.5 bottom-1.5 rounded p-1 text-brass hover:text-brass-soft disabled:opacity-40"
-              title="Send"
+            <IconButton
+              className="absolute right-1 bottom-1 text-brass hover:text-brass-soft"
+              title="Send (Enter)"
+              aria-label="Send"
               onClick={() => void send()}
               disabled={isStreaming || !input.trim()}
             >
               <SendIcon />
-            </button>
+            </IconButton>
           </div>
         </div>
       </div>

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { fetchHealth } from "../api/client";
 import { activeQueryTab, useStore } from "../store";
 import { VIM_STATUS_NODE_ID } from "../vimMode";
-import { connTarget } from "../lib/engineProfile";
+import { connTarget, profileFor } from "../lib/engineProfile";
+import { MiddleTruncate } from "./MiddleTruncate";
 
 export function StatusBar() {
   // The running build's version, so a bug report can name it. Fetched once; a failure just leaves
@@ -24,8 +25,10 @@ export function StatusBar() {
   const resumeSession = useStore((s) => s.resumeSession);
   const tab = useStore(activeQueryTab);
   const editorKeymap = useStore((s) => s.editorKeymap);
+  const capabilities = useStore((s) => s.capabilities);
 
   const conn = connections.find((c) => c.id === activeConnectionId);
+  const engineLabel = conn ? profileFor(conn, engines)?.label : undefined;
   const statusColor =
     status === "connected" ? "text-ok" : status === "disconnected" ? "text-faint" : "text-brass";
   // BASED-UI-SESSION-RESUME: only offer a manual retry once auto-resume has given up on a
@@ -44,10 +47,19 @@ export function StatusBar() {
           Reconnect
         </button>
       )}
+      {/* Traces: BASED-WINDOW-IDENTITY — the user's own connection name leads; the host follows. */}
       {conn && (
-        <span className="text-muted truncate">
-          {connTarget(conn, engines)}
-          {database ? ` · ${database}` : ""}
+        <span className="flex items-center gap-2 min-w-0">
+          {engineLabel && <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0">{engineLabel}</span>}
+          <span className="font-sans font-bold text-paper truncate shrink-0 max-w-80" title={conn.name}>
+            {conn.name}
+          </span>
+          <MiddleTruncate className="text-muted" text={`${connTarget(conn, engines)}${database ? ` · ${database}` : ""}`} />
+          {capabilities && !capabilities.write && (
+            <span className="rounded border border-line px-1.5 text-muted font-sans shrink-0" title="This connection cannot write data">
+              read-only
+            </span>
+          )}
         </span>
       )}
       {/* Traces: BASED-EDITOR-VIM — monaco-vim renders the mode and its `:` command input in here.
@@ -55,12 +67,14 @@ export function StatusBar() {
           contents are written by monaco-vim, never by React (see vimMode.ts). */}
       {editorKeymap === "vim" && <span id={VIM_STATUS_NODE_ID} className="vim-status min-w-0 text-muted" />}
       <div className="flex-1" />
-      {tab?.running && <span className="text-brass pulse-soft">executing…</span>}
+      <span className="contents" aria-live="polite">
+      {tab?.running && <span className="shrink-0 text-brass pulse-soft">executing…</span>}
       {tab?.stats && !tab.running && (
-        <span className={tab.stats.status === "ok" ? "text-muted" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"}>
+        <span className={`shrink-0 whitespace-nowrap ${tab.stats.status === "ok" ? "text-muted" : tab.stats.status === "cancelled" ? "text-brass" : "text-err"}`}>
           last run: {tab.stats.status} in {tab.stats.durationMs.toLocaleString()} ms
         </span>
       )}
+      </span>
       {version && <span className="text-faint" title={`based ${version}`}>v{version}</span>}
     </footer>
   );

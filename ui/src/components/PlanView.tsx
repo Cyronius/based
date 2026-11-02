@@ -5,6 +5,7 @@ import { parsePlanXml, layoutPlan, NODE_WIDTH, NODE_HEIGHT, type LayoutNode, typ
 import { parseDuckPlanJson } from "../duckPlan";
 import type { PlanDoc } from "../store";
 import { IconButton } from "./IconButton";
+import { Tabs } from "./Tabs";
 
 const OPERATOR_GLYPHS: Record<string, string> = {
   // SQL Server showplan operators
@@ -152,21 +153,13 @@ export function PlanView({ plans }: { plans: PlanDoc[] }) {
   return (
     <div className="h-full flex flex-col">
       {plans.length > 1 && (
-        <div className="flex items-stretch h-6 border-b border-line-soft shrink-0">
-          {plans.map((_, i) => (
-            <button
-              key={i}
-              className={`px-2.5 border-r border-line-soft text-[length:var(--fs-sm)] ${
-                active === i
-                  ? "bg-ink-800 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
-                  : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
-              }`}
-              onClick={() => setActive(i)}
-            >
-              Statement {i + 1}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          label="Plan statement"
+          className="px-2 border-b border-line-soft shrink-0 overflow-x-auto"
+          tabs={plans.map((_, i) => ({ id: String(i), label: `Statement ${i + 1}` }))}
+          value={String(active)}
+          onChange={(id) => setActive(Number(id))}
+        />
       )}
       <div className="flex-1 min-h-0">
         <SinglePlanCanvas key={active} doc={plans[active]!} />

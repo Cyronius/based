@@ -40,7 +40,7 @@ export function LassoOverlay({
   const finish = (poly: Array<[number, number]>) => {
     setPath([]);
     dragging.current = false;
-    if (poly.length < 3 || !deck) return;
+    if (poly.length < 3 || !deck?.isInitialized) return;
     const viewport = deck.getViewports()[0];
     if (!viewport) return;
     const hits: number[] = [];

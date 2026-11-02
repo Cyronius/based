@@ -138,9 +138,21 @@ export type QueryChunk =
   | { type: "plan"; format: "showplan-xml"; xml: string }
   | { type: "plan"; format: "duckdb-json"; json: string }
   | { type: "message"; text: string }
-  | { type: "error"; message: string; line?: number; code?: number }
+  /** `line` is batch-relative, `textLine` is in the submitted text; `statement` = the script stopped there, `batch` = later batches still ran. */
+  | {
+      type: "error";
+      message: string;
+      line?: number;
+      textLine?: number;
+      /** 1-based column on textLine where the engine points, when it says. */
+      textColumn?: number;
+      code?: number;
+      statement?: number;
+      statementCount?: number;
+      batch?: number;
+    }
   | { type: "cancelled" }
-  | { type: "done"; durationMs: number; status: "ok" | "error" | "cancelled" };
+  | { type: "done"; durationMs: number; status: "ok" | "error" | "cancelled"; statementCount?: number };
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting";
 
@@ -450,6 +462,8 @@ export interface AppSettings {
   editorKeymap: "default" | "vim";
   /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
   sqlFileOpenTarget: "current-window" | "new-window";
+  /** BASED-TAB-CLOSE-CONFIRM: opt-in, off by default. */
+  confirmCloseUnsaved: boolean;
 }
 
 // Traces: BASED-HISTORY-UI — mirrors core/src/storage/history.ts
@@ -462,6 +476,8 @@ export interface HistoryEntry {
   durationMs: number | null;
   status: "ok" | "error" | "cancelled";
   error: string | null;
+  statementCount?: number | null;
+  failedStatement?: number | null;
 }
 
 // Traces: BASED-HISTORY-UI — mirrors core/src/agent/audit.ts
@@ -540,13 +556,20 @@ export interface TableEditResult {
   durationMs: number;
 }
 
+/** A vector's values only; grids put vec[dim] in the column header instead of every cell. */
+export function vecValues(v: { preview: number[]; dim: number }): string {
+  return `[${v.preview.map((n) => n.toFixed(3)).join(", ")}${v.dim > v.preview.length ? ", …" : ""}]`;
+}
+
+/** " · vec[dim]" for a column whose first value is a vector, else "". */
+export function vecHeaderSuffix(first: WireValue | undefined): string {
+  return first && typeof first === "object" && first.$ === "vec" ? ` · vec[${first.dim}]` : "";
+}
+
 export function cellText(v: WireValue): string {
   if (v === null) return "NULL";
   if (typeof v === "object") {
-    if (v.$ === "vec") {
-      const preview = v.preview.map((n) => n.toFixed(3)).join(", ");
-      return `vec[${v.dim}] [${preview}${v.dim > v.preview.length ? ", …" : ""}]`;
-    }
+    if (v.$ === "vec") return `vec[${v.dim}] ${vecValues(v)}`;
     return `<binary ${v.len} bytes> ${v.preview}`;
   }
   return String(v);

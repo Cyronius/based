@@ -21,6 +21,8 @@ import {
   saveRerankerProfile as apiSaveRerankerProfile,
   deleteRerankerProfile as apiDeleteRerankerProfile,
   listAiProfiles,
+  getAgentReadiness,
+  type AgentReadiness,
   saveAiProfile as apiSaveAiProfile,
   deleteAiProfile as apiDeleteAiProfile,
   setActiveAiProfile as apiSetActiveAiProfile,
@@ -29,9 +31,12 @@ import {
   setSessionHealer,
 } from "./api/client";
 import { applyTheme, themeHint, applyFontScale, fontScaleHint, clampFontScale } from "./theme";
-import { disposeModel, getModel } from "./editorModels";
+import { disposeModel, getModel, setRunMarkers } from "./editorModels";
 import { newChatThreadId } from "./agent/threadIds";
 import { deriveTabTitle } from "./lib/deriveTabTitle";
+import { popClosed, pushClosed } from "./lib/closedTabs";
+import { gridPendingCount } from "./lib/gridPending";
+import { resultSlots, type SlotError } from "./lib/resultSlots";
 import { profileFor, quoteIdent } from "./lib/engineProfile";
 import type {
   AiProfile,
@@ -56,6 +61,10 @@ import type {
   TableColumn,
   TableDetails,
   TableIndex,
+  TablePage,
+  TableSort,
+  LanceSearchMode,
+  SearchRows,
   TestResult,
   WireValue,
 } from "./api/types";
@@ -103,6 +112,54 @@ export interface QueryTabState {
   /** Set when this tab is the hidden SQL view backing a table/view tab's "SQL" mode — see
    *  ensureSqlView. Excluded from TabStrip and from tab persistence. */
   parentTabId?: string;
+  /** BASED-AGENT-TAB-MARK: Capi's show_results created this tab. */
+  openedBy?: "capi";
+  /** BASED-RUN-SCOPE: editor line where the last run's text starts (1 for a whole-buffer run). */
+  runStartLine?: number;
+  /** BASED-UI-QUERY-ERROR: errors from the last run, `line` already mapped to the editor. */
+  queryErrors?: QueryError[];
+}
+
+export interface QueryError extends SlotError {
+  message: string;
+  line: number | null;
+  column: number | null;
+}
+
+/** BASED-TABLE-EDIT-RETAIN: the Data view's browse page, pending edits, and search, kept per tab in
+ *  memory so they outlive the grid component. Never written to the tab store. */
+export interface TableGridSession {
+  page: TablePage | null;
+  offset: number;
+  loadedPageSize: number | null;
+  /** where/sort/filters the loaded page was fetched with. */
+  loadedKey: string;
+  sort: TableSort | null;
+  browseWhere: string;
+  filterExprs: Record<string, string>;
+  edits: Record<number, Record<string, WireValue>>;
+  newRows: Array<Record<string, WireValue>>;
+  deleted: Set<number>;
+  searchMode: LanceSearchMode;
+  query: string;
+  whereText: string;
+  embeddingProfileId: string;
+  rerankerProfileId: string;
+  profilesTouched: boolean;
+  rerankTopN: string;
+  rerankTemperature: string;
+  rerankTextColumn: string;
+  candidatePool: string;
+  keepSize: string;
+  minScoreText: string;
+  maxGapText: string;
+  vectorColumn: string;
+  searchResult: SearchRows | null;
+  /** Keyword terms of the query that produced searchResult, for match highlighting. */
+  searchTerms: string[];
+  searchOpen: boolean;
+  /** The user picked a mode, so the opening-mode rule stops choosing for them. */
+  modeTouched: boolean;
 }
 
 export interface TableTabState {
@@ -130,10 +187,13 @@ export interface TableTabState {
    *  TableDataGrid on mount. This is how `show_results` lands rows in a real grid on a connection
    *  with no SQL editor to open a query tab in. */
   prefillWhere: string | null;
+  grid?: Partial<TableGridSession>;
   error: string | null;
   /** Details = column metadata; Edit Data = editable row grid; SQL = prepopulated/autorun query
    *  view; Embeddings = the vector scatter (BASED-EMBED-UI, vector tables only). */
   view: TableViewId;
+  /** BASED-AGENT-TAB-MARK: Capi's show_results created this tab. */
+  openedBy?: "capi";
 }
 
 /** Sub-views of a table tab. "embeddings" renders only for tables with a vector column. */
@@ -187,6 +247,9 @@ export interface AppState {
   rerankerProfiles: RerankerProfile[];
   aiProfiles: AiProfile[];
   activeAiProfileId: string | null;
+  /** Traces: BASED-AGENT-READY — null until first checked or when the check itself failed. */
+  agentReady: AgentReadiness | null;
+  refreshAgentReady(): Promise<void>;
   databases: string[];
   database: string | null;
   schemas: string[];
@@ -202,6 +265,8 @@ export interface AppState {
   newTableOpen: boolean;
   rightRailOpen: boolean;
   banner: string | null;
+  /** BASED-CONN-SWITCH-FAILURE: the last connect that failed, shown with Retry / Edit actions. */
+  connectFailure: { connectionId: string; message: string } | null;
   theme: string;
   rowPageSize: number;
   fontScale: number;
@@ -212,6 +277,16 @@ export interface AppState {
   editorKeymap: "default" | "vim";
   /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET). */
   sqlFileOpenTarget: "current-window" | "new-window";
+  /** BASED-TAB-CLOSE-CONFIRM: opt-in, off by default. */
+  confirmCloseUnsaved: boolean;
+  /** BASED-UI-A11Y-KEYBOARD: the tab whose editor should take focus, set only by user actions so
+   *  connect/restore and agent-opened tabs never pull focus into Monaco. */
+  focusEditorFor: string | null;
+  /** Tabs waiting on the opt-in close confirmation, or null. */
+  closeConfirm: { ids: string[]; titles: string[] } | null;
+  /** A request from elsewhere in the UI to open Settings on one section; ThemePicker consumes it. */
+  settingsRequest: "general" | "theme" | "search" | "agent" | null;
+  openSettings(section: "general" | "theme" | "search" | "agent" | null): void;
   /** Global, session-only — capture an actual execution plan / client statistics on the next run. */
   capturePlan: boolean;
   captureStats: boolean;
@@ -223,6 +298,7 @@ export interface AppState {
   setExplorerActions(table: AppState["explorerTableAction"], routine: AppState["explorerRoutineAction"]): void;
   setEditorKeymap(k: AppState["editorKeymap"]): void;
   setSqlFileOpenTarget(t: AppState["sqlFileOpenTarget"]): void;
+  setConfirmCloseUnsaved(on: boolean): void;
   toggleCapturePlan(): void;
   toggleCaptureStats(): void;
   loadConnections(): Promise<void>;
@@ -256,16 +332,26 @@ export interface AppState {
   /** `view` sets the initial sub-view on creation (BASED-EXPLORER-ACTION); an existing tab is
    *  activated as-is. Returns the tab id — ids are random, so callers that need to patch the tab
    *  afterwards (openTableTabWithQuery) can only get it from here. */
-  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId): Promise<string>;
+  openTableTab(schema: string, table: string, objectType: "table" | "view", view?: TableViewId, grid?: Partial<TableGridSession>): Promise<string>;
   setTableView(id: string, view: TableViewId): void;
   openRoutineTab(schema: string, name: string, routineType: "procedure" | "function"): Promise<string>;
   closeTab(id: string): void;
-  closeTabs(ids: string[]): void;
+  /** `force` skips the opt-in unsaved-changes confirmation (BASED-TAB-CLOSE-CONFIRM). */
+  closeTabs(ids: string[], opts?: { force?: boolean }): void;
+  patchTableGrid(id: string, patch: Partial<TableGridSession>): void;
+  /** BASED-TAB-REOPEN: restore the most recent batch of closed tabs for this connection. */
+  reopenClosedTabs(): Promise<void>;
+  /** True when this connection has a closed-tab batch to restore. */
+  canReopenTabs(): boolean;
+  cancelCloseConfirm(): void;
+  requestEditorFocus(id: string): void;
   activateTab(id: string): void;
   reorderTab(draggedId: string, targetId: string, position: "before" | "after"): void;
   setContent(id: string, content: string): void;
   setActiveResult(id: string, index: number): void;
-  runQuery(id: string): Promise<void>;
+  /** BASED-RUN-SCOPE: `sql` runs that text instead of the whole buffer; `startLine` is the
+   *  editor line it starts on, so error lines can be mapped back. */
+  runQuery(id: string, opts?: { sql?: string; startLine?: number }): Promise<void>;
   cancelQuery(id: string): Promise<void>;
   /** `as: true` always pops the save dialog (Save As), even on a file-backed tab. */
   saveTab(id: string, opts?: { as?: boolean }): Promise<void>;
@@ -279,6 +365,7 @@ export interface AppState {
   setNewTableOpen(open: boolean): void;
   toggleRightRail(): void;
   setBanner(banner: string | null): void;
+  dismissConnectFailure(): void;
   insertSqlIntoEditor(sql: string): void;
   /** Returns the new tab's id (so the agent's show_results can report it). */
   runSqlInNewTab(sql: string, title?: string | null): Promise<string>;
@@ -294,6 +381,8 @@ export interface AppState {
   /** Move this window's active conversation for a connection — "New chat" mints a fresh id, the
    *  history picker reactivates a past one (BASED-CHAT-HISTORY-PICKER). */
   setCapiThread(connectionId: string, threadId: string): void;
+  /** BASED-AGENT-TAB-MARK: flag a tab Capi just created, so the tab strip can mark it. */
+  markOpenedByCapi(id: string): void;
   /** Script objects as CREATE/DROP/etc. into one new query tab (BASED-UI-SCRIPT-AS). */
   scriptObjects(objects: Array<{ schema: string; name: string; type: "table" | "view" | "procedure" | "function" }>, action: ScriptAction): Promise<void>;
   /** Open (or focus) the ER diagram tab for a schema scope (BASED-DIAGRAM-UI). "" = whole database.
@@ -301,7 +390,10 @@ export interface AppState {
   openDiagramTab(scope: string): string | null;
   /** Open (or focus) the help tab (BASED-HELP-DOCS). One per window, and the only tab that may be
    *  opened with no connection active. */
-  openDocsTab(): void;
+  /** Opens (or focuses) the help tab; `section` scrolls it to that part ("search", "embeddings"). */
+  openDocsTab(section?: string): void;
+  /** Help section waiting for the help tab to scroll to it. */
+  docsSection: string | null;
   /** Change a diagram tab's schema scope and refetch its graph. */
   setDiagramScope(id: string, scope: string): void;
   /** BASED-WINDOW-RESTORE: called once at boot — reconnects this window to whatever connection/tab/
@@ -315,6 +407,12 @@ interface TableTabMeta {
   table: string;
   objectType: "table" | "view";
   view: TableViewId;
+  openedBy?: "capi";
+}
+
+/** Query tabs persist meta only for the Capi mark (BASED-AGENT-TAB-MARK). */
+interface QueryTabMeta {
+  openedBy?: "capi";
 }
 
 /** Kind-specific fields persisted alongside a routine tab (BASED-TABSTORE). */
@@ -329,8 +427,22 @@ interface DiagramTabMeta {
   schemaScope: string;
 }
 
-function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | null {
-  if (t.kind === "table") return { schema: t.schema, table: t.table, objectType: t.objectType, view: t.view };
+// Traces: BASED-UI-ERROR-BOUNDARY — a view that failed to draw is saved as Data, so a restart never reopens into it.
+const failedTableViews = new Set<string>();
+let persistAfterFailure = () => {};
+export function markTableViewFailed(tabId: string, view: TableViewId): void {
+  failedTableViews.add(`${tabId}:${view}`);
+  persistAfterFailure();
+}
+
+function tabMeta(t: TabState): TableTabMeta | RoutineTabMeta | DiagramTabMeta | QueryTabMeta | null {
+  if (t.kind === "table") {
+    const view = failedTableViews.has(`${t.id}:${t.view}`) ? "data" : t.view;
+    const meta: TableTabMeta = { schema: t.schema, table: t.table, objectType: t.objectType, view };
+    if (t.openedBy) meta.openedBy = t.openedBy;
+    return meta;
+  }
+  if (t.kind === "query") return t.openedBy ? { openedBy: t.openedBy } : null;
   if (t.kind === "routine") return { schema: t.schema, name: t.name, routineType: t.routineType };
   if (t.kind === "diagram") return { schemaScope: t.schemaScope };
   return null;
@@ -350,6 +462,32 @@ interface ConnectionSnapshot {
   activeTabId: string | null;
 }
 const connectionCache = new Map<string, ConnectionSnapshot>();
+
+/** BASED-TAB-REOPEN: what a closed tab needs to come back; results are not kept. */
+type ClosedTab =
+  | { kind: "query"; title: string; content: string; filePath: string | null; dirty: boolean; openedBy?: "capi" }
+  | { kind: "table"; schema: string; table: string; objectType: "table" | "view"; view: TableViewId; grid?: Partial<TableGridSession> }
+  | { kind: "routine"; schema: string; name: string; routineType: "procedure" | "function" }
+  | { kind: "diagram"; schemaScope: string }
+  | { kind: "docs" };
+
+function closedSnapshot(t: TabState): ClosedTab {
+  switch (t.kind) {
+    case "query":
+      return { kind: "query", title: t.title, content: t.content, filePath: t.filePath, dirty: t.dirty, openedBy: t.openedBy };
+    case "table":
+      return { kind: "table", schema: t.schema, table: t.table, objectType: t.objectType, view: t.view, grid: t.grid };
+    case "routine":
+      return { kind: "routine", schema: t.schema, name: t.name, routineType: t.routineType };
+    case "diagram":
+      return { kind: "diagram", schemaScope: t.schemaScope };
+    case "docs":
+      return { kind: "docs" };
+  }
+}
+
+/** Closed-tab batches per connection id ("" = no connection), in-session only. */
+const closedTabStacks = new Map<string, ClosedTab[][]>();
 
 // BASED-UI-SESSION-RESUME backoff — mirrors core's MAX_RECONNECT_ATTEMPTS/backoff shape (separate
 // runtime, so not literally shared code): capped exponential delay, ~23s total before giving up.
@@ -416,6 +554,7 @@ export const useStore = create<AppState>((set, get) => {
     }).catch(() => {});
   }
 
+  persistAfterFailure = () => persistTabsSoon();
   function persistTabsSoon(): void {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(flushPendingTabs, 700);
@@ -566,6 +705,7 @@ export const useStore = create<AppState>((set, get) => {
           prefillWhere: null,
           error: null,
           view: meta.view,
+          ...(meta.openedBy === "capi" ? { openedBy: "capi" as const } : {}),
         };
         return tab;
       }
@@ -599,11 +739,13 @@ export const useStore = create<AppState>((set, get) => {
       // No meta and no detail fetch — the help tab restores whole (BASED-HELP-DOCS).
       if (r.kind === "docs") return { kind: "docs", id: r.id, title: r.title } satisfies DocsTabState;
       // (A legacy originThreadId in old rows' meta is ignored — per-tab thread aliasing is gone.)
+      const queryMeta = r.meta as QueryTabMeta | null;
       return {
         ...freshQueryTab(r.title),
         id: r.id,
         content: r.content,
         filePath: r.filePath,
+        ...(queryMeta?.openedBy === "capi" ? { openedBy: "capi" as const } : {}),
       };
     });
     if (tabs.length === 0) tabs.push(freshQueryTab("Query 1"));
@@ -640,6 +782,14 @@ export const useStore = create<AppState>((set, get) => {
     rerankerProfiles: [],
     aiProfiles: [],
     activeAiProfileId: null,
+    agentReady: null,
+    async refreshAgentReady() {
+      try {
+        set({ agentReady: await getAgentReadiness() });
+      } catch {
+        set({ agentReady: null });
+      }
+    },
     databases: [],
     database: null,
     schemas: [],
@@ -651,7 +801,9 @@ export const useStore = create<AppState>((set, get) => {
     dialog: { mode: "closed" },
     newTableOpen: false,
     rightRailOpen: false,
+    docsSection: null,
     banner: null,
+    connectFailure: null,
     theme: themeHint(),
     rowPageSize: 500,
     fontScale: fontScaleHint(),
@@ -659,6 +811,13 @@ export const useStore = create<AppState>((set, get) => {
     explorerRoutineAction: "details",
     editorKeymap: "default",
     sqlFileOpenTarget: "current-window",
+    confirmCloseUnsaved: false,
+    focusEditorFor: null,
+    closeConfirm: null,
+    settingsRequest: null,
+    openSettings(section) {
+      set({ settingsRequest: section });
+    },
     capturePlan: false,
     captureStats: false,
 
@@ -678,6 +837,7 @@ export const useStore = create<AppState>((set, get) => {
           explorerRoutineAction: s.explorerRoutineAction ?? "details",
           editorKeymap: s.editorKeymap ?? "default",
           sqlFileOpenTarget: s.sqlFileOpenTarget ?? "current-window",
+          confirmCloseUnsaved: s.confirmCloseUnsaved ?? false,
         });
       } catch {
         // keep the hinted theme if the server is unreachable
@@ -713,6 +873,11 @@ export const useStore = create<AppState>((set, get) => {
     setEditorKeymap(k) {
       set({ editorKeymap: k });
       void saveSettings({ editorKeymap: k }).catch(() => {});
+    },
+
+    setConfirmCloseUnsaved(on) {
+      set({ confirmCloseUnsaved: on });
+      void saveSettings({ confirmCloseUnsaved: on }).catch(() => {});
     },
 
     setSqlFileOpenTarget(t) {
@@ -806,6 +971,7 @@ export const useStore = create<AppState>((set, get) => {
 
     async connect(connectionId, database) {
       const outgoingId = get().activeConnectionId;
+      const previousStatus = get().status;
       // Traces: BASED-HELP-DOCS — a help tab opened with no connection had nowhere to persist to,
       // and connecting replaces the whole tab set. Carry it into the incoming connection (where it
       // then persists) instead of yanking it out from under someone mid-read. Only from the
@@ -828,7 +994,7 @@ export const useStore = create<AppState>((set, get) => {
           activeTabId: s.activeTabId,
         });
       }
-      set({ status: "connecting", statusDetail: null, banner: null });
+      set({ status: "connecting", statusDetail: null, banner: null, connectFailure: null });
       try {
         const res = await api<ConnectResponse>("/api/session/connect", {
           method: "POST",
@@ -873,7 +1039,9 @@ export const useStore = create<AppState>((set, get) => {
         ensureCapiThread(connectionId);
         hydrateTabDetails(tabs);
       } catch (err) {
-        set({ status: "disconnected", banner: err instanceof Error ? err.message : String(err) });
+        // BASED-CONN-SWITCH-FAILURE: the server kept the previous session, so the window stays on it.
+        const message = err instanceof Error ? err.message : String(err);
+        set({ status: outgoingId ? previousStatus : "disconnected", connectFailure: { connectionId, message } });
       }
     },
 
@@ -964,7 +1132,7 @@ export const useStore = create<AppState>((set, get) => {
       // LanceDB Cloud) has no query editor; local LanceDB runs SQL via the embedded DuckDB.
       if (capabilities && !capabilities.sql) return;
       const tab = freshQueryTab(nextQueryTitle(tabs));
-      set({ tabs: [...tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
       persistTabsSoon();
     },
 
@@ -975,7 +1143,15 @@ export const useStore = create<AppState>((set, get) => {
       const id = await get().openTableTab(schema, table, "table", "data");
       set({
         tabs: get().tabs.map((t) =>
-          t.id === id && t.kind === "table" ? { ...t, view: "data" as TableViewId, prefillWhere: where ?? null } : t,
+          t.id === id && t.kind === "table"
+            ? {
+                ...t,
+                view: "data" as TableViewId,
+                prefillWhere: where ?? null,
+                // An agent filter never throws away the user's pending edits.
+                ...(gridPendingCount(t.grid) === 0 ? { grid: { ...t.grid, browseWhere: where ?? "", page: null } } : {}),
+              }
+            : t,
         ),
         activeTabId: id,
       });
@@ -983,7 +1159,7 @@ export const useStore = create<AppState>((set, get) => {
       return id;
     },
 
-    async openTableTab(schema, table, objectType, view) {
+    async openTableTab(schema, table, objectType, view, grid) {
       const existing = get().tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
       if (existing) {
         set({ activeTabId: existing.id });
@@ -1006,6 +1182,7 @@ export const useStore = create<AppState>((set, get) => {
         prefillWhere: null,
         error: null,
         view: view ?? "details",
+        ...(grid ? { grid } : {}),
       };
       set({ tabs: [...get().tabs, tab], activeTabId: id });
       persistTabsSoon();
@@ -1051,7 +1228,7 @@ export const useStore = create<AppState>((set, get) => {
       get().closeTabs([id]);
     },
 
-    closeTabs(ids) {
+    closeTabs(ids, opts) {
       if (ids.length === 0) return;
       const { tabs, activeTabId } = get();
       const idSet = new Set(ids);
@@ -1060,6 +1237,24 @@ export const useStore = create<AppState>((set, get) => {
       }
       const remaining = tabs.filter((t) => !idSet.has(t.id));
       if (remaining.length === tabs.length) return;
+      const closing = tabs.filter((t) => idSet.has(t.id) && !(t.kind === "query" && t.parentTabId));
+      if (!opts?.force && get().confirmCloseUnsaved) {
+        const titles: string[] = [];
+        for (const t of closing) {
+          if (t.kind === "query" && t.dirty && t.content.trim() !== "") titles.push(t.title);
+          if (t.kind === "table") {
+            const n = gridPendingCount(t.grid);
+            if (n > 0) titles.push(`${t.title} — ${n} pending change${n === 1 ? "" : "s"}`);
+          }
+        }
+        if (titles.length > 0) {
+          set({ closeConfirm: { ids, titles } });
+          return;
+        }
+      }
+      set({ closeConfirm: null });
+      const key = get().activeConnectionId ?? "";
+      closedTabStacks.set(key, pushClosed(closedTabStacks.get(key) ?? [], closing.map(closedSnapshot)));
       let nextActive = activeTabId;
       if (activeTabId && idSet.has(activeTabId)) {
         const idx = tabs.findIndex((t) => t.id === activeTabId);
@@ -1071,6 +1266,59 @@ export const useStore = create<AppState>((set, get) => {
       }
       // Reconcile the persisted set — the flush prunes closed tabs of every kind (not just
       // query), so restore no longer accumulates every table ever opened.
+      persistTabsSoon();
+    },
+
+    patchTableGrid(id, patch) {
+      set({ tabs: get().tabs.map((t) => (t.id === id && t.kind === "table" ? { ...t, grid: { ...t.grid, ...patch } } : t)) });
+    },
+
+    cancelCloseConfirm() {
+      set({ closeConfirm: null });
+    },
+
+    requestEditorFocus(id) {
+      set({ focusEditorFor: id });
+    },
+
+    canReopenTabs() {
+      return (closedTabStacks.get(get().activeConnectionId ?? "")?.length ?? 0) > 0;
+    },
+
+    async reopenClosedTabs() {
+      const key = get().activeConnectionId ?? "";
+      const { batch, stack } = popClosed(closedTabStacks.get(key) ?? []);
+      closedTabStacks.set(key, stack);
+      if (!batch) return;
+      for (const snap of batch) {
+        switch (snap.kind) {
+          case "query": {
+            const tab: QueryTabState = {
+              ...freshQueryTab(snap.title),
+              content: snap.content,
+              filePath: snap.filePath,
+              dirty: snap.dirty,
+              ...(snap.openedBy ? { openedBy: snap.openedBy } : {}),
+            };
+            set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+            getModel(tab.id, snap.content);
+            break;
+          }
+          case "table": {
+            await get().openTableTab(snap.schema, snap.table, snap.objectType, snap.view, gridPendingCount(snap.grid) > 0 ? snap.grid : undefined);
+            break;
+          }
+          case "routine":
+            await get().openRoutineTab(snap.schema, snap.name, snap.routineType);
+            break;
+          case "diagram":
+            get().openDiagramTab(snap.schemaScope);
+            break;
+          case "docs":
+            get().openDocsTab();
+            break;
+        }
+      }
       persistTabsSoon();
     },
 
@@ -1103,11 +1351,12 @@ export const useStore = create<AppState>((set, get) => {
       set({ tabs: updateTab(get().tabs, id, { activeResult: index }) });
     },
 
-    async runQuery(id) {
+    async runQuery(id, opts) {
       const tab = get().tabs.find((t) => t.id === id);
       if (!tab || tab.kind !== "query" || tab.running) return;
       if (get().status === "disconnected" || get().status === "connecting") return;
-      if (!tab.content.trim()) return;
+      const sql = opts?.sql ?? tab.content;
+      if (!sql.trim()) return;
 
       set({
         tabs: updateTab(get().tabs, id, {
@@ -1119,8 +1368,11 @@ export const useStore = create<AppState>((set, get) => {
           stats: null,
           plan: null,
           version: 0,
+          runStartLine: opts?.startLine ?? 1,
+          queryErrors: [],
         }),
       });
+      setRunMarkers(id, []);
 
       const patch = (p: Partial<QueryTabState>) => set({ tabs: updateTab(get().tabs, id, p) });
       const current = () => get().tabs.find((t) => t.id === id) as QueryTabState | undefined;
@@ -1128,7 +1380,7 @@ export const useStore = create<AppState>((set, get) => {
 
       try {
         await streamQuery(
-          tab.content,
+          sql,
           (chunk) => {
             const t = current();
             if (!t) return;
@@ -1167,24 +1419,40 @@ export const useStore = create<AppState>((set, get) => {
               case "message":
                 patch({ output: [...t.output, { kind: "message", text: chunk.text }] });
                 break;
-              case "error":
-                patch({
-                  output: [
-                    ...t.output,
-                    { kind: "error", text: chunk.line != null ? `Error${chunk.code ? ` ${chunk.code}` : ""} (line ${chunk.line}): ${chunk.message}` : chunk.message },
-                  ],
-                });
+              case "error": {
+                const line = chunk.textLine != null ? (opts?.startLine ?? 1) + chunk.textLine - 1 : null;
+                const queryErrors: QueryError[] = [
+                  ...(t.queryErrors ?? []),
+                  {
+                    message: chunk.message,
+                    line,
+                    column: line != null ? (chunk.textColumn ?? null) : null,
+                    afterResult: t.resultSets.length,
+                    statement: chunk.statement,
+                    statementCount: chunk.statementCount,
+                    batch: chunk.batch,
+                  },
+                ];
+                setRunMarkers(id, queryErrors.flatMap((e) => (e.line != null ? [{ line: e.line, column: e.column, message: e.message }] : [])));
+                // Traces: BASED-UI-OUTPUT — query errors live in Results only, not repeated in Output.
+                patch({ queryErrors });
                 break;
+              }
               case "cancelled":
                 patch({ output: [...t.output, { kind: "system", text: "Query cancelled." }] });
                 break;
               case "done": {
                 patch({ stats: { durationMs: chunk.durationMs, status: chunk.status }, running: false, queryId: null });
+                // Traces: BASED-QUERY-BATCH-FAILURE — a failed run opens on its first failure, not on an earlier grid.
+                if (t.queryErrors?.length) {
+                  const first = resultSlots(t.resultSets, t.queryErrors).findIndex((sl) => sl.kind === "error");
+                  if (first >= 0) patch({ activeResult: first });
+                }
                 // Traces: BASED-TAB-AUTONAME-APPLY — name the tab once, on its first successful
                 // run, from the SQL that actually ran. Only default "Query N" titles qualify, so
                 // file-backed, manually renamed, and already-auto-named tabs are never touched.
                 if (chunk.status === "ok" && !t.filePath && /^Query \d+$/.test(t.title)) {
-                  const title = deriveTabTitle(tab.content);
+                  const title = deriveTabTitle(sql);
                   if (title) patch({ title });
                 }
                 break;
@@ -1248,7 +1516,7 @@ export const useStore = create<AppState>((set, get) => {
       const content = res.content ?? "";
       const title = res.path.split(/[\\/]/).pop() ?? res.path;
       const tab: QueryTabState = { ...freshQueryTab(title), content, filePath: res.path };
-      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
       const model = getModel(tab.id, content);
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text: content }], () => null);
       persistTabsSoon();
@@ -1276,6 +1544,10 @@ export const useStore = create<AppState>((set, get) => {
       set({ banner });
     },
 
+    dismissConnectFailure() {
+      set({ connectFailure: null });
+    },
+
     // Insert agent-generated SQL into the active query tab (creating one if needed). Writes through
     // the Monaco model so the visible editor updates and content persists.
     insertSqlIntoEditor(sql) {
@@ -1284,10 +1556,10 @@ export const useStore = create<AppState>((set, get) => {
       if (!target) target = state.tabs.find((t): t is QueryTabState => t.kind === "query");
       if (!target) {
         const tab = freshQueryTab(nextQueryTitle(state.tabs));
-        set({ tabs: [...state.tabs, tab], activeTabId: tab.id });
+        set({ tabs: [...state.tabs, tab], activeTabId: tab.id, focusEditorFor: tab.id });
         target = tab;
       } else {
-        set({ activeTabId: target.id });
+        set({ activeTabId: target.id, focusEditorFor: target.id });
       }
       const model = getModel(target.id, target.content);
       const existing = model.getValue();
@@ -1351,14 +1623,14 @@ export const useStore = create<AppState>((set, get) => {
 
     // Traces: BASED-HELP-DOCS — one help tab per window, deduped by kind (there's nothing else to
     // key it on). Persists with the connection it was opened under, like any other tab.
-    openDocsTab() {
+    openDocsTab(section) {
       const existing = get().tabs.find((t) => t.kind === "docs");
       if (existing) {
-        set({ activeTabId: existing.id });
+        set({ activeTabId: existing.id, docsSection: section ?? null });
         return;
       }
       const tab: DocsTabState = { kind: "docs", id: crypto.randomUUID(), title: "Help" };
-      set({ tabs: [...get().tabs, tab], activeTabId: tab.id });
+      set({ tabs: [...get().tabs, tab], activeTabId: tab.id, docsSection: section ?? null });
       persistTabsSoon();
     },
 
@@ -1386,6 +1658,13 @@ export const useStore = create<AppState>((set, get) => {
       return tab.id;
     },
 
+
+    markOpenedByCapi(id) {
+      set({
+        tabs: get().tabs.map((t) => (t.id === id && (t.kind === "query" || t.kind === "table") ? { ...t, openedBy: "capi" as const } : t)),
+      });
+      persistTabsSoon();
+    },
 
     // Traces: BASED-CHAT-HISTORY-PICKER — move this window's active conversation for a connection.
     // Persisted when it's the current connection, so restart restores it.

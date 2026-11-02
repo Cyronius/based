@@ -28,27 +28,22 @@ import {
 } from "../agent/threads";
 import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
+import { agentReadyText } from "./AgentReadyLine";
+import { CapiMark } from "./icons";
+import { RIGHT_RANGE, toggleCapi, useRailFit, useRailLayout } from "../railLayout";
 import { SLEEPY_AFTER_MS } from "../agent/capiMood";
 import { CapiChat } from "./CapiChat";
 import { relativeTime } from "./HistoryPanel";
 import { IconButton } from "./IconButton";
 import { DownloadIcon, HistoryIcon } from "./icons";
 
-const WIDTH_KEY = "based:rightRailWidth";
-const MIN_WIDTH = 280;
-const MAX_WIDTH = 720;
-const DEFAULT_WIDTH = 384;
 
-function loadWidth(): number {
-  const stored = Number(localStorage.getItem(WIDTH_KEY));
-  return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
-}
-
+// A speech bubble with a plus: "new conversation", distinct from the ✎ edit glyph.
 function NewChatIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12Z" />
+      <path d="M13 9v6M10 12h6" />
     </svg>
   );
 }
@@ -72,14 +67,15 @@ function CapiHeader({
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-line-soft pl-3 pr-4 py-4">
-      <button
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-lg text-faint hover:bg-ink-800 hover:text-brass"
+      <IconButton
+        className="h-8 w-8 text-lg text-muted hover:text-brass"
         title={`Collapse Capi (${accel("J")})`}
+        aria-label="Collapse Capi"
         onClick={toggle}
       >
-        <span>›</span>
-      </button>
-      <span className="font-sans text-[length:var(--fs-md)] font-semibold text-faint">Ask Capi</span>
+        ›
+      </IconButton>
+      <h2 className="font-sans text-[length:var(--fs-md)] font-semibold text-paper-dim">Ask Capi</h2>
       {/* One trailing group with the auto margin on the wrapper: `ml-auto` on each button would put
           an auto gap BETWEEN them and push them apart instead of grouping them at the right edge. */}
       <div className="ml-auto flex items-center gap-1">
@@ -350,18 +346,17 @@ function CapiRail({ toggle, connectionId }: { toggle: () => void; connectionId: 
 }
 
 export function RightRail() {
-  const open = useStore((s) => s.rightRailOpen);
-  const toggle = useStore((s) => s.toggleRightRail);
+  const fit = useRailFit();
+  const open = !fit.rightCollapsed;
+  const toggle = toggleCapi;
   const connected = useStore((s) => s.activeConnectionId);
-  const [width, setWidth] = useState(loadWidth);
+  const setRight = useRailLayout((l) => l.setRight);
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e: MouseEvent) => {
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
-      setWidth(next);
-      localStorage.setItem(WIDTH_KEY, String(next));
+      setRight(Math.min(RIGHT_RANGE.max, Math.max(RIGHT_RANGE.min, window.innerWidth - e.clientX)));
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -372,6 +367,15 @@ export function RightRail() {
     };
   }, [dragging]);
 
+  // Traces: BASED-AGENT-READY — rechecked on open and on any profile change; no polling.
+  const activeAiProfileId = useStore((s) => s.activeAiProfileId);
+  const aiProfiles = useStore((s) => s.aiProfiles);
+  const agentReady = useStore((s) => s.agentReady);
+  useEffect(() => {
+    void useStore.getState().refreshAgentReady();
+  }, [open, activeAiProfileId, aiProfiles]);
+  const notReady = agentReadyText(agentReady);
+
   // BASED-CAPI-AVATAR: the disconnected rail's full-body Capi dozes off when nobody is around.
   const { idleMs, touch } = useIdleMs(connected);
 
@@ -379,7 +383,7 @@ export function RightRail() {
     <aside
       onPointerMove={touch}
       className={`relative shrink-0 flex border-l border-line-soft bg-ink-950 ${dragging ? "" : "transition-[width]"}`}
-      style={{ width: open ? width : 32 }}
+      style={{ width: fit.right }}
     >
       {open && (
         <div
@@ -393,13 +397,17 @@ export function RightRail() {
       )}
       {!open && (
         <button
-          className="w-8 shrink-0 flex flex-col items-center pt-3 gap-2 text-faint hover:text-brass"
-          title={`Expand Capi (${accel("J")})`}
+          className="w-9 shrink-0 flex flex-col items-center pt-3 gap-2 text-paper-dim hover:text-brass hover:bg-ink-900/50"
+          title={notReady ? `Expand Capi (${accel("J")}) — ${notReady}` : `Expand Capi (${accel("J")})`}
+          aria-label="Expand Capi"
           onClick={toggle}
         >
-          <span className="text-[length:var(--fs-sm)]">‹</span>
-          <span className="ledger-label" style={{ writingMode: "vertical-rl", color: "var(--color-paper-dim)" }}>
-            capi
+          <span className="relative text-brass">
+            <CapiMark />
+            {notReady && <span className="absolute -right-1 -top-1 size-2 rounded-full bg-err" />}
+          </span>
+          <span className="text-[length:var(--fs-base)] font-semibold" style={{ writingMode: "vertical-rl" }}>
+            Capi
           </span>
         </button>
       )}

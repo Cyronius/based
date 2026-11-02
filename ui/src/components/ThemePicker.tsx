@@ -11,6 +11,7 @@
 // one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
+import { Tabs } from "./Tabs";
 import { accel, isMac } from "../platform";
 import { THEMES, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP, type ThemeDef, type ThemeMode } from "../theme";
 import type { AgentInstructionsConfig, AiProfileInput, EmbeddingProfileInput, InstructionSet, ProviderKind, RerankerApi, RerankerProfileInput } from "../api/types";
@@ -21,6 +22,7 @@ import {
 } from "../api/client";
 import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
+import { Dialog } from "./Dialog";
 import { CopyIcon } from "./icons";
 
 function Swatch({ t }: { t: ThemeDef }) {
@@ -58,13 +60,18 @@ function GeneralTab() {
   const setEditorKeymap = useStore((s) => s.setEditorKeymap);
   const sqlFileOpenTarget = useStore((s) => s.sqlFileOpenTarget);
   const setSqlFileOpenTarget = useStore((s) => s.setSqlFileOpenTarget);
+  const confirmCloseUnsaved = useStore((s) => s.confirmCloseUnsaved);
+  const setConfirmCloseUnsaved = useStore((s) => s.setConfirmCloseUnsaved);
 
   const selectCls =
-    "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
+    "w-full max-w-[280px] px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft";
 
   return (
     <div className="px-3 py-3 space-y-2">
-      <div className="ledger-label">Font size</div>
+      <div className="flex items-baseline gap-2">
+        <span className="ledger-label">Font size</span>
+        <span className="text-[length:var(--fs-sm)] text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
+      </div>
       <input
         type="range"
         min={FONT_SCALE_MIN}
@@ -72,11 +79,12 @@ function GeneralTab() {
         step={FONT_SCALE_STEP}
         value={fontScale}
         onChange={(e) => setFontScale(Number(e.target.value))}
+        aria-label="Font size"
+        aria-valuetext={`${Math.round(fontScale * 100)}%`}
         className="w-full accent-(--color-brass)"
       />
       <div className="flex items-center justify-between text-[length:var(--fs-sm)] text-faint">
         <span>Small</span>
-        <span className="text-paper-dim font-mono">{Math.round(fontScale * 100)}%</span>
         <span>Large</span>
       </div>
       {/* Traces: BASED-UI-SHORTCUTS discoverability — the gesture shares this control's action. */}
@@ -98,7 +106,7 @@ function GeneralTab() {
       {/* Traces: BASED-EXPLORER-ACTION — default double-click behavior in the object explorer. */}
       <div className="ledger-label pt-2">Double-click opens</div>
       <label className="block">
-        <span className="text-faint">Tables and views</span>
+        <span className="block mb-1 text-[length:var(--fs-sm)] text-muted">Tables and views</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerTableAction}
@@ -111,7 +119,7 @@ function GeneralTab() {
         </select>
       </label>
       <label className="block">
-        <span className="text-faint">Procedures and functions</span>
+        <span className="block mb-1 text-[length:var(--fs-sm)] text-muted">Procedures and functions</span>
         <select
           className={`${selectCls} mt-0.5`}
           value={explorerRoutineAction}
@@ -135,6 +143,21 @@ function GeneralTab() {
       <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
         Where a .sql file opened from Explorer lands. Selecting several files at once always opens them together in one
         window.
+      </p>
+
+      {/* Traces: BASED-TAB-CLOSE-CONFIRM — opt-in; Ctrl+Shift+T is the default safety net. */}
+      <div className="ledger-label pt-2">Closing tabs</div>
+      <label className="flex items-center gap-2 text-paper-dim">
+        <input
+          type="checkbox"
+          className="accent-(--color-brass)"
+          checked={confirmCloseUnsaved}
+          onChange={(e) => setConfirmCloseUnsaved(e.target.checked)}
+        />
+        Ask before closing tabs with unsaved changes
+      </label>
+      <p className="text-faint text-[length:var(--fs-sm)] leading-snug">
+        Closed tabs can always come back with {accel("Shift+T")}, or Reopen Closed Tab on the tab menu.
       </p>
     </div>
   );
@@ -996,6 +1019,14 @@ function GearIcon() {
 export function ThemePicker() {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"general" | "theme" | "search" | "agent">("general");
+  const settingsRequest = useStore((s) => s.settingsRequest);
+  const openSettings = useStore((s) => s.openSettings);
+  useEffect(() => {
+    if (!settingsRequest) return;
+    setTab(settingsRequest);
+    setOpen(true);
+    openSettings(null);
+  }, [settingsRequest, openSettings]);
 
   useEffect(() => {
     if (!open) return;
@@ -1006,45 +1037,33 @@ export function ThemePicker() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const tabBtn = (id: "general" | "theme" | "search" | "agent", label: string) => (
-    <button
-      className={`flex-1 px-3 py-1.5 text-[length:var(--fs-sm)] font-bold ${
-        tab === id ? "text-brass border-b-2 border-brass" : "text-faint border-b-2 border-transparent hover:text-paper-dim"
-      }`}
-      onClick={() => setTab(id)}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <>
       <IconButton className="text-faint hover:text-brass" title="Settings" aria-label="Settings" onClick={() => setOpen(true)}>
         <GearIcon />
       </IconButton>
       {open && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60"
-          onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
-        >
-          <div className="w-[min(80vw,960px)] h-[85vh] flex flex-col rounded-lg border border-line bg-ink-900 shadow-2xl shadow-black/50 fade-up">
-            <div className="px-5 pt-4 pb-3 border-b border-line-soft flex items-baseline justify-between shrink-0">
-              <h2 className="font-display text-lg text-paper">Settings</h2>
-              <IconButton title="Close" aria-label="Close" className="text-faint hover:text-paper" onClick={() => setOpen(false)}>
-                ✕
-              </IconButton>
-            </div>
-            <div className="flex border-b border-line-soft shrink-0">
-              {tabBtn("general", "General")}
-              {tabBtn("theme", "Theme")}
-              {tabBtn("search", "Search")}
-              {tabBtn("agent", "Agent")}
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto">
+        <Dialog title="Settings" onClose={() => setOpen(false)} initialFocus="panel" className="w-[min(80vw,960px)] h-[min(640px,85vh)] flex flex-col">
+          {/* Traces: BASED-LANCE-SEARCH-PROFILES-UI — a side list and a fixed size, so switching sections never moves the dialog. */}
+          <div className="flex flex-1 min-h-0">
+            <Tabs
+              label="Settings section"
+              vertical
+              className="w-36 shrink-0 border-r border-line-soft py-2"
+              tabs={[
+                { id: "general", label: "General" },
+                { id: "theme", label: "Theme" },
+                { id: "search", label: "Search" },
+                { id: "agent", label: "Agent" },
+              ]}
+              value={tab}
+              onChange={setTab}
+            />
+            <div className="flex-1 min-w-0 overflow-y-auto">
               {tab === "general" ? <GeneralTab /> : tab === "theme" ? <ThemeTab /> : tab === "search" ? <SearchProfilesTab /> : <AgentTab />}
             </div>
           </div>
-        </div>
+        </Dialog>
       )}
     </>
   );

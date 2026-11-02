@@ -44,6 +44,7 @@ import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
 import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
+import { agentReadiness } from "./agent/readiness";
 import { createAgentMemory } from "./agent/memory";
 import { threadTitle, isDerivableTitle } from "./agent/threadTitle";
 import { describeProviderError, isContextOverflowError } from "./agent/contextRecovery";
@@ -243,25 +244,31 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     broadcast(sid, { type: "connection-status", status, detail: detail ?? null, connectionId: session.connectionId, database: session.database });
   }
 
+  // Traces: BASED-CONN-SWITCH-FAILURE — connect the new adapter first and swap only on success, so
+  // a failed switch leaves the window on its previous, still-working connection.
   async function connectSession(sid: string, connectionId: string, database?: string): Promise<void> {
     const session = getSession(sid);
     const cfg = connections.get(connectionId);
     if (!cfg) throw new Error(`Unknown connection: ${connectionId}`);
-    lsp.closeForSession(sid); // the old engine's LSP backend is wrong for the new connection
-    if (session.adapter) await session.adapter.disconnect().catch(() => {});
-    session.connectionId = connectionId;
-    session.database = database ?? cfg.database;
-    setStatus(sid, "connecting");
-    const adapter = await createAdapter(cfg, getSecret, { database: session.database });
-    adapter.onStatus((status, detail) => setStatus(sid, status, detail));
-    session.adapter = adapter;
+    const nextDatabase = database ?? cfg.database;
+    const adapter = await createAdapter(cfg, getSecret, { database: nextDatabase });
+    // Only the session's current adapter may speak for it; a candidate or a replaced one stays quiet.
+    adapter.onStatus((status, detail) => {
+      if (session.adapter === adapter) setStatus(sid, status, detail);
+    });
     try {
       await adapter.connect();
     } catch (err) {
-      session.adapter = null;
-      setStatus(sid, "disconnected");
+      await adapter.disconnect().catch(() => {});
       throw err;
     }
+    const previous = session.adapter;
+    session.adapter = adapter;
+    session.connectionId = connectionId;
+    session.database = nextDatabase;
+    lsp.closeForSession(sid); // the old engine's LSP backend is wrong for the new connection
+    if (previous) await previous.disconnect().catch(() => {});
+    setStatus(sid, "connected");
     windowState.save(sid, { connectionId });
   }
 
@@ -745,6 +752,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       if (settings.get().activeAiProfileId === aiProfileMatch[1]) settings.save({ activeAiProfileId: null });
       return json({ ok: true });
     }
+    if (path === "/api/ai-profiles/active/status" && method === "GET") {
+      const list = ensureAiProfiles();
+      const p = list.length === 0 ? null : activeAiProfile();
+      return json(await agentReadiness(p, p ? getAiKey(p.id) : null));
+    }
     if (path === "/api/ai-profiles/active" && method === "POST") {
       const { id } = (await req.json()) as { id: string };
       return json(settings.save({ activeAiProfileId: id }));
@@ -931,7 +943,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       const columns = await adapter.getTableColumns(body.schema, body.table);
       if (columns.length === 0) return json({ error: `No columns for ${body.schema}.${body.table}` }, 400);
       const connectionId = session.connectionId!;
-      const database = session.database!;
+      const database = session.database ?? "";
       const startedAt = new Date().toISOString();
       let closed = false;
       const stream = new ReadableStream<Uint8Array>({
@@ -1106,9 +1118,12 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const startedAt = new Date().toISOString();
     const session = getSession(sid);
     const connectionId = session.connectionId!;
-    const database = session.database!;
+    // LanceDB connections have no database name; history needs a value (BASED-HISTORY).
+    const database = session.database ?? "";
     let closed = false;
     let firstError: string | null = null;
+    let failedStatement: number | null = null;
+    let statementCount: number | null = null;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1124,7 +1139,11 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         const exec = adapter.execute(
           sqlText,
           (chunk) => {
-            if (chunk.type === "error" && !firstError) firstError = chunk.message;
+            if (chunk.type === "error" && !firstError) {
+              firstError = chunk.message;
+              failedStatement = chunk.statement ?? chunk.batch ?? null;
+            }
+            if (chunk.type === "done") statementCount = chunk.statementCount ?? null;
             send(chunk);
           },
           opts,
@@ -1132,7 +1151,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
         executions.set(queryId, exec);
         exec.completion
           .then(({ status, durationMs }) => {
-            history.add({ connectionId, database, sql: sqlText, startedAt, durationMs, status, error: firstError });
+            history.add({ connectionId, database, sql: sqlText, startedAt, durationMs, status, error: firstError, statementCount, failedStatement });
           })
           .catch(() => {})
           .finally(() => {
@@ -1182,7 +1201,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const session = getSession(sid);
     history.add({
       connectionId: session.connectionId!,
-      database: session.database!,
+      database: session.database ?? "",
       sql: commands.map((c) => c.sql).join(";\n"),
       startedAt,
       durationMs,
@@ -1216,7 +1235,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const t0 = performance.now();
     const record = (status: "ok" | "error", error: string | null) => {
       const durationMs = Math.round(performance.now() - t0);
-      const base = { connectionId: session.connectionId!, database: session.database!, startedAt, durationMs, status, error };
+      const base = { connectionId: session.connectionId!, database: session.database ?? "", startedAt, durationMs, status, error };
       if (opts.audited) audit.add({ ...base, kind: "mutation", sql: summary, approved: true });
       else history.add({ ...base, sql: summary });
       return durationMs;
@@ -1247,7 +1266,7 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
     const session = getSession(sid);
     audit.add({
       connectionId: session.connectionId!,
-      database: session.database!,
+      database: session.database ?? "",
       kind: "mutation",
       sql: sqlText,
       approved: true,

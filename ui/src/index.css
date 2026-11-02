@@ -5,6 +5,15 @@
 @source "../node_modules/@streamdown/code/dist/*.js";
 @source "../node_modules/@streamdown/mermaid/dist/*.js";
 
+/* Traces: BASED-CHAT-CODE-THEME — Tailwind's default dark: follows the OS, not the app theme, so a
+   dark app theme on a light-mode OS got Streamdown's light Shiki colors. Key dark: on the app mode. */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+
+/* Chat code blocks sit on the same surface as the editor instead of Shiki's own theme background. */
+[data-streamdown="code-block-body"] pre {
+  background-color: var(--color-ink-950) !important;
+}
+
 /* Streamdown's inline `code` span pairs bg-muted (--muted, mapped to the theme's bg3 — a raised
    surface that runs light-to-mid grey in several midtone themes) with inherited foreground text,
    which is always near-white/near-black regardless of bg3. That combo can land white-on-light-grey.
@@ -55,8 +64,8 @@
   --color-line-soft: #1f242c;
   --color-paper: #e9e6de;
   --color-paper-dim: #c9c6bd;
-  --color-muted: #8d929c;
-  --color-faint: #5a606a;
+  --color-muted: #8e939d;
+  --color-faint: #828791;
   --color-brass: #d2a24c;
   --color-brass-soft: #a67f39;
   --color-ok: #6fb47c;
@@ -105,6 +114,33 @@ body {
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+/* Tab strip: a 4px bar so the 36px strip keeps room for its labels. */
+.tab-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.tab-scroll::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 2px;
+}
+
+/* BASED-FOCUS-VISIBLE: one keyboard focus ring everywhere; in base so a utility can still opt out. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline-width: 1px;
+    outline-offset: -1px;
+  }
+  /* Monaco and the data grid draw their own cursor and selection. */
+  .monaco-editor :focus-visible,
+  canvas:focus-visible {
+    outline: none;
+  }
 }
 
 /* Ledger section label: heavy weight, letterspaced (no uppercase — see CLAUDE.md) */
@@ -547,5 +583,25 @@ body {
   .capy .capy-dots circle,
   .capy .capy-zzz text {
     animation: none !important;
+  }
+}
+
+/* Traces: BASED-RUN-SCOPE — brief highlight of the text a run sent. */
+.run-flash {
+  background-color: color-mix(in srgb, var(--color-brass) 32%, transparent);
+  animation: run-flash-fade 700ms ease-in forwards;
+}
+@keyframes run-flash-fade {
+  0%,
+  55% {
+    background-color: color-mix(in srgb, var(--color-brass) 32%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-flash {
+    animation: none;
   }
 }

@@ -103,6 +103,10 @@ fn create_window(app: &AppHandle, existing_sid: Option<String>, open_paths: &[St
     let label = format!("based-{n}");
     let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("based")
+        // BASED-WINDOW-IDENTITY: the UI names the window's connection in document.title.
+        .on_document_title_changed(|win, title| {
+            let _ = win.set_title(&title);
+        })
         .inner_size(1680.0, 1000.0)
         .position(120.0 + offset, 80.0 + offset)
         .build();

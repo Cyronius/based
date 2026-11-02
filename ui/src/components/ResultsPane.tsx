@@ -8,7 +8,12 @@ import { PlanView } from "./PlanView";
 import { GridContextMenu } from "./GridContextMenu";
 import { GridToolbarActions, useGridExportActions } from "./GridToolbarActions";
 import { IconButton } from "./IconButton";
-import { ChevronDownIcon } from "./icons";
+import { Tabs } from "./Tabs";
+import { ChevronDownIcon, ErrorIcon } from "./icons";
+import { ErrorDetail } from "./ErrorDetail";
+import { revealLine } from "../editorModels";
+import { batchNote, resultSlots } from "../lib/resultSlots";
+import { plural } from "../lib/plural";
 
 type View = "grid" | "text" | "plan";
 
@@ -31,7 +36,13 @@ export function ResultsPane({
   const viewRowsRef = useRef<(() => QueryTabState["resultSets"][number]["rows"]) | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
-  const rs = tab.resultSets[Math.min(tab.activeResult, tab.resultSets.length - 1)] ?? null;
+  const errors = tab.queryErrors ?? [];
+  const slots = resultSlots(tab.resultSets, errors);
+  const slotIndex = Math.min(tab.activeResult, slots.length - 1);
+  const slot = slots[slotIndex] ?? null;
+  const rs = slot?.kind === "grid" ? (tab.resultSets[slot.result] ?? null) : null;
+  const note = !tab.running && slots.some((sl) => sl.kind === "grid") ? batchNote(errors) : null;
+  const stopped = errors.find((e) => e.statement != null);
   const hasPlan = !!tab.plan?.length;
 
   // One shared action set feeds both the toolbar buttons and the right-click context menu.
@@ -50,50 +61,61 @@ export function ResultsPane({
 
   return (
     <div className="h-full flex flex-col bg-ink-900">
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-line-soft shrink-0 overflow-x-auto">
-        <div className="flex items-stretch h-6 border-r border-line-soft mr-2 shrink-0">
-          {views.map((v) => (
-            <button
-              key={v}
-              className={`px-2.5 border-r border-line-soft text-[length:var(--fs-sm)] capitalize ${
-                view === v
-                  ? "bg-ink-800 text-brass shadow-[inset_0_2px_0_var(--color-brass)]"
-                  : "text-muted hover:text-paper-dim hover:bg-ink-900/50"
-              }`}
-              onClick={() => setView(v)}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
+      <div className="@container border-b border-line-soft shrink-0">
+      <div className="flex flex-wrap items-center gap-1 px-2 py-1 min-w-0">
+        <Tabs
+          label="Results view"
+          className="mr-2 shrink-0"
+          tabs={views.map((v) => ({ id: v, label: v === "grid" ? "Grid" : v === "text" ? "Text" : "Plan" }))}
+          value={view}
+          onChange={setView}
+        />
 
-        {tab.resultSets.map((s, i) => (
-          <button
-            key={i}
-            className={`px-2 py-0.5 text-[length:var(--fs-sm)] rounded ${
-              i === tab.activeResult ? "bg-ink-800 text-brass border border-brass-soft/50" : "text-muted hover:text-paper border border-transparent"
-            }`}
-            onClick={() => setActiveResult(tab.id, i)}
-          >
-            Results {i + 1}
-            <span className="text-faint ml-1 font-mono">{s.rowCount}</span>
-          </button>
-        ))}
+        {/* Traces: BASED-UI-RESULTS, BASED-QUERY-BATCH-FAILURE — slots only for a batch; only they scroll. */}
+        {slots.length > 1 && (
+          <div className="min-w-0 overflow-x-auto tab-scroll">
+            <Tabs
+              label="Result sets"
+              tabs={slots.map((sl, i) => ({
+                id: String(i),
+                label:
+                  sl.kind === "error" ? (
+                    <span className="inline-flex items-center gap-1 text-err">
+                      <ErrorIcon />
+                      {sl.label}
+                    </span>
+                  ) : sl.kind === "skipped" ? (
+                    <span className="text-faint italic">{sl.label}</span>
+                  ) : (
+                    <span className="font-mono">{sl.label}</span>
+                  ),
+              }))}
+              value={String(slotIndex)}
+              onChange={(v) => setActiveResult(tab.id, Number(v))}
+            />
+          </div>
+        )}
         <div className="flex-1" />
+        {note && (
+          <span role="status" className="shrink-0 whitespace-nowrap text-[length:var(--fs-sm)] text-err font-bold mr-1">
+            {note}
+          </span>
+        )}
         {rs && (
           <>
-            <span className="text-[length:var(--fs-sm)] text-muted font-mono mr-1">
-              {rs.complete ? `${rs.rowCount.toLocaleString()} rows` : `${rs.rows.length.toLocaleString()}…`}
-              {tab.stats ? ` · ${tab.stats.durationMs.toLocaleString()} ms` : ""}
+            <span className="shrink-0 whitespace-nowrap text-[length:var(--fs-sm)] text-muted font-mono mr-1">
+              {rs.complete ? plural(rs.rowCount, "row") : `${rs.rows.length.toLocaleString()}…`}
+              {tab.stats && <span className="@max-md:hidden"> · {tab.stats.durationMs.toLocaleString()} ms</span>}
             </span>
             <GridToolbarActions actions={exportActions} onFitColumns={() => fitColumnsRef.current()} />
           </>
         )}
         {onMinimize && (
-          <IconButton size="sm" className="text-faint hover:text-paper" title="Minimize results" aria-label="Minimize results" onClick={onMinimize}>
+          <IconButton className="text-faint hover:text-paper" title="Minimize results" aria-label="Minimize results" onClick={onMinimize}>
             <ChevronDownIcon />
           </IconButton>
         )}
+      </div>
       </div>
 
       {rs?.truncated && (
@@ -127,6 +149,27 @@ export function ResultsPane({
           ) : (
             <ResultText rs={rs} version={tab.version} />
           )
+        ) : slot?.kind === "error" ? (
+          // Traces: BASED-UI-QUERY-ERROR — a failed run shows why here, not the "run a query" prompt.
+          <div role="alert" className="h-full overflow-auto px-4 py-3 space-y-3 text-[length:var(--fs-base)]">
+            {slot.errors.map((i) => {
+              const e = errors[i]!;
+              return (
+                <div key={i}>
+                  {e.line != null && (
+                    <button className="mb-1 text-[length:var(--fs-sm)] text-muted hover:text-brass" title="Put the cursor on this line" onClick={() => revealLine(tab.id, e.line!)}>
+                      Line {e.line} · go to line
+                    </button>
+                  )}
+                  <ErrorDetail message={e.message} />
+                </div>
+              );
+            })}
+          </div>
+        ) : slot?.kind === "skipped" ? (
+          <div className="h-full grid place-items-center text-muted text-[length:var(--fs-base)] px-4 text-center">
+            {slot.count === 1 ? "1 statement did not run" : `${slot.count} statements did not run`} because statement {stopped?.statement} failed.
+          </div>
         ) : (
           <div className="h-full grid place-items-center text-faint text-[length:var(--fs-base)] italic">
             {tab.running ? "Running…" : "No results — run a query (F5)."}

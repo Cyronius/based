@@ -117,5 +117,7 @@ export function openDb(path?: string): Database {
   // Traces: BASED-CHAT-HISTORY-PICKER — the window's active capi conversation for its current
   // connection, restored with the rest of the window state.
   ensureColumn(db, "window_state", "capi_thread_id", "capi_thread_id TEXT");
+  ensureColumn(db, "history", "statement_count", "statement_count INTEGER");
+  ensureColumn(db, "history", "failed_statement", "failed_statement INTEGER");
   return db;
 }

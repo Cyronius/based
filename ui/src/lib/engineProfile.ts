@@ -14,15 +14,7 @@ export function authLabel(conn: ConnectionConfig, profiles: EngineProfile[]): st
   return profileFor(conn, profiles)?.authModes.find((m) => m.id === conn.authType)?.label ?? conn.authType;
 }
 
-/** The dim subtitle under a connection name: whichever field the engine nominates (server, uri,
- *  account …), plus the human label of its auth mode. */
-export function connSubtitle(conn: ConnectionConfig, profiles: EngineProfile[]): string {
-  const target = connTarget(conn, profiles) || "local";
-  const auth = authLabel(conn, profiles);
-  return auth ? `${target} · ${auth}` : target;
-}
-
-/** The connection's primary target, for the status bar. */
+/** The connection's primary target (server, uri, account …), for the status bar and connection menu. */
 export function connTarget(conn: ConnectionConfig, profiles: EngineProfile[]): string {
   const profile = profileFor(conn, profiles);
   return String(conn.settings?.[profile?.subtitleField ?? "server"] ?? "") || conn.database || "";

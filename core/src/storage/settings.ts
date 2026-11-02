@@ -21,6 +21,8 @@ export interface AppSettings {
   /** Where an OS .sql file-open lands (BASED-SQL-OPEN-TARGET): a tab in the last-focused window,
    *  or a new window. Multi-selected files always share one window either way. */
   sqlFileOpenTarget: "current-window" | "new-window";
+  /** BASED-TAB-CLOSE-CONFIRM: ask before closing tabs with unsaved edits. Opt-in; off by default. */
+  confirmCloseUnsaved: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -32,6 +34,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   explorerRoutineAction: "details",
   editorKeymap: "default",
   sqlFileOpenTarget: "current-window",
+  confirmCloseUnsaved: false,
 };
 
 export class SettingsStore {

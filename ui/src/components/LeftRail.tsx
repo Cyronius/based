@@ -4,19 +4,14 @@ import { ObjectExplorer } from "./ObjectExplorer";
 import { HistoryPanel } from "./HistoryPanel";
 import { ThemePicker } from "./ThemePicker";
 import { IconButton } from "./IconButton";
-import { authLabel, connSubtitle, profileFor } from "../lib/engineProfile";
+import { Tabs } from "./Tabs";
+import { authLabel, connTarget, profileFor } from "../lib/engineProfile";
+import { LEFT_RANGE, useRailFit, useRailLayout } from "../railLayout";
+import { ChevronLeftIcon, ExplorerIcon } from "./icons";
+import { MiddleTruncate } from "./MiddleTruncate";
 
-const WIDTH_KEY = "based:leftRailWidth";
 // Traces: BASED-HISTORY-UI — which lower-pane view the rail shows, persisted across restarts.
 const RAIL_VIEW_KEY = "based:leftRailView";
-const MIN_WIDTH = 220;
-const MAX_WIDTH = 560;
-const DEFAULT_WIDTH = 288;
-
-function loadWidth(): number {
-  const stored = Number(localStorage.getItem(WIDTH_KEY));
-  return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
-}
 
 // Traces: BASED-LANCE-CREATE-TABLE-UI — right-click menu on a connection row. "New table…" appears
 // only for the active, connected connection on engines with the createTable capability (creation
@@ -89,7 +84,9 @@ function ConnectionSelector() {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      ref.current?.querySelector<HTMLElement>("button")?.focus();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -101,16 +98,37 @@ function ConnectionSelector() {
 
   const active = connections.find((c) => c.id === activeConnectionId);
 
+  // Traces: BASED-UI-A11Y-KEYBOARD — listbox keys: focus lands on the current option, arrows move.
+  useEffect(() => {
+    if (!open) return;
+    const options = [...(ref.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+    (options.find((o) => o.getAttribute("aria-selected") === "true") ?? options[0])?.focus();
+  }, [open]);
+  const onListKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"], [data-list-extra]')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : Math.max(0, Math.min(items.length - 1, at + (e.key === "ArrowDown" ? 1 : -1)));
+    items[next]?.focus();
+  };
+
   return (
     <div className="relative" ref={ref}>
       <button
         className="w-full text-left px-3 py-2 rounded border border-line bg-ink-900 hover:border-brass-soft/60 transition-colors group"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={active ? `Connection: ${active.name}` : "Select a connection"}
         onClick={() => setOpen(!open)}
       >
         {active ? (
           <>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-medium truncate">{active.name}</span>
+              <span className="font-medium truncate" title={active.name}>
+                {active.name}
+              </span>
               <span
                 className={`size-1.5 rounded-full shrink-0 ${
                   status === "connected" ? "bg-ok" : status === "disconnected" ? "bg-faint" : "bg-brass pulse-soft"
@@ -125,7 +143,12 @@ function ConnectionSelector() {
       </button>
 
       {open && (
-        <div className="absolute z-30 mt-1 w-full rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up">
+        <div
+          role="listbox"
+          aria-label="Connections"
+          className="absolute z-30 mt-1 w-full rounded border border-line bg-ink-850 shadow-xl shadow-black/40 fade-up"
+          onKeyDown={onListKey}
+        >
           {connections.map((c) => (
             <div
               key={c.id}
@@ -136,19 +159,28 @@ function ConnectionSelector() {
               }}
             >
               <button
-                className={`flex-1 text-left px-3 py-2 hover:bg-ink-800 min-w-0 ${c.id === activeConnectionId ? "text-brass" : ""}`}
+                role="option"
+                aria-selected={c.id === activeConnectionId}
+                className={`flex-1 text-left px-3 py-2 hover:bg-ink-800 focus-visible:bg-ink-800 focus-visible:outline-none min-w-0 ${c.id === activeConnectionId ? "text-brass" : ""}`}
                 onClick={() => {
                   setOpen(false);
                   void connect(c.id);
                 }}
               >
-                <div className="truncate">{c.name}</div>
-                <div className="text-[length:var(--fs-sm)] text-muted truncate">{connSubtitle(c, engines)}</div>
+                <div className="truncate" title={c.name}>
+                  {c.name}
+                </div>
+                <MiddleTruncate
+                  className="text-[length:var(--fs-sm)] text-muted"
+                  before={`${profileFor(c, engines)?.label ?? ""} · `}
+                  text={connTarget(c, engines) || "local"}
+                  after={authLabel(c, engines) ? ` · ${authLabel(c, engines)}` : ""}
+                />
               </button>
               <IconButton
                 title="Edit connection"
                 aria-label="Edit connection"
-                className="mr-1 text-faint opacity-0 group-hover:opacity-100 hover:text-brass"
+                className="mr-1 text-faint opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-brass"
                 onClick={() => {
                   setOpen(false);
                   setDialog({ mode: "edit", connection: c });
@@ -159,7 +191,8 @@ function ConnectionSelector() {
             </div>
           ))}
           <button
-            className="w-full text-left px-3 py-2 text-brass hover:bg-ink-800"
+            data-list-extra
+            className="w-full text-left px-3 py-2 text-brass hover:bg-ink-800 focus-visible:bg-ink-800 focus-visible:outline-none"
             onClick={() => {
               setOpen(false);
               setDialog({ mode: "new" });
@@ -210,7 +243,8 @@ export function LeftRail() {
   const selectCls =
     "w-full px-2 py-1.5 rounded border border-line bg-ink-900 text-paper text-[length:var(--fs-base)] focus:outline-none focus:border-brass-soft disabled:opacity-40";
 
-  const [width, setWidth] = useState(loadWidth);
+  const fit = useRailFit();
+  const setLeft = useRailLayout((l) => l.setLeft);
   const [dragging, setDragging] = useState(false);
   const [railView, setRailView] = useState<"objects" | "history">(() =>
     localStorage.getItem(RAIL_VIEW_KEY) === "history" ? "history" : "objects",
@@ -219,9 +253,7 @@ export function LeftRail() {
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e: MouseEvent) => {
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX));
-      setWidth(next);
-      localStorage.setItem(WIDTH_KEY, String(next));
+      setLeft(Math.min(LEFT_RANGE.max, Math.max(LEFT_RANGE.min, e.clientX)));
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -232,8 +264,28 @@ export function LeftRail() {
     };
   }, [dragging]);
 
+  if (fit.leftCollapsed)
+    return (
+      <aside className="shrink-0 flex flex-col bg-ink-950" style={{ width: fit.left }}>
+        <button
+          className="flex-1 flex flex-col items-center pt-3 gap-2 text-paper-dim hover:text-brass hover:bg-ink-900/50"
+          title={activeConn ? `Expand explorer — ${activeConn.name}` : "Expand explorer"}
+          aria-label="Expand explorer"
+          onClick={() => {
+            useRailLayout.getState().setExplorerCollapsed(false);
+            useRailLayout.getState().setKeep("left");
+          }}
+        >
+          <ExplorerIcon />
+          <span className="text-[length:var(--fs-base)] font-semibold" style={{ writingMode: "vertical-rl" }}>
+            Explorer
+          </span>
+        </button>
+      </aside>
+    );
+
   return (
-    <aside className="relative shrink-0 flex flex-col bg-ink-950" style={{ width }}>
+    <aside className="relative shrink-0 flex flex-col bg-ink-950" style={{ width: fit.left }}>
       <div
         className="absolute right-0 top-0 z-10 h-full w-1 translate-x-1/2 cursor-ew-resize hover:bg-brass/40 active:bg-brass/50"
         title="Drag to resize"
@@ -255,12 +307,24 @@ export function LeftRail() {
             ?
           </IconButton>
           <ThemePicker />
+          <IconButton
+            className="text-faint hover:text-paper"
+            title="Collapse explorer"
+            aria-label="Collapse explorer"
+            onClick={() => {
+              useRailLayout.getState().setExplorerCollapsed(true);
+              useRailLayout.getState().setKeep(undefined);
+            }}
+          >
+            <ChevronLeftIcon />
+          </IconButton>
         </div>
       </div>
 
       <div className="px-3 space-y-2">
         <ConnectionSelector />
-        {sqlEngine && (
+        {/* No connection: no database or schema to pick, so no empty selectors. */}
+        {sqlEngine && activeConnectionId && (
           <select
             className={selectCls}
             value={database ?? ""}
@@ -276,7 +340,7 @@ export function LeftRail() {
             ))}
           </select>
         )}
-        {showSchemaFilter && (
+        {showSchemaFilter && activeConnectionId && (
           <div className="flex items-center gap-1.5">
             <select
               className={selectCls}
@@ -313,22 +377,19 @@ export function LeftRail() {
         )}
       </div>
 
-      <div className="mt-3 px-3 flex items-center gap-1">
-        {(["objects", "history"] as const).map((v) => (
-          <button
-            key={v}
-            className={`px-2 py-1 text-[length:var(--fs-sm)] border-b-2 ${
-              railView === v ? "border-brass text-brass font-semibold" : "border-transparent text-faint hover:text-muted"
-            }`}
-            onClick={() => {
-              setRailView(v);
-              localStorage.setItem(RAIL_VIEW_KEY, v);
-            }}
-          >
-            {v === "objects" ? "Objects" : "History"}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        label="Sidebar view"
+        className="mt-3 px-3"
+        tabs={[
+          { id: "objects", label: "Objects" },
+          { id: "history", label: "History" },
+        ]}
+        value={railView}
+        onChange={(v) => {
+          setRailView(v);
+          localStorage.setItem(RAIL_VIEW_KEY, v);
+        }}
+      />
       <div className="flex-1 min-h-0 border-t border-line-soft">
         {railView === "objects" ? <ObjectExplorer /> : <HistoryPanel />}
       </div>

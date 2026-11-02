@@ -9,12 +9,16 @@ export function IconButton({
   className = "",
   size = "md",
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { size?: "sm" | "md" }) {
-  const box = size === "sm" ? "h-6 w-6 text-[length:var(--fs-sm)]" : "h-7 w-7";
+}: ButtonHTMLAttributes<HTMLButtonElement> & { size?: "sm" | "md" | "bar" }) {
+  // "bar" matches the text buttons in grid toolbars (see controlH in GridToolbarActions).
+  const box =
+    size === "sm" ? "h-6 w-6 text-[length:var(--fs-sm)]"
+    : size === "bar" ? "h-[calc(var(--fs-md)*1.5_+_10px)] w-[26px] border border-line"
+    : "h-7 w-7";
   return (
     <button
       type="button"
-      className={`grid place-items-center shrink-0 rounded ${box} hover:bg-ink-800/70 disabled:opacity-40 disabled:hover:bg-transparent transition ${className}`}
+      className={`grid place-items-center shrink-0 rounded ${box} hover:bg-ink-800/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brass disabled:opacity-40 disabled:hover:bg-transparent transition ${className}`}
       {...rest}
     />
   );

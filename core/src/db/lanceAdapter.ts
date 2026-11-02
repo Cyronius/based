@@ -6,7 +6,7 @@
 // itself has no SQL surface — but local connections get one through an embedded DuckDB with the
 // lance extension (LanceSqlBridge), so capabilities.sql is true for local and false for cloud (the
 // extension reads Lance storage, not the cloud API). Writes stay off (capabilities.write is false).
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import * as lancedb from "@lancedb/lancedb";
 import { settingStr } from "./connectionSettings";
@@ -148,6 +148,8 @@ export class LanceDbAdapter implements DatabaseAdapter {
         const dir = settingStr(this.cfg, "uri") ?? settingStr(this.cfg, "server") ?? this.cfg.database;
         if (!dir) throw new Error("LanceDB local connection requires a directory path");
         this.localDir = dir;
+        // Traces: BASED-LANCE-CONNECT — a typo must not silently create a new, empty database.
+        if (!existsSync(dir)) throw new Error(`Folder not found: "${dir}"`);
         const dirBase = basename(dir);
         if (dirBase.toLowerCase().endsWith(".lance")) {
           throw new Error(

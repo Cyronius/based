@@ -31,9 +31,53 @@ export function getModel(tabId: string, initialContent: string): monaco.editor.I
   return model;
 }
 
+/** Traces: BASED-UI-QUERY-ERROR — error squiggles from the last run; an empty list clears them. */
+export function setRunMarkers(tabId: string, errors: Array<{ line: number; column?: number | null; message: string }>): void {
+  const model = models.get(tabId);
+  if (!model || model.isDisposed()) return;
+  monaco.editor.setModelMarkers(
+    model,
+    "based-run",
+    errors
+      .filter((e) => e.line >= 1 && e.line <= model.getLineCount())
+      .map((e) => {
+        // Traces: BASED-QUERY-ERROR-LINE — underline the word the engine points at, else the whole line.
+        const max = model.getLineMaxColumn(e.line);
+        const at = e.column != null && e.column < max ? e.column : null;
+        const word = at != null ? model.getWordAtPosition({ lineNumber: e.line, column: at }) : null;
+        return {
+          severity: monaco.MarkerSeverity.Error,
+          message: e.message,
+          startLineNumber: e.line,
+          startColumn: word?.startColumn ?? at ?? (model.getLineFirstNonWhitespaceColumn(e.line) || 1),
+          endLineNumber: e.line,
+          endColumn: word?.endColumn ?? (at != null ? at + 1 : max),
+        };
+      }),
+  );
+}
+
 export function disposeModel(tabId: string): void {
   const model = models.get(tabId);
   models.delete(tabId);
   if (model && !model.isDisposed()) model.dispose();
   for (const cb of disposedListeners) cb(tabId);
+}
+
+/** Pixel height the tab's text needs, and one line's height, from whichever editor shows it. */
+export function editorTextHeight(tabId: string): { content: number; line: number } | null {
+  const model = models.get(tabId);
+  const editor = model && monaco.editor.getEditors().find((e) => e.getModel() === model);
+  if (!editor) return null;
+  return { content: editor.getContentHeight(), line: editor.getOption(monaco.editor.EditorOption.lineHeight) };
+}
+
+/** Puts the cursor on a reported error line in whichever editor shows this tab. */
+export function revealLine(tabId: string, line: number): void {
+  const model = models.get(tabId);
+  const editor = model && monaco.editor.getEditors().find((e) => e.getModel() === model);
+  if (!editor || !model || line < 1 || line > model.getLineCount()) return;
+  editor.setPosition({ lineNumber: line, column: model.getLineFirstNonWhitespaceColumn(line) || 1 });
+  editor.revealLineInCenterIfOutsideViewport(line);
+  editor.focus();
 }

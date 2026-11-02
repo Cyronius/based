@@ -4,6 +4,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DataEditor,
+  GridCellKind,
   type DataEditorProps,
   type EditableGridCell,
   type GridCell,
@@ -45,6 +46,7 @@ export function DataGrid({
   onHeaderMenuClick,
   onCellContextMenu,
   onHeaderContextMenu,
+  drawCell,
 }: {
   columns: DataGridColumnDef[];
   rowCount: number;
@@ -70,6 +72,8 @@ export function DataGrid({
   onCellContextMenu?: (cell: Item, pos: { x: number; y: number }) => void;
   /** Header right-click with the header's screen bounds — opens the same menu as the menu icon. */
   onHeaderContextMenu?: (colIndex: number, bounds: { x: number; y: number; width: number; height: number }) => void;
+  /** Paints under a cell's normal content (score bars, match highlights). */
+  drawCell?: DataEditorProps["drawCell"];
 }) {
   const themeId = useStore((s) => s.theme);
   const gridTheme = useMemo(() => gridThemeFromCss(), [themeId]);
@@ -135,6 +139,34 @@ export function DataGrid({
     [columns, manualWidths, autoWidths],
   );
 
+  // Traces: BASED-UI-RESULTS — Glide clips long text mid-letter; paint "…" over the cut so it reads as cut.
+  const drawWithEllipsis = useCallback<NonNullable<DataEditorProps["drawCell"]>>(
+    (args, drawContent) => {
+      const paint = () => {
+        drawContent();
+        const { ctx, cell, rect, theme, highlighted } = args;
+        if (highlighted || cell.kind !== GridCellKind.Text || cell.contentAlign === "right") return;
+        const text = cell.displayData.split(/\r?\n/, 1)[0]!;
+        const pad = theme.cellHorizontalPadding;
+        ctx.save();
+        ctx.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+        if (ctx.measureText(text).width > rect.width - 2 * pad) {
+          const w = ctx.measureText("…").width + 3;
+          const x = rect.x + rect.width - pad - w;
+          ctx.fillStyle = theme.bgCell;
+          ctx.fillRect(x, rect.y + 1, rect.x + rect.width - x - 1, rect.height - 2);
+          ctx.fillStyle = cell.themeOverride?.textDark ?? theme.textDark;
+          ctx.textBaseline = "middle";
+          ctx.fillText("…", x + 2, rect.y + rect.height / 2);
+        }
+        ctx.restore();
+      };
+      if (drawCell) drawCell(args, paint);
+      else paint();
+    },
+    [drawCell],
+  );
+
   const handleColumnResize = useCallback(
     (_column: GridColumn, newSize: number, colIndex: number) => {
       const id = columns[colIndex]?.id;
@@ -151,9 +183,13 @@ export function DataGrid({
         columns={gridColumns}
         rows={rowCount}
         getCellContent={getCellContent}
+        drawCell={drawWithEllipsis}
         onCellEdited={onCellEdited}
         getCellsForSelection={true}
         rowMarkers={rowMarkers}
+        // Traces: BASED-UI-RESULTS — a dense grid; Glide's 34px default showed ~5 rows in a query tab.
+        rowHeight={26}
+        headerHeight={30}
         rowSelectionMode={rowSelectionMode}
         smoothScrollX
         smoothScrollY
