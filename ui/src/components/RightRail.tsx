@@ -29,7 +29,6 @@ import {
 import { downloadTranscript } from "../agent/transcriptDownload";
 import { CapiAvatar, useIdleMs } from "./CapiAvatar";
 import { agentReadyText } from "./AgentReadyLine";
-import { CapiMark } from "./icons";
 import { RIGHT_RANGE, toggleCapi, useRailFit, useRailLayout } from "../railLayout";
 import { SLEEPY_AFTER_MS } from "../agent/capiMood";
 import { CapiChat } from "./CapiChat";
@@ -402,8 +401,8 @@ export function RightRail() {
           aria-label="Expand Capi"
           onClick={toggle}
         >
-          <span className="relative text-brass">
-            <CapiMark />
+          <span className="relative">
+            <CapiAvatar className="w-6 h-auto" variant="bust" />
             {notReady && <span className="absolute -right-1 -top-1 size-2 rounded-full bg-err" />}
           </span>
           <span className="text-[length:var(--fs-base)] font-semibold" style={{ writingMode: "vertical-rl" }}>
