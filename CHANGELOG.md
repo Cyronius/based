@@ -7,6 +7,22 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.8] - 2026-11-02
+
+### Changed
+- ui: show Capi bust avatar in collapsed right rail
+- ux: critique passes 4 and 5 ΓÇö failed batches, laptop width, results space, cluster names
+- checkpoint
+- specs: archive the UX critique-pass plan with its outcome
+- ux: polish ΓÇö Rows beside Run, choose-connection action, path truncation
+- ux: vector-search toolbar keeps Run visible; tuning behind a disclosure
+- ux: keyboard tree/tablist/listbox, shared Dialog, live regions, AA contrast
+- ux: keep the working connection on a failed switch; show errors where results go
+- ux: run selection or statement at cursor; reopen closed tabs; opt-in close confirm
+- ux: name the connection in the window title and status bar; mark Capi tabs
+- ux: gate chat Run on read-only SQL, harden approval cards
+- site: add Fedora Linux download and install guide
+
 ## [0.1.7] - 2026-10-25
 
 ### Added

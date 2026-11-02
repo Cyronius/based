@@ -1,6 +1,6 @@
 [package]
 name = "based-shell"
-version = "0.1.7"
+version = "0.1.8"
 description = "based — Tauri shell"
 edition = "2021"
 
