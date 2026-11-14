@@ -1,6 +1,6 @@
 // Child-process entry for the shell. Core runs as a separate process, so both the ready info and
 // the UI's "new window" requests (POST /api/window/new -> onRequestNewWindow) cross the process
-// boundary as single stdout lines the Rust shell parses (see shell-tauri/src/main.rs).
+// boundary as single stdout lines the Rust shell parses (see shell-tauri/src/app.rs).
 import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { startServer } from "@based/core";

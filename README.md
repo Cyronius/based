@@ -611,6 +611,11 @@ bun run dev      # core + Vite + native window, all with hot reload
 bun test
 ```
 
+To try the latest Servo engine, run `bun run servo:latest`; this preview uses
+Servo's demo shell. The older Tauri/Verso experiment is available with `bun run servo`.
+Both use separate test data; see [shell-servo/README.md](shell-servo/README.md)
+for setup and compatibility findings.
+
 Full setup, dev loops, test configuration, and how releases are cut:
 [docs/development.md](docs/development.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
 

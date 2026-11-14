@@ -18,6 +18,11 @@ shell-tauri/dist-core/
 shell-tauri/gen/
 shell-tauri/icons/android/
 shell-tauri/icons/ios/
+shell-servo/target/
+shell-servo/versoview/
+shell-servo/gen/
+ui/dist-servo/
+ui/dist-servo-latest/
 .claude/plans/
 
 # Private keys must never be committed. Generate them outside the repo (~/.snowflake/); this is a

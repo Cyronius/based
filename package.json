@@ -26,6 +26,8 @@
     "build:ui": "bun run --cwd ui build",
     "package:linux": "bun run scripts/package-linux.ts",
     "shell": "bun run --cwd shell-tauri dev",
+    "servo": "bash scripts/dev-servo.sh",
+    "servo:latest": "bash scripts/dev-servo-latest.sh",
     "test": "bun run --cwd specs test",
     "typecheck": "bun run --cwd core typecheck && bun run --cwd ui typecheck && bun run --cwd shell-tauri typecheck"
   },

@@ -1,0 +1,8 @@
+{
+  "version": "0.7.0",
+  "tag": "v0.7.0",
+  "platform": "linux-x64",
+  "archive": "servo-x86_64-linux-gnu.tar.gz",
+  "sha256": "728eba1be1cc1851e05dfaa90e18f98ab8644dd2355bedb0b8a5e89795ebe333",
+  "url": "https://github.com/servo/servo/releases/download/v0.7.0/servo-x86_64-linux-gnu.tar.gz"
+}

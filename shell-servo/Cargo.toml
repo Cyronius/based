@@ -1,0 +1,23 @@
+[package]
+name = "based-shell-servo"
+version = "0.1.7"
+edition = "2021"
+publish = false
+description = "Experimental based shell using Servo through the Verso Tauri runtime"
+
+[build-dependencies]
+tauri-build = "=2.3.1"
+tauri-runtime-verso-build = { git = "https://github.com/versotile-org/tauri-runtime-verso", rev = "dc1c1bfeadf65f3f4e38a4a3c6c960a70b749337" }
+
+[dependencies]
+dirs = "6"
+tauri = { version = "=2.7.0", default-features = false, features = ["devtools", "common-controls-v6"] }
+tauri-runtime-verso = { git = "https://github.com/versotile-org/tauri-runtime-verso", rev = "dc1c1bfeadf65f3f4e38a4a3c6c960a70b749337" }
+tauri-plugin-single-instance = "=2.3.0"
+tauri-plugin-dialog = "=2.3.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2", default-features = false }
+urlencoding = "2"
+

@@ -3180,7 +3180,7 @@ dev sessions at a `based-dev` sibling so they never pollute the real `app.db`/`a
 Both parameters are injectable specifically so each platform's branch is testable from either build
 host — the packaged app only ever exercises one of them.
 
-`data_dir()` in `shell-tauri/src/main.rs` **mirrors this function in Rust** and must be changed with
+`data_dir()` in `shell-tauri/src/app.rs` **mirrors this function in Rust** and must be changed with
 it. The shell reads `pending-open.txt` from the directory core writes it to, so a drift between the
 two implementations silently breaks opening a `.sql` file at launch (BASED-OPEN-SQL-ARGV) rather
 than failing loudly.
@@ -3202,7 +3202,7 @@ than failing loudly.
 the bundled core entry with its native addons and companion `duckdb.dll`, the built `ui/dist`,
 and the `bun.exe` runtime), which `tauri.conf.json` maps into the app's resources. Installed,
 those land beside `based-shell.exe` (`resource_dir()` = the exe dir), and `spawn_core()` in
-`shell-tauri/src/main.rs` runs `<resources>/bun/bun.exe <resources>/core/index.js` with cwd set
+`shell-tauri/src/app.rs` runs `<resources>/bun/bun.exe <resources>/core/index.js` with cwd set
 to the resource dir — no repo checkout, PATH bun, or Explorer cwd involved. The bundler plugins
 (keyring createRequire fix, libsql/duckdb native-require pinning) each address a real
 packaged-only failure — none reproduces under `bun run`.
@@ -3441,7 +3441,7 @@ modes via Settings → General.
 **Applies to:** based (shell-tauri)
 **Test category:** manual
 
-On macOS the shell installs a real menu bar (`build_mac_menu` in `shell-tauri/src/main.rs`):
+On macOS the shell installs a real menu bar (`build_mac_menu` in `shell-tauri/src/app.rs`):
 
 - **based** — About, Services, Hide/Hide Others/Show All, Quit (⌘Q)
 - **File** — New Window (⌘N, works with zero windows open), Close Window (⇧⌘W — *not* ⌘W, which

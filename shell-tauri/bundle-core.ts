@@ -2,7 +2,7 @@
 //   dist-core/core/index.js       (+ copied .node natives + the duckdb companion library)
 //   dist-core/ui/dist             (built frontend)
 //   dist-core/bun/bun[.exe]       (runtime for the core bundle)
-// tauri.conf.json maps these into <resources>/{core,ui,bun}; spawn_core() in src/main.rs runs
+// tauri.conf.json maps these into <resources>/{core,ui,bun}; spawn_core() in src/app.rs runs
 // <resources>/bun/bun[.exe] <resources>/core/index.js.
 //
 // BASED-PLATFORM-PATHS: this script builds for the *host* platform and architecture — every native

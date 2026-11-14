@@ -3,8 +3,18 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 // Dev: core runs on 7042 with token "dev" (core/src/dev.ts); the client appends ?token= itself.
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(mode === "servo" || mode === "servo-latest" ? [{
+      name: "based-servo-entry",
+      transformIndexHtml: {
+        order: "pre" as const,
+        handler: (html: string) => html.replace('/src/main.tsx', '/src/servo.ts'),
+      },
+    }] : []),
+  ],
   server: {
     port: 5183,
     proxy: {
@@ -13,6 +23,7 @@ export default defineConfig({
     },
   },
   build: {
+    outDir: mode === "servo-latest" ? "dist-servo-latest" : mode === "servo" ? "dist-servo" : "dist",
     chunkSizeWarningLimit: 5000,
   },
-});
+}));
