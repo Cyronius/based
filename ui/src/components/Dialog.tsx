@@ -42,6 +42,8 @@ export function Dialog({
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // A popup inside the dialog (e.g. a dropdown list) closes itself first.
+        if (e.target instanceof Element && e.target.closest("[data-own-escape]")) return;
         e.preventDefault();
         e.stopPropagation();
         onCloseRef.current();

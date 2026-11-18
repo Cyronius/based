@@ -42,9 +42,9 @@ import { parseCsv } from "./import/csvParse";
 import { runCsvImport, type CsvImportRequest } from "./import/csvImport";
 import { toCsv } from "./export/csv";
 import { writeXlsx } from "./export/xlsx";
-import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts } from "./agent/provider";
+import { AiConfigStore, resolveModel, resolveExecutionDefaults, resolveAiTimeouts, type ProviderKind } from "./agent/provider";
 import { AuditStore } from "./agent/audit";
-import { agentReadiness } from "./agent/readiness";
+import { agentReadiness, listProviderModels } from "./agent/readiness";
 import { createAgentMemory } from "./agent/memory";
 import { threadTitle, isDerivableTitle } from "./agent/threadTitle";
 import { describeProviderError, isContextOverflowError } from "./agent/contextRecovery";
@@ -751,6 +751,16 @@ export function startServer(opts: ServerOptions = {}): RunningServer {
       deleteAiKey(aiProfileMatch[1]!);
       if (settings.get().activeAiProfileId === aiProfileMatch[1]) settings.save({ activeAiProfileId: null });
       return json({ ok: true });
+    }
+    // Traces: BASED-AI-MODEL-PICKER. POST so a typed-in key never lands in a URL.
+    if (path === "/api/ai-profiles/models" && method === "POST") {
+      const body = (await req.json()) as { kind: ProviderKind; baseUrl?: string; apiKey?: string; profileId?: string };
+      const key = body.apiKey || (body.profileId ? getAiKey(body.profileId) : null);
+      try {
+        return json({ models: await listProviderModels(body.kind, body.baseUrl ?? "", key) });
+      } catch (err) {
+        return json({ models: [], error: err instanceof Error ? err.message : String(err) });
+      }
     }
     if (path === "/api/ai-profiles/active/status" && method === "GET") {
       const list = ensureAiProfiles();

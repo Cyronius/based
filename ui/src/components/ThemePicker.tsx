@@ -9,7 +9,8 @@
 // (min(80vw, 960px) × 85vh) so switching tabs never resizes it, and the tab body scrolls. Selecting a theme applies + persists it via the store; the font-size slider
 // applies live on every drag and persists on a trailing debounce (BASED-UI-FONT-ZOOM), so a drag is
 // one server write rather than one per tick — Ctrl+wheel and Ctrl+± drive the same store action.
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../store";
 import { Tabs } from "./Tabs";
 import { accel, isMac } from "../platform";
@@ -19,11 +20,12 @@ import {
   getAgentInstructions,
   saveAgentInstructionSet,
   deleteAgentInstructionSet,
+  listAiProfileModels,
 } from "../api/client";
 import { DEFAULT_AGENT_MAX_STEPS, DEFAULT_AI_TIMEOUT_SECONDS } from "../agent/aiTimeouts";
 import { IconButton } from "./IconButton";
 import { Dialog } from "./Dialog";
-import { CopyIcon } from "./icons";
+import { ChevronDownIcon, CopyIcon } from "./icons";
 
 function Swatch({ t }: { t: ThemeDef }) {
   const k = t.tokens;
@@ -215,6 +217,11 @@ const field =
 const btnPrimary = "rounded bg-brass px-3 py-1 text-ink-950 disabled:opacity-40 disabled:hover:bg-brass";
 const btnSecondary = "rounded border border-line px-3 py-1 text-muted hover:text-paper disabled:opacity-40";
 const btnDanger = "rounded border border-err/50 px-3 py-1 text-err hover:bg-err/10 disabled:opacity-40";
+
+// Full-tab editors scroll their fields but keep the Save/Cancel footer pinned in view.
+const editorShell = "flex flex-1 min-h-0 flex-col";
+const editorBody = "flex-1 min-h-0 overflow-y-auto px-3 py-3";
+const editorFooter = "shrink-0 flex items-center gap-2 border-t border-line-soft px-3 py-2";
 
 /** Shared list-row shell for all the CRUD lists (embedding / reranker / AI provider / instruction
  *  set) so they render identically. AI-provider rows pass `onActivate` to become click-to-activate
@@ -505,10 +512,150 @@ const KIND_FIELDS: Record<ProviderKind, { urlRequired: boolean; urlPlaceholder: 
   anthropic: { urlRequired: false, urlPlaceholder: "Base URL (optional — provider default)" },
 };
 
+/** Traces: BASED-AI-MODEL-PICKER — free-text model input plus a button that lists the endpoint's
+ *  models. A custom list, not a <datalist>: Chromium filters a datalist by the current value. */
+function ModelField({
+  form,
+  placeholder,
+  onChange,
+}: {
+  form: AiProfileInput;
+  placeholder: string;
+  onChange: (model: string) => void;
+}) {
+  const [models, setModels] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0, maxHeight: 0 });
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const canList = form.kind !== "azure-openai";
+
+  useEffect(() => {
+    if (!models) return;
+    const list = listRef.current;
+    const target = list?.querySelector<HTMLElement>('[aria-selected="true"]') ?? list?.querySelector<HTMLElement>('[role="option"]');
+    target?.scrollIntoView({ block: "nearest" });
+    target?.focus();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!boxRef.current?.contains(t) && !listRef.current?.contains(t)) setModels(null);
+    };
+    // The list is fixed-positioned, so it would drift away from the field if the form scrolled under it.
+    const onScroll = (e: Event) => {
+      if (!listRef.current?.contains(e.target as Node)) setModels(null);
+    };
+    const onResize = () => setModels(null);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [models]);
+
+  async function toggle() {
+    if (models) return setModels(null);
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await listAiProfileModels({ kind: form.kind, baseUrl: form.baseUrl, apiKey: form.apiKey || undefined, profileId: form.id });
+      if (r.error) setError(`Could not list models: ${r.error}`);
+      else if (r.models.length === 0) setError("The server listed no models.");
+      else {
+        const rect = inputRef.current!.getBoundingClientRect();
+        const top = rect.bottom + 4;
+        setPos({ top, left: rect.left, width: rect.width, maxHeight: Math.max(120, Math.min(256, window.innerHeight - top - 8)) });
+        setModels(r.models);
+      }
+    } catch (e) {
+      setError(`Could not list models: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function pick(id: string) {
+    onChange(id);
+    setModels(null);
+  }
+
+  function onListKey(e: React.KeyboardEvent) {
+    const opts = [...(listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+    const i = opts.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "Escape") {
+      // Stop here so Escape closes the list, not the whole settings dialog (see data-own-escape).
+      e.preventDefault();
+      e.stopPropagation();
+      setModels(null);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      opts[Math.max(0, Math.min(opts.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))]?.focus();
+    }
+  }
+
+  return (
+    <div ref={boxRef}>
+      <div className="flex items-center gap-1">
+        <input ref={inputRef} className={field} placeholder={placeholder} value={form.model} onChange={(e) => onChange(e.target.value)} />
+        {canList && (
+          <IconButton
+            title="Pick from the server's models"
+            aria-label="Pick from the server's models"
+            aria-haspopup="listbox"
+            aria-expanded={!!models}
+            className="text-faint hover:text-brass"
+            disabled={loading}
+            onClick={() => void toggle()}
+          >
+            <ChevronDownIcon />
+          </IconButton>
+        )}
+      </div>
+      {error && <div className="mt-0.5 text-faint text-[length:var(--fs-xs)]">{error}</div>}
+      {/* Portal: the dialog's transform would make a fixed list position relative to the dialog. */}
+      {models &&
+        createPortal(
+          <div
+            ref={listRef}
+            role="listbox"
+            aria-label="Models"
+            data-own-escape
+            className="fixed z-[60] overflow-y-auto rounded border border-line bg-ink-850 py-1 shadow-xl shadow-black/40"
+            style={pos}
+            onKeyDown={onListKey}
+          >
+            {models.map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="option"
+                aria-selected={id === form.model}
+                tabIndex={-1}
+                className={`block w-full truncate px-2.5 py-1 text-left font-mono text-[length:var(--fs-sm)] hover:bg-ink-900 focus:bg-ink-900 focus:outline-none ${
+                  id === form.model ? "text-brass" : "text-paper-dim"
+                }`}
+                title={id}
+                onClick={() => pick(id)}
+              >
+                {id}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
 /** AI-provider profile form — same shell as ProfileForm but with a provider-kind select and, for Azure,
  *  a deployment name field; kept separate rather than folded into ProfileForm's generic since the
  *  extra fields don't apply to embedding/reranker profiles. */
 function AiProfileForm({
+  title,
   form,
   setForm,
   sets,
@@ -516,6 +663,7 @@ function AiProfileForm({
   onCancel,
   onDelete,
 }: {
+  title: string;
   form: AiProfileInput;
   setForm: (f: AiProfileInput) => void;
   sets: Array<{ id: string; name: string }>;
@@ -575,109 +723,111 @@ function AiProfileForm({
     (azure ? (form.deployment ?? "").trim() : !modelRequired || form.model.trim()) &&
     !paramsError;
   return (
-    <div className="border border-line-soft rounded p-2 space-y-1.5 bg-ink-950/40">
-      <input className={field} placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-      <select
-        className={field}
-        value={form.kind}
-        onChange={(e) => setForm({ ...form, kind: e.target.value as ProviderKind })}
-      >
-        {PROVIDER_KINDS.map((k) => (
-          <option key={k.id} value={k.id}>
-            {k.label}
-          </option>
-        ))}
-      </select>
-      <input
-        className={field}
-        placeholder={kindFields.urlPlaceholder}
-        value={form.baseUrl}
-        onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-      />
-      <input
-        className={field}
-        placeholder={
-          azure
-            ? "Model (optional — the deployment is what runs)"
-            : modelRequired
-              ? "Model"
-              : "Model (optional — blank uses the server's loaded model)"
-        }
-        value={form.model}
-        onChange={(e) => setForm({ ...form, model: e.target.value })}
-      />
-      {azure && (
-        <input
-          className={field}
-          placeholder="Deployment name"
-          value={form.deployment ?? ""}
-          onChange={(e) => setForm({ ...form, deployment: e.target.value })}
-        />
-      )}
-      <input
-        type="password"
-        className={field}
-        placeholder={editing ? "API key (blank = keep stored)" : "API key (optional)"}
-        value={form.apiKey ?? ""}
-        onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-      />
-      <label className="block">
-        <span className="text-faint">Instructions</span>
+    <div className={editorShell}>
+      <div className={`${editorBody} space-y-1.5`}>
+        <div className="ledger-label">{title}</div>
+        <input className={field} placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <select
-          className={`${field} mt-0.5`}
-          value={form.instructionSetId ?? "default"}
-          onChange={(e) => setForm({ ...form, instructionSetId: e.target.value })}
+          className={field}
+          value={form.kind}
+          onChange={(e) => setForm({ ...form, kind: e.target.value as ProviderKind })}
         >
-          {sets.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
+          {PROVIDER_KINDS.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.label}
             </option>
           ))}
         </select>
-      </label>
-      <label className="block">
-        <span className="text-faint">Response timeout (seconds)</span>
         <input
-          type="number"
-          min={1}
-          className={`${field} mt-0.5`}
-          placeholder={`${DEFAULT_AI_TIMEOUT_SECONDS} (default)`}
-          value={timeoutText}
-          onChange={(e) => onTimeoutChange(e.target.value)}
+          className={field}
+          placeholder={kindFields.urlPlaceholder}
+          value={form.baseUrl}
+          onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
         />
-        <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
-          How long the model may stay silent before the chat asks whether to keep waiting. Raise it
-          for slow local models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s).
-        </span>
-      </label>
-      <label className="block">
-        <span className="text-faint">Tool call limit</span>
+        <ModelField
+          form={form}
+          placeholder={
+            azure
+              ? "Model (optional — the deployment is what runs)"
+              : modelRequired
+                ? "Model"
+                : "Model (optional — blank uses the server's loaded model)"
+          }
+          onChange={(model) => setForm({ ...form, model })}
+        />
+        {azure && (
+          <input
+            className={field}
+            placeholder="Deployment name"
+            value={form.deployment ?? ""}
+            onChange={(e) => setForm({ ...form, deployment: e.target.value })}
+          />
+        )}
         <input
-          type="number"
-          min={1}
-          className={`${field} mt-0.5`}
-          placeholder={`${DEFAULT_AGENT_MAX_STEPS} (default)`}
-          value={stepsText}
-          onChange={(e) => onStepsChange(e.target.value)}
+          type="password"
+          className={field}
+          placeholder={editing ? "API key (blank = keep stored)" : "API key (optional)"}
+          value={form.apiKey ?? ""}
+          onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
         />
-        <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
-          Tool calls the agent may make in one turn before the chat asks whether to keep going;
-          blank uses the default ({DEFAULT_AGENT_MAX_STEPS}).
-        </span>
-      </label>
-      <label className="block">
-        <span className="text-faint">
-          Model parameters (JSON){paramsError && <span className="text-err"> — {paramsError}</span>}
-        </span>
-        <textarea
-          className={`${field} mt-0.5 min-h-[3.5rem] resize-y font-mono ${paramsError ? "border-err" : ""}`}
-          placeholder={'{ "temperature": 0.2, "reasoning_effort": "low" }'}
-          value={paramsText}
-          onChange={(e) => onParamsChange(e.target.value)}
-          spellCheck={false}
-        />
-      </label>
-      <div className="flex items-center gap-2 pt-0.5">
+        <label className="block">
+          <span className="text-faint">Instructions</span>
+          <select
+            className={`${field} mt-0.5`}
+            value={form.instructionSetId ?? "default"}
+            onChange={(e) => setForm({ ...form, instructionSetId: e.target.value })}
+          >
+            {sets.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-faint">Response timeout (seconds)</span>
+          <input
+            type="number"
+            min={1}
+            className={`${field} mt-0.5`}
+            placeholder={`${DEFAULT_AI_TIMEOUT_SECONDS} (default)`}
+            value={timeoutText}
+            onChange={(e) => onTimeoutChange(e.target.value)}
+          />
+          <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
+            How long the model may stay silent before the chat asks whether to keep waiting. Raise it
+            for slow local models; blank uses the default ({DEFAULT_AI_TIMEOUT_SECONDS}s).
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-faint">Tool call limit</span>
+          <input
+            type="number"
+            min={1}
+            className={`${field} mt-0.5`}
+            placeholder={`${DEFAULT_AGENT_MAX_STEPS} (default)`}
+            value={stepsText}
+            onChange={(e) => onStepsChange(e.target.value)}
+          />
+          <span className="mt-0.5 block text-faint text-[length:var(--fs-xs)]">
+            Tool calls the agent may make in one turn before the chat asks whether to keep going;
+            blank uses the default ({DEFAULT_AGENT_MAX_STEPS}).
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-faint">
+            Model parameters (JSON){paramsError && <span className="text-err"> — {paramsError}</span>}
+          </span>
+          <textarea
+            className={`${field} mt-0.5 min-h-[3.5rem] resize-y font-mono ${paramsError ? "border-err" : ""}`}
+            placeholder={'{ "temperature": 0.2, "reasoning_effort": "low" }'}
+            value={paramsText}
+            onChange={(e) => onParamsChange(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+      </div>
+      <div className={editorFooter}>
         {onDelete && (
           <button className={btnDanger} onClick={onDelete}>
             Delete
@@ -758,17 +908,15 @@ function AiProfileEditor({ id, onClose }: { id: string | "new"; onClose: () => v
   }
 
   return (
-    <div>
-      <div className="ledger-label mb-1.5">{id === "new" ? "New AI provider" : `Edit AI provider — ${form.name || "unnamed"}`}</div>
-      <AiProfileForm
-        form={form}
-        setForm={setForm}
-        sets={sets}
-        onSave={() => void onSave()}
-        onCancel={onClose}
-        onDelete={id === "new" ? undefined : () => void deleteAiProfile(id).then(onClose)}
-      />
-    </div>
+    <AiProfileForm
+      title={id === "new" ? "New AI provider" : `Edit AI provider — ${form.name || "unnamed"}`}
+      form={form}
+      setForm={setForm}
+      sets={sets}
+      onSave={() => void onSave()}
+      onCancel={onClose}
+      onDelete={id === "new" ? undefined : () => void deleteAiProfile(id).then(onClose)}
+    />
   );
 }
 
@@ -909,46 +1057,48 @@ function InstructionSetEditor({ id, duplicate, onClose }: { id: string; duplicat
   };
 
   return (
-    <div className="space-y-2">
-      <div className="ledger-label">
-        {readOnly ? "View instruction set" : isNew ? "New instruction set" : `Edit instruction set — ${draft.name || "unnamed"}`}
+    <div className={editorShell}>
+      <div className={`${editorBody} space-y-2`}>
+        <div className="ledger-label">
+          {readOnly ? "View instruction set" : isNew ? "New instruction set" : `Edit instruction set — ${draft.name || "unnamed"}`}
+        </div>
+        {readOnly ? (
+          <p className="text-faint italic">Default instructions are read-only — duplicate to customize.</p>
+        ) : (
+          <label className="block">
+            <span className="text-faint">Name</span>
+            <input
+              className={`${field} mt-0.5`}
+              value={draft.name}
+              disabled={busy}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </label>
+        )}
+        <p className="text-faint">
+          A persona sets the agent's voice and working habits. What the connection <em>is</em> — which tools exist, whether it
+          accepts writes, how to qualify a table — is generated per connection and always injected alongside whatever you
+          write here, so don't restate it (and don't worry about it going stale).
+        </p>
+        <InstructionsField label="Core (shared)" value={draft.core} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, core: v })} />
+        {/* One persona + briefing pane per registered engine, in registry order. A new engine gets
+            its editor here the moment core registers it — no pane to remember to add. */}
+        {engines.map((e) => (
+          <Fragment key={e.id}>
+            <InstructionsField
+              label={`${e.label} persona`}
+              value={draft.personas[e.id] ?? ""}
+              disabled={readOnly || busy}
+              defaultOpen
+              onChange={(v) => setDraft({ ...draft, personas: { ...draft.personas, [e.id]: v } })}
+            />
+            {briefings?.[e.id] && (
+              <BriefingField label={`${e.label} capability briefing`} value={briefings[e.id]!} live={liveEngine === e.id} />
+            )}
+          </Fragment>
+        ))}
       </div>
-      {readOnly ? (
-        <p className="text-faint italic">Default instructions are read-only — duplicate to customize.</p>
-      ) : (
-        <label className="block">
-          <span className="text-faint">Name</span>
-          <input
-            className={`${field} mt-0.5`}
-            value={draft.name}
-            disabled={busy}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-          />
-        </label>
-      )}
-      <p className="text-faint">
-        A persona sets the agent's voice and working habits. What the connection <em>is</em> — which tools exist, whether it
-        accepts writes, how to qualify a table — is generated per connection and always injected alongside whatever you
-        write here, so don't restate it (and don't worry about it going stale).
-      </p>
-      <InstructionsField label="Core (shared)" value={draft.core} disabled={readOnly || busy} defaultOpen onChange={(v) => setDraft({ ...draft, core: v })} />
-      {/* One persona + briefing pane per registered engine, in registry order. A new engine gets
-          its editor here the moment core registers it — no pane to remember to add. */}
-      {engines.map((e) => (
-        <Fragment key={e.id}>
-          <InstructionsField
-            label={`${e.label} persona`}
-            value={draft.personas[e.id] ?? ""}
-            disabled={readOnly || busy}
-            defaultOpen
-            onChange={(v) => setDraft({ ...draft, personas: { ...draft.personas, [e.id]: v } })}
-          />
-          {briefings?.[e.id] && (
-            <BriefingField label={`${e.label} capability briefing`} value={briefings[e.id]!} live={liveEngine === e.id} />
-          )}
-        </Fragment>
-      ))}
-      <div className="flex items-center gap-2 pt-1">
+      <div className={editorFooter}>
         {!readOnly && !isNew && (
           <button className={btnDanger} onClick={() => void remove()} disabled={busy}>
             Delete
@@ -980,19 +1130,9 @@ function AgentTab() {
   const [editing, setEditing] = useState<AgentEdit | null>(null);
   const close = () => setEditing(null);
 
-  if (editing?.kind === "profile") {
-    return (
-      <div className="px-3 py-3">
-        <AiProfileEditor id={editing.id} onClose={close} />
-      </div>
-    );
-  }
+  if (editing?.kind === "profile") return <AiProfileEditor id={editing.id} onClose={close} />;
   if (editing?.kind === "set") {
-    return (
-      <div className="px-3 py-3">
-        <InstructionSetEditor key={`${editing.id}:${editing.duplicate ? "dup" : "edit"}`} id={editing.id} duplicate={editing.duplicate} onClose={close} />
-      </div>
-    );
+    return <InstructionSetEditor key={`${editing.id}:${editing.duplicate ? "dup" : "edit"}`} id={editing.id} duplicate={editing.duplicate} onClose={close} />;
   }
   return (
     <div className="px-3 py-3 space-y-4">
@@ -1059,7 +1199,7 @@ export function ThemePicker() {
               value={tab}
               onChange={setTab}
             />
-            <div className="flex-1 min-w-0 overflow-y-auto">
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
               {tab === "general" ? <GeneralTab /> : tab === "theme" ? <ThemeTab /> : tab === "search" ? <SearchProfilesTab /> : <AgentTab />}
             </div>
           </div>

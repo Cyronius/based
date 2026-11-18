@@ -2,6 +2,7 @@ import type {
   AgentInstructionsConfig,
   AiProfile,
   AiProfileInput,
+  ProviderKind,
   AppSettings,
   AuditEntry,
   DbCommandPreview,
@@ -230,6 +231,16 @@ export function saveAiProfile(input: AiProfileInput): Promise<AiProfile> {
 
 export function deleteAiProfile(id: string): Promise<{ ok: boolean }> {
   return api<{ ok: boolean }>(`/api/ai-profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Traces: BASED-AI-MODEL-PICKER — the endpoint's model ids; a failed listing comes back as `error`. */
+export function listAiProfileModels(input: {
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey?: string;
+  profileId?: string;
+}): Promise<{ models: string[]; error?: string }> {
+  return api<{ models: string[]; error?: string }>("/api/ai-profiles/models", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function setActiveAiProfile(id: string): Promise<AppSettings> {

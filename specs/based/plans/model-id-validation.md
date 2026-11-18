@@ -3,6 +3,36 @@
 **Status:** proposed
 **Spec impact:** 1 new requirement (`BASED-MODEL-ID-CHECK`), 1 modified (`BASED-AI-PROVIDER-WIRED` — UI note cross-reference only)
 
+## Phase 1: model picker on AI provider profiles only — **done 2026-11-18**
+
+Shipped as `BASED-AI-MODEL-PICKER` (in `spec.md`). `listProviderModels` lives in
+`core/src/agent/readiness.ts`; phase 2 can move it to `core/src/models/catalog.ts`. The dropdown is
+a portal on `document.body`, because the settings dialog's transform breaks `position: fixed`.
+
+Requested 2026-11-17: let users pick the model from the endpoint's list, with blank still allowed.
+Ship the combo-box half now; the Test button, `matchModelId`, and embedding/reranker forms stay in
+phase 2 below.
+
+- **Core:** `POST /api/ai-profiles/models` with `{ kind, baseUrl, apiKey?, profileId? }` →
+  `{ models: string[] }` or `{ models: [], error }` (never a 500). Blank `apiKey` + `profileId` uses
+  the stored key. `openai-compatible` / `openai` reuse `listModels` from
+  [`readiness.ts:13`](../../../core/src/agent/readiness.ts#L13) (`openai` defaults the base URL to
+  `https://api.openai.com/v1`); `anthropic` calls `/v1/models` with `x-api-key` + `anthropic-version`;
+  `azure-openai` returns `[]` (no listing — the deployment is what runs). POST, not GET, so a typed
+  key never lands in a URL.
+- **UI:** the Model input stays free text. A `▾` `IconButton` beside it fetches the list and opens a
+  small dropdown of ids; picking one fills the field. A fetch error shows one faint line under the
+  field. Not a bare `<datalist>`: Chromium (WebView2) filters a datalist by the current value, so
+  with a model already filled in the user sees only that one id.
+- **Blank stays valid** exactly as today (`modelRequired` unchanged).
+- **Spec:** add `BASED-AI-MODEL-PICKER` (manual verification: LM Studio lists its models; picking
+  fills the field; clearing leaves blank and saves; unreachable server shows the error line and Save
+  still works; Azure hides the `▾`). Amend `BASED-AI-PROVIDER-WIRED`'s UI note to point at it.
+  Integration test for the endpoint against a `Bun.serve` fixture returning a fixed `/models` body,
+  plus the unreachable case.
+
+Phase 2 later folds this endpoint into `POST /api/model-profiles/test` (it returns `models` already).
+
 ## Problem
 
 An AI provider profile's `model` is a free-text box. `resolveModel` passes it through

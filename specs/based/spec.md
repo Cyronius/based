@@ -2475,7 +2475,29 @@ The UI checks when the rail opens, when the active profile or the profile list c
 - `openai-compatible` with a blank model still resolves, and the outgoing request body carries no `model` key: `sanitizeRequestBody` removes an empty/whitespace-only `model` from a JSON body and leaves any other body (non-JSON, or a real model id) untouched. Blank means "the server's loaded/default model" — single-model servers (LM Studio, llama.cpp) only apply their default when the key is *absent*, so `model: ""` must never be sent.
 - `sanitizeRequestBody` also deletes `reasoning_content` from every `assistant` message and leaves the same key on other roles alone. A reasoning model returns its thinking as `reasoning_content` and the SDK serializes it back on the next turn; Cerebras rejects the whole request for it (HTTP 400 `property 'messages.N.assistant.reasoning_content' is unsupported`) and DeepSeek documents the same, so a conversation succeeded on turn 1 and died on turn 2. It is the model's own scratch work, so dropping it is unconditional. The sanitizing `fetch` is installed on every `openai-compatible` provider, not only blank-model ones.
 
-**UI (manual):** the profile form's field requirements are per-kind — base URL required for `openai-compatible` and `azure-openai` (labeled "Endpoint" for Azure, placeholder showing the resource-URL shape), optional for `openai`/`anthropic` (blank = provider default); `deployment` required for `azure-openai`; model required for `openai`/`anthropic` (their APIs reject a request without one), optional for `openai-compatible` (blank = server's loaded model — cloud-style compatible backends like Ollama/vLLM/OpenRouter still need it filled in) and `azure-openai` (the deployment is what runs). A profile pointed at a live provider with a real key streams a chat turn.
+**UI (manual):** the profile form's field requirements are per-kind — base URL required for `openai-compatible` and `azure-openai` (labeled "Endpoint" for Azure, placeholder showing the resource-URL shape), optional for `openai`/`anthropic` (blank = provider default); `deployment` required for `azure-openai`; model required for `openai`/`anthropic` (their APIs reject a request without one), optional for `openai-compatible` (blank = server's loaded model — cloud-style compatible backends like Ollama/vLLM/OpenRouter still need it filled in) and `azure-openai` (the deployment is what runs). A profile pointed at a live provider with a real key streams a chat turn. The model field can also be filled from the endpoint's own list (`BASED-AI-MODEL-PICKER`).
+
+### BASED-AI-MODEL-PICKER: Pick an AI profile's model from the endpoint's list
+**Applies to:** based (core, ui)
+**Test category:** integration (`specs/based/tests/integration.aiModelPicker.test.ts`); manual (the form control)
+
+`POST /api/ai-profiles/models` with `{ kind, baseUrl, apiKey?, profileId? }` returns `{ models: string[] }`: the ids the endpoint serves, sorted and de-duplicated. `openai-compatible` and `openai` use `GET {baseUrl}/models` with a bearer key; `anthropic` uses `GET {baseUrl}/models` with `x-api-key` and `anthropic-version`. A blank base URL uses the provider default (`https://api.openai.com/v1`, `https://api.anthropic.com/v1`). `azure-openai` returns `[]` without a request, because its inference endpoint has no listing. A blank `apiKey` with a `profileId` uses that profile's stored key. A failed listing returns `{ models: [], error }` with HTTP 200, never a 500. The route is POST so a typed key never goes in a URL.
+
+In the AI provider form, the model input stays free text and blank stays valid (per `BASED-AI-PROVIDER-WIRED`). A chevron icon button beside it, hidden for `azure-openai`, fetches the list and opens a dropdown; picking an id fills the field. The dropdown is not a `<datalist>`, because Chromium filters a datalist by the current value and would show only the id already typed.
+
+**Acceptance criteria:**
+- Fixture listing `zeta-7b, alpha-1b, zeta-7b` → `{ models: ["alpha-1b", "zeta-7b"] }`; a trailing `/` on the base URL is tolerated
+- `anthropic` sends `x-api-key` and `anthropic-version`
+- `azure-openai` → `{ models: [] }`
+- Unreachable base URL → HTTP 200, `models: []`, non-empty `error`
+- Blank `apiKey` + `profileId` of a profile with a stored key → a key-requiring endpoint lists successfully
+
+**Verification procedure:**
+1. Settings → Agent → add or edit a profile pointed at a running LM Studio → press the chevron → the server's model ids appear; the current id is highlighted
+2. Arrow keys move through the list; Enter or a click fills the field; Escape closes only the list, not the settings dialog
+3. Clear the field → Save still works and the profile keeps a blank model
+4. Point the base URL at a closed port → press the chevron → one line under the field says the models could not be listed; Save still works
+5. Switch the kind to Azure OpenAI → the chevron is gone
 
 ### BASED-AI-PROFILE-PARAMS: Per-profile model parameter JSON
 **Applies to:** based (core, ui)
