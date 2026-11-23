@@ -2,7 +2,7 @@
 #
 # The tag-triggered half of the release pipeline. scripts/release.ps1 owns the local half
 # (bump → changelog edit → commit → tag → push); pushing the v* tag lands here, which verifies,
-# builds all three platforms, and publishes one GitHub release with all artifacts. Secondary benefit:
+# builds all platform packages, and publishes one GitHub release with all artifacts. Secondary benefit:
 # Windows releases stop depending on whatever is installed on one machine (docs/development.md
 # tracked that as future work).
 #
@@ -131,8 +131,53 @@ jobs:
   fedora:
     uses: ./.github/workflows/build-fedora.yml
 
+  arch:
+    needs: fedora
+    runs-on: ubuntu-24.04
+    container: archlinux:base
+    timeout-minutes: 20
+    steps:
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed base-devel git desktop-file-utils
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fedora-rpm
+          path: rpm
+
+      - name: Build pacman package as an unprivileged user
+        run: |
+          useradd --create-home builder
+          install -d -o builder dist
+          runuser -u builder -- bash scripts/package-arch.sh "rpm/based-${GITHUB_REF_NAME#v}-fedora-x86_64.rpm"
+
+      - name: Install and check the packaged runtime
+        run: |
+          cd dist
+          sha256sum -c *.pkg.tar.zst.sha256
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          desktop-file-validate /usr/share/applications/based.desktop
+          test -x /usr/bin/based-shell
+          test -f /usr/lib/based/ui/dist/index.html
+          cd /usr/lib/based/core
+          ../bun/bun -e 'for (const glob of ["*gnu*.node", "duckdb-*.node"]) {
+            const files = [...new Bun.Glob(glob).scanSync(".")];
+            if (!files.length) throw Error(glob);
+            for (const file of files) require("./" + file);
+          }'
+          ldd /usr/bin/based-shell > /tmp/based-libs
+          if grep -F "not found" /tmp/based-libs; then exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*.pkg.tar.zst.sha256
+          if-no-files-found: error
+
   publish:
-    needs: [windows, macos, fedora]
+    needs: [windows, macos, fedora, arch]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -151,6 +196,8 @@ jobs:
           DMG="artifacts/based-$VERSION-macos-arm64.dmg"
           RPM="artifacts/based-$VERSION-fedora-x86_64.rpm"
           test -f "$EXE" && test -f "$DMG" && test -f "$RPM"
+          ARCH="artifacts/based-$VERSION-1-x86_64.pkg.tar.zst"
+          (cd artifacts && sha256sum -c "${ARCH##*/}.sha256")
           EXE_SHA=$(sha256sum "$EXE" | cut -d' ' -f1)
           DMG_SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
           RPM_SHA=$(sha256sum "$RPM" | cut -d' ' -f1)
@@ -212,6 +259,15 @@ jobs:
           # $RPM_SHA
           \`\`\`
 
+          ### Install — Arch Linux and Omarchy (x86_64)
+
+          Download the pacman package and its checksum into the same directory, then run
+
+          \`\`\`sh
+          sha256sum -c ${ARCH##*/}.sha256
+          sudo pacman -U ./${ARCH##*/}
+          \`\`\`
+
           Launch **based** from the application menu. Credentials use the desktop's Secret Service
           (GNOME Keyring or KWallet with its Secret Service enabled). Data lives in
           \`\$XDG_DATA_HOME/based\`, defaulting to \`~/.local/share/based\`.
@@ -227,6 +283,8 @@ jobs:
             "artifacts/based-$VERSION-macos-arm64.dmg" \
             "artifacts/based-$VERSION-fedora-x86_64.rpm" \
             "artifacts/based-$VERSION-fedora-x86_64.rpm.sha256" \
+            "artifacts/based-$VERSION-1-x86_64.pkg.tar.zst" \
+            "artifacts/based-$VERSION-1-x86_64.pkg.tar.zst.sha256" \
             --title "based $VERSION" \
             --notes-file notes.md
 

@@ -1,0 +1,16 @@
+pkgname=based
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='SQL and vector database client'
+arch=(x86_64)
+url='https://github.com/Cyronius/based'
+license=(MIT)
+depends=(glibc gcc-libs gtk3 webkit2gtk-4.1 libsecret xdg-utils)
+optdepends=('org.freedesktop.secrets: store credentials in an unlocked Secret Service keyring')
+options=(!strip !debug !zipman)
+source=("based-${pkgver}-fedora-x86_64.rpm")
+sha256sums=('@RPM_SHA256@')
+
+package() {
+  cp -a "$srcdir/usr" "$pkgdir/"
+}

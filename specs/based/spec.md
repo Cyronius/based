@@ -3877,7 +3877,7 @@ randomized read-only path).
 2. Run a LanceDB query (exercises the DuckDB native stack + `libduckdb.dylib`).
 3. Repeat 1–2 with the quarantine flag still set (translocated run) after Open Anyway.
 
-### BASED-PACKAGE-LINUX: Self-contained Fedora RPM
+### BASED-PACKAGE-LINUX: Self-contained Fedora and Arch packages
 **Applies to:** based (core + shell-tauri + repo)
 **Test category:** manual
 
@@ -3885,6 +3885,8 @@ randomized read-only path).
 and builds a Tauri RPM. The package includes an executable Bun runtime and installs its resources
 under `/usr/lib/based`; it runs without a repo checkout or a separately installed Bun. Fedora 43
 is the build baseline for Fedora 43+ x86_64. Runtime libraries are declared as RPM dependencies.
+On x86_64 Arch Linux and Omarchy, `scripts/package-arch.sh` packages the checksum-verified
+RPM payload with makepkg and emits a pacman package and its SHA-256 file.
 The application-menu entry offers an SQL file handler without replacing the user's default.
 Credentials use the session's unlocked Secret Service; data uses BASED-PLATFORM-PATHS.
 
@@ -3975,13 +3977,14 @@ drafted from the commit log and **stopped for human editing** → commit, tag, p
 test suite, `package-win.ps1` with Inno Setup from choco) and a macOS job (pinned image; the
 BASED-PACKAGE-MAC bundle-layout verification, `tauri build`, DMG), and a Fedora 43 container job
 (typecheck, tests with an isolated Secret Service, `package:linux`, RPM) build in parallel; all jobs
-check that the tag matches `tauri.conf.json`'s version; a publish job then creates ONE GitHub
-release carrying all three artifacts, their SHA-256s, the CHANGELOG section for that version, and the
+check that the tag matches `tauri.conf.json`'s version. An Arch job consumes the Fedora artifact,
+builds and installs the pacman package, and checks its runtime. The publish job creates one GitHub
+release carrying all four packages, their SHA-256s, the CHANGELOG section for that version, and the
 per-platform unsigned-install instructions, then bumps the Homebrew cask (skipping with a
 warning when the `TAP_PUSH_TOKEN` secret is absent, so a missing tap never blocks the release).
 
 **Verification procedure:** cut a release with `scripts/release.ps1`; confirm the workflow goes
-green, the release page shows all three artifacts with install notes, and `Casks/based.rb` in the tap
+green, the release page shows all four packages with install notes, and `Casks/based.rb` in the tap
 points at the new version with the DMG's real SHA-256.
 
 ### BASED-SQL-ASSOC-WIN: .sql "Open with" registration

@@ -192,6 +192,21 @@ unlocked Secret Service (GNOME Keyring, or KWallet with its Secret Service integ
 Data lives in `$XDG_DATA_HOME/based`, defaulting to `~/.local/share/based`; uninstalling preserves it.
 Each RPM has a `.sha256` file: run `sha256sum -c based-<version>-fedora-x86_64.rpm.sha256` beside it.
 
+### Arch Linux and Omarchy (x86_64)
+
+Use the `.pkg.tar.zst` package on either distribution. Download it and its matching
+`.sha256` file into the same directory, then substitute your release version below.
+
+```sh
+version=0.1.9
+sha256sum -c "based-$version-1-x86_64.pkg.tar.zst.sha256"
+sudo pacman -U "./based-$version-1-x86_64.pkg.tar.zst"
+```
+
+Launch **based** from your application menu or run `based-shell`. It uses the same Secret
+Service and data directory as the Fedora build. For releases that list only an RPM, you can
+[build the pacman package from that release](docs/development.md#packaging-for-arch-linux-and-omarchy).
+
 ## Getting started
 
 1. **Add a connection.** Connection selector → *+ New connection*. For Azure SQL, `Azure CLI
@@ -580,7 +595,7 @@ weeks old, not years. Specifically:
   one treated as done.
 - **macOS (Apple Silicon) is experimental.** It builds, ships as an unsigned `.dmg` and a
   Homebrew cask, and works — but it is a preview, not a finished port. Intel Macs are out.
-- **Fedora 43+ x86_64** ships as an RPM. Other Linux distributions are not yet packaged.
+- **Linux x86_64** has an RPM for Fedora 43+ and a pacman package for Arch Linux and Omarchy.
 - **SQL Server / Azure SQL, Snowflake, and LanceDB.** The engine registry is built for more —
   adding an engine is a descriptor plus an adapter — but these three are what's implemented.
 - **The installer is unsigned** — see the SmartScreen note above.

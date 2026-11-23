@@ -149,6 +149,21 @@ needed. The RPM registers an SQL file handler without changing the default appli
 The **build (Fedora)** workflow can be run manually and is also called by the release workflow.
 Its tests run under an isolated D-Bus session with an unlocked GNOME Keyring.
 
+## Packaging for Arch Linux and Omarchy
+
+On x86_64 Arch or Omarchy with `base-devel` installed, run the following from the checkout
+as a regular user. The script verifies the RPM against its companion checksum, then packages
+the tagged executables, native libraries, UI, license, icons and desktop entry with `makepkg`.
+
+```sh
+gh release download v0.1.8 --pattern '*-fedora-x86_64.rpm*' --dir dist
+bash scripts/package-arch.sh dist/based-0.1.8-fedora-x86_64.rpm
+(cd dist && sha256sum -c based-0.1.8-1-x86_64.pkg.tar.zst.sha256)
+```
+
+The release workflow runs this same script against the Fedora job's RPM, installs the result
+with pacman in an Arch container, and checks the shell libraries, desktop entry and native addons.
+
 ## Cutting a release
 
 ```powershell
@@ -159,8 +174,8 @@ Its tests run under an isolated D-Bus session with an unlocked GNOME Keyring.
 The local half: preflight (clean tree, on `main`) → bump → draft a `CHANGELOG.md` section from the
 commit log and **stop for you to rewrite it** → commit, tag, push. The tag push triggers
 [release.yml](../.github/workflows/release.yml), which typechecks, tests, builds the Windows
-installer (Inno Setup via choco), macOS `.dmg`, and Fedora RPM on pinned runners, publishes one GitHub
-release with all three artifacts + SHA-256s + per-platform install notes, and bumps the
+installer (Inno Setup via choco), macOS `.dmg`, Fedora RPM and Arch package, publishes one GitHub
+release with all four packages + SHA-256s + per-platform install notes, and bumps the
 `Cyronius/homebrew-based` cask (needs the `TAP_PUSH_TOKEN` secret; skips with a warning if absent).
 
 Version bumping alone:
