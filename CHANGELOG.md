@@ -7,6 +7,11 @@ All notable changes to based are documented here. This project follows
 Releases are cut with `scripts/release.ps1`, which drafts the section below from the commit log
 and then stops for it to be rewritten into something a human would want to read.
 
+## [0.1.9] - 2026-11-23
+
+### Added
+- AI providers: pick a profile's model from a dropdown of the models the endpoint reports, instead of typing the ID. Leaving the model blank is still valid.
+
 ## [0.1.8] - 2026-11-02
 
 ### Changed
