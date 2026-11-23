@@ -5,7 +5,7 @@
 #   2. bun shell-tauri\bundle-core.ts            -> shell-tauri\dist-core\{core,ui,bun}
 #   3. tauri build --no-bundle                   -> shell-tauri\target\release\based-shell.exe
 #                                                   (+ core\ ui\ bun\ resource dirs beside it,
-#                                                   copied by tauri-build from dist-core)
+#                                                   from dist-core; staged from dist-core directly)
 #   4. stage exe + resources + icon.ico          -> shell-tauri\target\release\installer-staging\
 #   5. ISCC scripts\installer.iss                -> dist\based-<version>-Setup.exe
 #
@@ -56,8 +56,11 @@ if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 Copy-Item $exe $staging
 foreach ($dir in "core", "ui", "bun") {
-  $src = Join-Path $release $dir
-  if (-not (Test-Path $src)) { throw "Missing resource dir $src (tauri-build copies bundle.resources beside the exe)" }
+  # Stage from dist-core (the bundle.resources source) rather than target\release: tauri-build's
+  # copy beside the exe went missing on the 2026-11 runner image (v0.1.9), and dist-core is the
+  # same tree either way.
+  $src = Join-Path $shellDir "dist-core\$dir"
+  if (-not (Test-Path $src)) { throw "Missing resource dir $src (bundle-core.ts output)" }
   Copy-Item $src (Join-Path $staging $dir) -Recurse
 }
 Copy-Item (Join-Path $shellDir "icons\icon.ico") (Join-Path $staging "icon.ico")
